@@ -1,0 +1,188 @@
+// Package tools implements zot's built-in tools: read, write, edit, bash.
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/patriceckhart/zot/internal/core"
+	"github.com/patriceckhart/zot/internal/provider"
+)
+
+const (
+	maxReadLines = 2000
+	maxReadBytes = 50 * 1024
+)
+
+// ReadTool reads file contents from disk.
+type ReadTool struct {
+	CWD     string
+	Sandbox *Sandbox // when locked, confines reads to the sandbox root
+}
+
+type readArgs struct {
+	Path   string `json:"path"`
+	Offset int    `json:"offset,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+}
+
+const readSchema = `{
+  "type":"object",
+  "properties":{
+    "path":{"type":"string","description":"Path to the file to read (relative or absolute)"},
+    "offset":{"type":"integer","description":"Line number to start reading from (1-indexed)"},
+    "limit":{"type":"integer","description":"Maximum number of lines to read"}
+  },
+  "required":["path"],
+  "additionalProperties":false
+}`
+
+func (t *ReadTool) Name() string { return "read" }
+func (t *ReadTool) Description() string {
+	return "Read the contents of a text file or an image (png/jpg/jpeg/gif/webp). Large files are truncated."
+}
+func (t *ReadTool) Schema() json.RawMessage { return json.RawMessage(readSchema) }
+
+func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
+	var a readArgs
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return core.ToolResult{}, fmt.Errorf("invalid args: %w", err)
+	}
+	if a.Path == "" {
+		return core.ToolResult{}, fmt.Errorf("path is required")
+	}
+	path := resolvePath(t.CWD, a.Path)
+	if err := t.Sandbox.CheckPath(path); err != nil {
+		return core.ToolResult{}, err
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return core.ToolResult{}, err
+	}
+	if info.IsDir() {
+		return core.ToolResult{}, fmt.Errorf("%s is a directory", path)
+	}
+
+	// Image handling.
+	if mime := imageMIME(path); mime != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return core.ToolResult{}, err
+		}
+		return core.ToolResult{
+			Content: []provider.Content{provider.ImageBlock{MimeType: mime, Data: data}},
+		}, nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return core.ToolResult{}, err
+	}
+	defer f.Close()
+
+	// Read up to maxReadBytes and also line-limit.
+	limited := io.LimitReader(f, int64(maxReadBytes)+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return core.ToolResult{}, err
+	}
+	truncBytes := len(data) > maxReadBytes
+	if truncBytes {
+		data = data[:maxReadBytes]
+	}
+
+	if looksBinary(data) {
+		return core.ToolResult{}, fmt.Errorf("%s looks binary; refusing to read as text", a.Path)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	// Trim trailing empty line from final \n.
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+
+	start := 0
+	if a.Offset > 0 {
+		start = a.Offset - 1
+		if start > len(lines) {
+			start = len(lines)
+		}
+	}
+	end := len(lines)
+	if a.Limit > 0 && start+a.Limit < end {
+		end = start + a.Limit
+	}
+	selected := lines[start:end]
+
+	truncLines := false
+	if len(selected) > maxReadLines {
+		selected = selected[:maxReadLines]
+		truncLines = true
+	}
+
+	// Render with 1-indexed line numbers, cat -n style.
+	var sb strings.Builder
+	for i, line := range selected {
+		fmt.Fprintf(&sb, "%6d\t%s\n", start+i+1, line)
+	}
+	if truncLines {
+		sb.WriteString(fmt.Sprintf("... [truncated at %d lines]\n", maxReadLines))
+	}
+	if truncBytes {
+		sb.WriteString(fmt.Sprintf("... [truncated at %d bytes]\n", maxReadBytes))
+	}
+
+	return core.ToolResult{
+		Content: []provider.Content{provider.TextBlock{Text: sb.String()}},
+		Details: map[string]any{
+			"path":            path,
+			"lines_truncated": truncLines,
+			"bytes_truncated": truncBytes,
+			"total_lines":     len(lines),
+		},
+	}, nil
+}
+
+func resolvePath(cwd, p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	return filepath.Join(cwd, p)
+}
+
+func imageMIME(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	}
+	return ""
+}
+
+// looksBinary returns true if the buffer contains a NUL byte in its first 8 KiB.
+func looksBinary(b []byte) bool {
+	n := len(b)
+	if n > 8192 {
+		n = 8192
+	}
+	for i := 0; i < n; i++ {
+		if b[i] == 0 {
+			return true
+		}
+	}
+	return false
+}

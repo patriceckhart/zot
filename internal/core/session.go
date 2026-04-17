@@ -1,0 +1,367 @@
+package core
+
+import (
+	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/patriceckhart/zot/internal/provider"
+)
+
+// Session is a JSONL-backed conversation transcript tied to a cwd.
+type Session struct {
+	ID     string
+	Path   string
+	Meta   SessionMeta
+	writer *os.File
+	buf    *bufio.Writer
+}
+
+// SessionMeta is written as the first line of every session file.
+type SessionMeta struct {
+	ID       string    `json:"id"`
+	CWD      string    `json:"cwd"`
+	Model    string    `json:"model"`
+	Provider string    `json:"provider"`
+	Started  time.Time `json:"started"`
+	Version  string    `json:"version"`
+}
+
+// sessionLine is the on-disk row type. Message is kept as a raw
+// JSON message on reads (because Content is an interface slice that
+// the default unmarshaler cannot reconstruct); it is written with a
+// regular provider.Message value.
+type sessionLine struct {
+	Type       string            `json:"type"`
+	Meta       *SessionMeta      `json:"meta,omitempty"`
+	Message    *provider.Message `json:"message,omitempty"`
+	Usage      *provider.Usage   `json:"usage,omitempty"`
+	Cumulative *provider.Usage   `json:"cumulative,omitempty"`
+}
+
+type sessionLineHead struct {
+	Type string `json:"type"`
+}
+
+// SessionsDir returns the per-cwd sessions directory under root.
+func SessionsDir(root, cwd string) string {
+	sum := sha256.Sum256([]byte(cwd))
+	short := hex.EncodeToString(sum[:8])
+	return filepath.Join(root, "sessions", short)
+}
+
+// NewSession creates and opens a new session file.
+func NewSession(root, cwd, providerName, model, version string) (*Session, error) {
+	dir := SessionsDir(root, cwd)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	id := uuid.NewString()
+	name := fmt.Sprintf("%s-%s.jsonl", time.Now().UTC().Format("20060102-150405"), id[:8])
+	p := filepath.Join(dir, name)
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	s := &Session{
+		ID:     id,
+		Path:   p,
+		Meta:   SessionMeta{ID: id, CWD: cwd, Provider: providerName, Model: model, Started: time.Now().UTC(), Version: version},
+		writer: f,
+		buf:    bufio.NewWriter(f),
+	}
+	if err := s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta}); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// OpenSession opens an existing session for appending.
+func OpenSession(path string) (*Session, []provider.Message, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+
+	var meta SessionMeta
+	var messages []provider.Message
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
+	for sc.Scan() {
+		var head sessionLineHead
+		if err := json.Unmarshal(sc.Bytes(), &head); err != nil {
+			continue
+		}
+		switch head.Type {
+		case "meta":
+			var row struct {
+				Meta SessionMeta `json:"meta"`
+			}
+			if err := json.Unmarshal(sc.Bytes(), &row); err == nil {
+				meta = row.Meta
+			}
+		case "message":
+			if msg, err := hydrateMessage(sc.Bytes()); err == nil && len(msg.Content) > 0 {
+				messages = append(messages, msg)
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, nil, err
+	}
+	out, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, nil, err
+	}
+	s := &Session{ID: meta.ID, Path: path, Meta: meta, writer: out, buf: bufio.NewWriter(out)}
+	return s, messages, nil
+}
+
+// LatestSession returns the most recent session file for cwd, or "".
+func LatestSession(root, cwd string) string {
+	paths := ListSessions(root, cwd)
+	if len(paths) == 0 {
+		return ""
+	}
+	return paths[0]
+}
+
+// SessionSummary describes one on-disk session at a glance for UI pickers.
+type SessionSummary struct {
+	Path          string
+	Started       time.Time
+	Model         string
+	Provider      string
+	MessageCount  int
+	FirstUserText string
+	TotalCost     float64
+}
+
+// DescribeSessions returns lightweight summaries for every session in
+// cwd, newest first. Parses only the first few lines and the last usage
+// line so it's cheap to run on every dialog open.
+func DescribeSessions(root, cwd string) []SessionSummary {
+	paths := ListSessions(root, cwd)
+	summaries := make([]SessionSummary, 0, len(paths))
+	for _, p := range paths {
+		summaries = append(summaries, describeSession(p))
+	}
+	return summaries
+}
+
+func describeSession(path string) SessionSummary {
+	s := SessionSummary{Path: path}
+	f, err := os.Open(path)
+	if err != nil {
+		return s
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
+	for sc.Scan() {
+		var head sessionLineHead
+		if err := json.Unmarshal(sc.Bytes(), &head); err != nil {
+			continue
+		}
+		switch head.Type {
+		case "meta":
+			var row struct {
+				Meta SessionMeta `json:"meta"`
+			}
+			if err := json.Unmarshal(sc.Bytes(), &row); err == nil {
+				s.Started = row.Meta.Started
+				s.Model = row.Meta.Model
+				s.Provider = row.Meta.Provider
+			}
+		case "message":
+			s.MessageCount++
+			if s.FirstUserText == "" {
+				s.FirstUserText = firstUserText(sc.Bytes())
+			}
+		case "usage":
+			var row struct {
+				Cumulative provider.Usage `json:"cumulative"`
+			}
+			if err := json.Unmarshal(sc.Bytes(), &row); err == nil {
+				s.TotalCost = row.Cumulative.CostUSD
+			}
+		}
+	}
+	return s
+}
+
+func firstUserText(line []byte) string {
+	var row struct {
+		Message struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(line, &row); err != nil {
+		return ""
+	}
+	if row.Message.Role != "user" {
+		return ""
+	}
+	for _, c := range row.Message.Content {
+		if c.Text != "" {
+			return c.Text
+		}
+	}
+	return ""
+}
+
+// ListSessions returns session file paths for cwd, newest first.
+func ListSessions(root, cwd string) []string {
+	dir := SessionsDir(root, cwd)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
+			files = append(files, filepath.Join(dir, e.Name()))
+		}
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(files)))
+	return files
+}
+
+// AppendMessage writes a message to the session.
+func (s *Session) AppendMessage(m provider.Message) error {
+	if s == nil {
+		return nil
+	}
+	return s.writeLine(sessionLine{Type: "message", Message: &m})
+}
+
+// UpdateModel records a provider/model switch in the session file.
+// The reader keeps the most recent meta entry, so the session resumes
+// with the updated model.
+func (s *Session) UpdateModel(providerName, model string) error {
+	if s == nil {
+		return nil
+	}
+	s.Meta.Provider = providerName
+	s.Meta.Model = model
+	return s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta})
+}
+
+// AppendUsage writes a usage row to the session.
+func (s *Session) AppendUsage(u, cum provider.Usage) error {
+	if s == nil {
+		return nil
+	}
+	return s.writeLine(sessionLine{Type: "usage", Usage: &u, Cumulative: &cum})
+}
+
+// Close flushes and closes the session file.
+func (s *Session) Close() error {
+	if s == nil {
+		return nil
+	}
+	if err := s.buf.Flush(); err != nil {
+		s.writer.Close()
+		return err
+	}
+	return s.writer.Close()
+}
+
+func (s *Session) writeLine(row sessionLine) error {
+	b, err := json.Marshal(row)
+	if err != nil {
+		return err
+	}
+	if _, err := s.buf.Write(b); err != nil {
+		return err
+	}
+	if err := s.buf.WriteByte('\n'); err != nil {
+		return err
+	}
+	return s.buf.Flush()
+}
+
+// ---- content (de)serialization ----
+//
+// provider.Content is an interface; encoding/json drops type information.
+// We persist messages by reading the raw "message" object back and
+// rebuilding Content from discriminated fields.
+
+func hydrateMessage(lineBytes []byte) (provider.Message, error) {
+	var row struct {
+		Message struct {
+			Role    provider.Role     `json:"role"`
+			Content []json.RawMessage `json:"content"`
+			Time    time.Time         `json:"time"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(lineBytes, &row); err != nil {
+		return provider.Message{}, err
+	}
+	msg := provider.Message{Role: row.Message.Role, Time: row.Message.Time}
+	for _, raw := range row.Message.Content {
+		var head struct {
+			Text     string `json:"text"`
+			MimeType string `json:"mime_type"`
+			Data     []byte `json:"data"`
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			CallID   string `json:"call_id"`
+			// ToolCallBlock also has Arguments, ToolResultBlock has Content + IsError
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			continue
+		}
+		// Discriminate by presence of fields.
+		switch {
+		case head.Name != "" && head.ID != "":
+			var tc struct {
+				ID        string          `json:"id"`
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
+			}
+			_ = json.Unmarshal(raw, &tc)
+			msg.Content = append(msg.Content, provider.ToolCallBlock{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments})
+		case head.CallID != "":
+			var tr struct {
+				CallID  string            `json:"call_id"`
+				Content []json.RawMessage `json:"content"`
+				IsError bool              `json:"is_error"`
+			}
+			_ = json.Unmarshal(raw, &tr)
+			block := provider.ToolResultBlock{CallID: tr.CallID, IsError: tr.IsError}
+			for _, c := range tr.Content {
+				var inner struct {
+					Text     string `json:"text"`
+					MimeType string `json:"mime_type"`
+					Data     []byte `json:"data"`
+				}
+				_ = json.Unmarshal(c, &inner)
+				if inner.MimeType != "" {
+					block.Content = append(block.Content, provider.ImageBlock{MimeType: inner.MimeType, Data: inner.Data})
+				} else {
+					block.Content = append(block.Content, provider.TextBlock{Text: inner.Text})
+				}
+			}
+			msg.Content = append(msg.Content, block)
+		case head.MimeType != "":
+			msg.Content = append(msg.Content, provider.ImageBlock{MimeType: head.MimeType, Data: head.Data})
+		default:
+			msg.Content = append(msg.Content, provider.TextBlock{Text: head.Text})
+		}
+	}
+	return msg, nil
+}
