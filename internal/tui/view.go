@@ -82,8 +82,15 @@ func (v *View) Build(width int) []string {
 	}
 	if v.StreamingActive {
 		out = append(out, v.Theme.FG256(v.Theme.Assistant, "▍ zot"))
-		for _, line := range wrapLine(v.Streaming, width, "") {
-			out = append(out, line)
+		// Stream the partial assistant text through the same markdown
+		// renderer used for finalised messages so code fences, diffs,
+		// lists, and inline styles look the same while streaming and
+		// don't suddenly reflow when the turn ends.
+		md := RenderMarkdown(v.Streaming, v.Theme, width)
+		for _, l := range strings.Split(md, "\n") {
+			for _, w := range wrapLine(l, width, "") {
+				out = append(out, w)
+			}
 		}
 		out = append(out, "")
 	}
