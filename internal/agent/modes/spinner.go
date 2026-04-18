@@ -14,6 +14,11 @@ type spinner struct {
 	startedAt time.Time
 	msgIdx   int
 	lastSwap time.Time
+
+	// fixedMsg overrides the rotating funnyWorkingLines message when
+	// set. Used for auto-compaction so the spinner clearly says what's
+	// happening instead of cycling jokes.
+	fixedMsg string
 }
 
 // funnyWorkingLines is the rotating text. Kept deliberately short so it
@@ -59,6 +64,15 @@ func (s *spinner) Start() {
 	s.startedAt = time.Now()
 	s.msgIdx = rand.Intn(len(s.messages))
 	s.lastSwap = s.startedAt
+	s.fixedMsg = ""
+}
+
+// StartFixed is like Start but pins the status text to msg for the
+// duration of this spinner run. Cleared by the next Start() call.
+func (s *spinner) StartFixed(msg string) {
+	s.startedAt = time.Now()
+	s.lastSwap = s.startedAt
+	s.fixedMsg = msg
 }
 
 // Frame returns the current spinner glyph for the running animation.
@@ -73,8 +87,13 @@ func (s *spinner) Frame() string {
 }
 
 // Message returns the current rotating status text. The text changes
-// every ~2.5 seconds so the spinner doesn't look frozen.
+// every ~2.5 seconds so the spinner doesn't look frozen. When the
+// spinner was started via StartFixed, the pinned message is returned
+// unchanged.
 func (s *spinner) Message() string {
+	if s.fixedMsg != "" {
+		return s.fixedMsg
+	}
 	if time.Since(s.lastSwap) > 2500*time.Millisecond {
 		s.msgIdx = (s.msgIdx + 1) % len(s.messages)
 		s.lastSwap = time.Now()

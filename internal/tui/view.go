@@ -610,6 +610,11 @@ type StatusBarParams struct {
 	ContextUsed int
 	ContextMax  int // model's context window; 0 disables the percentage
 
+	// AutoCompacting is true when the agent is currently running a
+	// model-triggered condense pass. Surfaces as "(auto)" after the
+	// context percentage so it's clear where the spinner is coming from.
+	AutoCompacting bool
+
 	Cols int // terminal width; drives right-alignment of cwd
 }
 
@@ -648,6 +653,9 @@ func StatusBar(p StatusBarParams) string {
 	// Context %. Color-coded: yellow >70, red >90.
 	ctx, ctxColor := piContextUsage(th, p.ContextUsed, p.ContextMax)
 	if ctx != "" {
+		if p.AutoCompacting {
+			ctx += " (auto)"
+		}
 		stats = append(stats, th.FG256(ctxColor, ctx))
 	}
 

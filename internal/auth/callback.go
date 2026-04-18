@@ -185,7 +185,7 @@ func serveLogo(w http.ResponseWriter, r *http.Request) {
 
 func oauthSuccessHTML(provider string) string {
 	p := strings.ToLower(provider)
-	return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot · logged in</title>` + monoStyle + `</head><body>
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot - logged in</title>` + monoStyle + `</head><body>
 ` + logoTag + `
 <h1><span class="mark">✓</span> logged in to ` + p + `</h1>
 <hr class="rule">

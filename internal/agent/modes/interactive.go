@@ -100,6 +100,11 @@ type Interactive struct {
 	// survive past the ctx of the key event that enqueued them.
 	runCtx context.Context
 
+	// autoCompacting is true while a model-triggered compaction is in
+	// flight. Surfaced in the status bar so the user can tell a
+	// condense pass from a regular assistant turn.
+	autoCompacting bool
+
 	dialog        *loginDialog
 	modelDialog   *modelDialog
 	sessionDialog *sessionDialog
@@ -387,18 +392,19 @@ func (i *Interactive) redraw() {
 		ctxMax = m.ContextWindow
 	}
 	status := tui.StatusBar(tui.StatusBarParams{
-		Theme:        i.cfg.Theme,
-		Provider:     i.cfg.Provider,
-		Model:        i.cfg.Model,
-		Busy:         i.busy,
-		BusyPrefix:   busyPrefix,
-		CWD:          i.cfg.CWD,
-		Locked:       i.cfg.Sandbox.Locked(),
-		Usage:        i.cumUsage,
-		Subscription: i.cfg.AuthMethod == "oauth",
-		ContextUsed:  i.lastCtxInput,
-		ContextMax:   ctxMax,
-		Cols:         cols,
+		Theme:          i.cfg.Theme,
+		Provider:       i.cfg.Provider,
+		Model:          i.cfg.Model,
+		Busy:           i.busy,
+		BusyPrefix:     busyPrefix,
+		CWD:            i.cfg.CWD,
+		Locked:         i.cfg.Sandbox.Locked(),
+		Usage:          i.cumUsage,
+		Subscription:   i.cfg.AuthMethod == "oauth",
+		ContextUsed:    i.lastCtxInput,
+		ContextMax:     ctxMax,
+		AutoCompacting: i.autoCompacting,
+		Cols:           cols,
 	})
 	edLines, curR, curC := i.ed.Render(cols)
 
@@ -728,7 +734,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/sessions":
 		i.sessionDialog.Open(i.cfg.ZotHome, i.cfg.CWD)
 	case "/compact":
-		i.runCompact(ctx)
+		i.runCompact(ctx, false)
 	case "/lock":
 		if i.cfg.Sandbox == nil {
 			i.mu.Lock()
@@ -946,7 +952,11 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 // runCompact invokes core.Agent.Compact and reflects the progress in
 // the tui. It runs in a goroutine so the ui stays responsive; esc/ctrl+c
 // cancel via the same cancelTurn channel used for normal turns.
-func (i *Interactive) runCompact(parent context.Context) {
+//
+// When auto is true the spinner message is pinned to "condensing
+// history" and the status bar surfaces "(auto)" next to the context
+// percentage so it's obvious the system triggered this, not the user.
+func (i *Interactive) runCompact(parent context.Context, auto bool) {
 	if i.agent == nil {
 		i.mu.Lock()
 		i.statusErr = "not logged in. type /login first."
@@ -956,10 +966,16 @@ func (i *Interactive) runCompact(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	i.mu.Lock()
 	i.busy = true
-	i.spin.Start()
+	if auto {
+		i.spin.StartFixed("condensing history")
+		i.autoCompacting = true
+		i.statusOK = "condensing history… (esc to cancel)"
+	} else {
+		i.spin.Start()
+		i.statusOK = "compacting..."
+	}
 	i.cancelTurn = cancel
 	i.statusErr = ""
-	i.statusOK = "compacting..."
 	i.streaming.Reset()
 	i.streamOn = true
 	i.scrollOffset = 0
@@ -980,10 +996,15 @@ func (i *Interactive) runCompact(parent context.Context) {
 		i.streamOn = false
 		i.streaming.Reset()
 		i.cancelTurn = nil
+		i.autoCompacting = false
 		switch {
 		case err != nil && ctx.Err() != nil:
 			i.statusErr = ""
-			i.statusOK = "compaction cancelled"
+			if auto {
+				i.statusOK = "auto-condense cancelled"
+			} else {
+				i.statusOK = "compaction cancelled"
+			}
 		case err != nil:
 			i.statusErr = "compaction failed: " + err.Error()
 			i.statusOK = ""
@@ -1045,16 +1066,49 @@ func (i *Interactive) startTurn(parent context.Context, prompt string) {
 		if ctx.Err() != nil || err != nil {
 			i.queued = nil
 		}
+		// Decide whether the next thing to do is an auto-compaction.
+		// Only fires when the turn completed cleanly AND the queue is
+		// empty (otherwise a queued message would race the condense).
+		shouldAutoCompact := !hasNext && err == nil && ctx.Err() == nil && i.shouldAutoCompactLocked()
 		i.mu.Unlock()
 		i.invalidate()
-		if hasNext {
-			parent := i.runCtx
-			if parent == nil {
-				parent = context.Background()
-			}
+		parent := i.runCtx
+		if parent == nil {
+			parent = context.Background()
+		}
+		switch {
+		case hasNext:
 			i.startTurn(parent, next)
+		case shouldAutoCompact:
+			i.runCompact(parent, true)
 		}
 	}()
+}
+
+// autoCompactThreshold is the context-window fraction at which the
+// agent will auto-compact after a turn ends. 0.85 leaves enough
+// headroom for one more user prompt + response before we bump the
+// hard limit.
+const autoCompactThreshold = 0.85
+
+// shouldAutoCompactLocked reports whether the last turn pushed context
+// usage past the auto-compact threshold. Must be called with i.mu
+// held; it reads lastCtxInput and the current model's context window.
+func (i *Interactive) shouldAutoCompactLocked() bool {
+	if i.agent == nil {
+		return false
+	}
+	if i.autoCompacting {
+		return false
+	}
+	m, err := provider.FindModel(i.cfg.Provider, i.cfg.Model)
+	if err != nil || m.ContextWindow <= 0 {
+		return false
+	}
+	if i.lastCtxInput <= 0 {
+		return false
+	}
+	return float64(i.lastCtxInput)/float64(m.ContextWindow) >= autoCompactThreshold
 }
 
 func (i *Interactive) handleEvent(ev core.AgentEvent) {
