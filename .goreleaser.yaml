@@ -102,8 +102,9 @@ release:
 # Optional: publish a Homebrew formula to a tap repo on every release.
 # Requires the tap repo to exist at github.com/patriceckhart/homebrew-tap
 # and a PAT with `repo` scope exported as `HOMEBREW_TAP_TOKEN` in the
-# release workflow. Safe to leave enabled even before the tap exists;
-# goreleaser skips it when the token isn't set.
+# release workflow. The skip_upload expression disables the step when
+# the token isn't set, so tag pushes before the tap is created don't
+# fail the whole release.
 brews:
   - repository:
       owner: patriceckhart
@@ -117,6 +118,6 @@ brews:
       bin.install "zot"
     test: |
       system "#{bin}/zot", "--help"
-    # Only publish the formula when the token is actually set, so
-    # ordinary tag pushes from forks don't explode.
-    skip_upload: auto
+    # Skip the formula upload when HOMEBREW_TAP_TOKEN is empty. Auto
+    # only skips for prereleases/snapshots, which isn't what we want.
+    skip_upload: '{{ if eq .Env.HOMEBREW_TAP_TOKEN "" }}true{{ else }}false{{ end }}'

@@ -30,28 +30,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  debug:
-    # One-shot diagnostic job with no if-filter: dumps the full
-    # workflow_run context so we can see what fields are actually
-    # populated on the webhook payload. Remove once the release job
-    # starts firing reliably.
-    runs-on: ubuntu-latest
-    steps:
-      - name: dump workflow_run
-        env:
-          WR: ${{ toJSON(github.event.workflow_run) }}
-        run: |
-          echo "conclusion: ${{ github.event.workflow_run.conclusion }}"
-          echo "head_branch: ${{ github.event.workflow_run.head_branch }}"
-          echo "head_sha: ${{ github.event.workflow_run.head_sha }}"
-          echo "---"
-          printenv WR | head -c 2000
-
   release:
-    needs: debug
     # Only run when ci succeeded and we're on main, and when the head
     # commit doesn't opt out via [skip-release].
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && !contains(github.event.workflow_run.head_commit.message, '[skip-release]') }}
     runs-on: ubuntu-latest
     steps:
       - name: checkout
@@ -113,7 +95,8 @@ jobs:
           # goreleaser reads the tag we just pushed and builds binaries
           # for every (goos, goarch) combination in .goreleaser.yaml.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional: PAT with `repo` scope for patriceckhart/homebrew-tap
-          # so we can push a Formula/zot.rb update on every release.
-          # If unset, goreleaser skips the brew step (skip_upload: auto).
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # Optional PAT with `repo` scope for patriceckhart/homebrew-tap.
+          # Always exported (as empty string when the secret is unset)
+          # so the goreleaser template that gates the brew upload on
+          # this value can evaluate without errors.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || '' }}
