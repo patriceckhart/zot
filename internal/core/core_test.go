@@ -30,10 +30,13 @@ func TestSessionRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, msgs, err := OpenSession(sess.Path)
+	reopened, msgs, err := OpenSession(sess.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// OpenSession returns a live append writer; close it before t.TempDir
+	// runs cleanup, otherwise windows refuses to delete the open file.
+	t.Cleanup(func() { _ = reopened.Close() })
 	if len(msgs) != 1 {
 		t.Fatalf("got %d messages", len(msgs))
 	}
