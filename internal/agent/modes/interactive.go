@@ -125,8 +125,16 @@ type Interactive struct {
 	dialog        *loginDialog
 	modelDialog   *modelDialog
 	sessionDialog *sessionDialog
+	jumpDialog    *jumpDialog
 	suggest       *slashSuggester
 	spin          *spinner
+
+	// parkedTurn is the 1-based turn number the viewport is currently
+	// scrolled to by /jump. 0 = not parked, showing the tail as usual.
+	// Rendered as a muted footer at the bottom of the chat so users
+	// don't forget they're looking at history.
+	parkedTurn  int
+	parkedTotal int
 }
 
 // NewInteractive constructs an Interactive from cfg.
@@ -144,6 +152,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		dialog:        newLoginDialog(),
 		modelDialog:   newModelDialog(),
 		sessionDialog: newSessionDialog(),
+		jumpDialog:    newJumpDialog(),
 		suggest:       newSlashSuggester(),
 		spin:          newSpinner(),
 	}
@@ -283,7 +292,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 		case <-i.dirty:
 			requestRedraw()
 		case <-tick.C:
-			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() {
+			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() {
 				drainPending()
 				requestRedraw()
 			}
@@ -316,11 +325,18 @@ func (i *Interactive) chatPage() int {
 }
 
 // scrollBy adjusts the scroll offset. Positive = up (into history).
+// Clearing the parked-turn label when we're back at the bottom means
+// the "viewing turn N" footer goes away automatically as soon as you
+// scroll back to the live tail.
 func (i *Interactive) scrollBy(delta int) {
 	i.mu.Lock()
 	i.scrollOffset += delta
 	if i.scrollOffset < 0 {
 		i.scrollOffset = 0
+	}
+	if i.scrollOffset == 0 {
+		i.parkedTurn = 0
+		i.parkedTotal = 0
 	}
 	i.mu.Unlock()
 	i.invalidate()
@@ -330,6 +346,8 @@ func (i *Interactive) scrollBy(delta int) {
 func (i *Interactive) scrollToBottom() {
 	i.mu.Lock()
 	i.scrollOffset = 0
+	i.parkedTurn = 0
+	i.parkedTotal = 0
 	i.mu.Unlock()
 	i.invalidate()
 }
@@ -407,6 +425,8 @@ func (i *Interactive) redraw() {
 		dialog = i.modelDialog.Render(i.cfg.Theme, cols)
 	case i.sessionDialog.Active():
 		dialog = i.sessionDialog.Render(i.cfg.Theme, cols)
+	case i.jumpDialog.Active():
+		dialog = i.jumpDialog.Render(i.cfg.Theme, cols)
 	}
 
 	// Slash-command autocomplete: popup above the status line, only
@@ -499,10 +519,18 @@ func (i *Interactive) redraw() {
 	}
 
 	// A tiny "scrolled up" indicator in the top-right of the chat pane
-	// so you know you're not at the bottom.
+	// so you know you're not at the bottom. When the viewport was
+	// parked by /jump we include the turn number so the user remembers
+	// they're reading history rather than the live conversation.
 	if i.scrollOffset > 0 && len(visibleChat) > 0 {
-		note := i.cfg.Theme.FG256(i.cfg.Theme.Muted,
-			fmt.Sprintf("  ↑ %d lines more below (end to jump)", i.scrollOffset))
+		var text string
+		if i.parkedTurn > 0 && i.parkedTotal > 0 {
+			text = fmt.Sprintf("  ↑ viewing turn %d of %d · %d lines more below (pgdn / end)",
+				i.parkedTurn, i.parkedTotal, i.scrollOffset)
+		} else {
+			text = fmt.Sprintf("  ↑ %d lines more below (end to jump)", i.scrollOffset)
+		}
+		note := i.cfg.Theme.FG256(i.cfg.Theme.Muted, text)
 		visibleChat = append([]string{note}, visibleChat...)
 		if len(visibleChat) > chatRows {
 			visibleChat = visibleChat[:chatRows]
@@ -575,6 +603,17 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		act := i.sessionDialog.HandleKey(k)
 		if act.Select {
 			i.applySessionSelection(act.Path)
+		}
+		return false
+	}
+	if i.jumpDialog.Active() {
+		if k.Kind == tui.KeyCtrlC {
+			i.jumpDialog.Close()
+			return false
+		}
+		act := i.jumpDialog.HandleKey(k)
+		if act.Select {
+			i.applyJumpSelection(act.MessageIdx, act.TurnNo)
 		}
 		return false
 	}
@@ -752,6 +791,10 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.statusErr = ""
 		i.statusOK = ""
 		i.helpBlock = nil
+		i.parkedTurn = 0
+		i.parkedTotal = 0
+		i.scrollOffset = 0
+		i.view.InvalidateRenderCache()
 		i.mu.Unlock()
 	case "/help":
 		i.mu.Lock()
@@ -779,6 +822,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		}
 	case "/sessions":
 		i.sessionDialog.Open(i.cfg.ZotHome, i.cfg.CWD)
+	case "/jump":
+		i.openJumpDialog(parts[1:])
 	case "/compact":
 		i.runCompact(ctx, false)
 	case "/lock":
@@ -898,6 +943,96 @@ func (i *Interactive) startOAuthFlow(provider string) {
 // applyModelSelection switches the active model (and provider, if the
 // new model belongs to a different one). It rebuilds the underlying
 // client when needed so the provider wire-protocol matches.
+// openJumpDialog builds a /jump picker from the current transcript.
+// If the user typed "/jump foo" with a filter and it matches exactly
+// one turn, jump there directly without showing the dialog.
+func (i *Interactive) openJumpDialog(args []string) {
+	if i.view == nil || len(i.view.Messages) == 0 {
+		i.mu.Lock()
+		i.statusErr = "nothing to jump to \u2014 the session is empty"
+		i.mu.Unlock()
+		return
+	}
+	filter := strings.TrimSpace(strings.Join(args, " "))
+	i.jumpDialog.Open(i.view.Messages, filter)
+	// Shortcut: with a filter argument that matches exactly one turn,
+	// jump immediately and skip the picker.
+	if filter != "" {
+		if tgts := i.jumpDialog.Targets(); len(tgts) == 1 {
+			t := tgts[0]
+			i.jumpDialog.Close()
+			i.applyJumpSelection(t.MessageIdx, t.TurnNo)
+		}
+	}
+}
+
+// applyJumpSelection scrolls the chat viewport so the user message at
+// msgIdx is visible at (or near) the top of the chat area. Uses the
+// anchor slice returned by view.BuildWithAnchors so the mapping from
+// message index to row is exact, regardless of variable-height tool
+// blocks above the target.
+func (i *Interactive) applyJumpSelection(msgIdx, turnNo int) {
+	cols := i.lastCols()
+	chat, anchors := i.view.BuildWithAnchors(cols)
+	var row int
+	found := false
+	for _, a := range anchors {
+		if a.MessageIdx == msgIdx {
+			row = a.Row
+			found = true
+			break
+		}
+	}
+	if !found {
+		i.mu.Lock()
+		i.statusErr = "could not resolve jump target"
+		i.mu.Unlock()
+		return
+	}
+
+	chatLen := len(chat)
+	page := i.chatPage()
+	if page < 1 {
+		page = 1
+	}
+	// scrollOffset is measured from the bottom of the chat slice, so
+	// to place `row` at the top of the viewport we want:
+	//     chatLen - scrollOffset - page == row
+	// Solve for scrollOffset and clamp to [0, chatLen-page].
+	offset := chatLen - (row + page)
+	if offset < 0 {
+		offset = 0
+	}
+	maxOffset := chatLen - page
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+
+	i.mu.Lock()
+	i.scrollOffset = offset
+	i.parkedTurn = turnNo
+	i.parkedTotal = totalTurnsLocked(i.view.Messages)
+	i.statusOK = fmt.Sprintf("jumped to turn %d", turnNo)
+	i.statusErr = ""
+	i.mu.Unlock()
+}
+
+// totalTurnsLocked counts user messages in the transcript. Caller is
+// assumed to hold i.mu (the name is a mild reminder; this function
+// itself doesn't touch shared state beyond the slice it's handed).
+func totalTurnsLocked(msgs []provider.Message) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role == provider.RoleUser {
+			n++
+		}
+	}
+	return n
+}
+
 // applySessionSelection loads the given session via the cli-provided callback.
 func (i *Interactive) applySessionSelection(path string) {
 	if i.cfg.LoadSession == nil {
@@ -916,6 +1051,9 @@ func (i *Interactive) applySessionSelection(path string) {
 	i.statusOK = "resumed session: " + path
 	i.statusErr = ""
 	i.scrollOffset = 0
+	i.parkedTurn = 0
+	i.parkedTotal = 0
+	i.view.InvalidateRenderCache()
 	i.mu.Unlock()
 }
 
@@ -1060,6 +1198,10 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 			i.lastCtxInput = 0 // reset; next turn will get a fresh measurement
 			i.toolCalls = map[string]*tui.ToolCallView{}
 			i.toolOrder = nil
+			// Transcript was rewritten in place — purge the per-message
+			// render cache so stale entries keyed on the old messages
+			// don't linger.
+			i.view.InvalidateRenderCache()
 		}
 		i.mu.Unlock()
 		i.invalidate()
@@ -1082,7 +1224,9 @@ func (i *Interactive) startTurn(parent context.Context, prompt string) {
 	i.toolCalls = map[string]*tui.ToolCallView{}
 	i.toolOrder = nil
 	i.scrollOffset = 0 // jump back to the bottom on new turn
-	i.helpBlock = nil  // hide the help block once the user asks something
+	i.parkedTurn = 0   // starting a turn clears the /jump parked state
+	i.parkedTotal = 0
+	i.helpBlock = nil // hide the help block once the user asks something
 	i.mu.Unlock()
 	i.invalidate()
 

@@ -68,8 +68,16 @@ func containsImageEscape(s string) bool {
 // cells, preserving ANSI CSI escape sequences (which don't consume
 // cells). Lines carrying an inline-image escape are returned as-is
 // since we can't measure their painted size.
+//
+// Fast path: a byte-length <= cols is a conservative upper bound
+// guaranteeing the cell width is also <= cols, so we skip all the
+// rune-width math. That covers the vast majority of lines in a
+// transcript (narrow terminals wrap early; wide ones leave headroom).
 func truncateToWidth(s string, cols int) string {
 	if cols <= 0 || containsImageEscape(s) {
+		return s
+	}
+	if len(s) <= cols {
 		return s
 	}
 	var out strings.Builder

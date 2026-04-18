@@ -163,6 +163,7 @@ type `/` in the tui to open the autocomplete popup. available commands:
 | `/logout [provider]` | clear credentials for `anthropic`, `openai`, or all when omitted |
 | `/model` | pick a model from a list (or `/model <id>` to set directly) |
 | `/sessions` | resume a previous session for this directory |
+| `/jump` | scroll the chat to a previous turn (or `/jump <text>` to filter) |
 | `/compact` | summarize the transcript into one message to free up context |
 | `/lock` | confine tools to the current directory |
 | `/unlock` | allow tools to touch paths outside again |
@@ -172,6 +173,12 @@ type `/` in the tui to open the autocomplete popup. available commands:
 ### `/sessions`
 
 shows previous sessions for the current working directory, newest first, with timestamp, model, message count, cost, and the first user prompt. pick one with `↑/↓`, `enter` to resume, `esc` to cancel. zot swaps the current session file for the selected one and replays the full transcript (including tool calls) into the agent. sessions remember the model they ended on, so resuming picks up on that exact model even if your global default changed.
+
+### `/jump`
+
+opens a turn picker for the current session — one row per user prompt, each showing the turn number, how many tools that turn invoked, and the first line of the prompt. `↑/↓` to pick, `enter` to jump, `esc` to cancel. any printable rune while the picker is open extends a filter; backspace narrows it back. `/jump <text>` pre-applies the filter; if exactly one turn matches, zot jumps straight there without showing the picker.
+
+jumping is non-destructive — the transcript is untouched, the viewport just scrolls so the chosen turn is at the top. a muted line at the top of the chat reads `↑ viewing turn N of M · pgdn to catch up`; scroll back to the bottom with `pgdn` (or keep scrolling with the arrow keys) and the indicator goes away.
 
 ### `/compact`
 

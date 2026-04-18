@@ -55,6 +55,34 @@ type View struct {
 	// ToolCollapseLines collapse to ToolCollapsePreview lines plus a
 	// "... (N more lines, M total, ctrl+o to expand)" footer.
 	ExpandAll bool
+
+	// renderCache holds the per-message rendered line slices so Build
+	// doesn't re-markdown every message on every frame. Keyed by a
+	// struct of (content hash, width, expandAll) — any of those
+	// changing invalidates the entry. Messages are append-only after
+	// they finalise so keeping the cache across turns is safe.
+	//
+	// Streaming/in-flight work (v.Streaming, v.ToolCalls) is never
+	// cached because it changes every delta.
+	renderCache map[msgCacheKey][]string
+}
+
+// msgCacheKey identifies a cached message render. hash is a 64-bit
+// FNV-1a of the message's content, which is cheap to compute and
+// unambiguous enough for the cache (collisions produce a stale frame,
+// not wrong data, and we recompute on invalidation anyway).
+type msgCacheKey struct {
+	hash      uint64
+	width     int
+	expandAll bool
+}
+
+// InvalidateRenderCache drops all cached message renders. The tui
+// calls this when the transcript is replaced wholesale (/compact,
+// /clear, session swap) since messages can be replaced in place and
+// a content-hash miss alone doesn't reclaim the old entries.
+func (v *View) InvalidateRenderCache() {
+	v.renderCache = nil
 }
 
 // ToolCollapsePreview is the number of lines shown before a long tool
@@ -75,24 +103,48 @@ type ToolCallView struct {
 	Done   bool
 }
 
+// MessageAnchor records where a rendered message starts in the chat
+// line slice. Used by /jump so the dialog can scroll the viewport to
+// the row where a turn's user prompt begins.
+type MessageAnchor struct {
+	MessageIdx int // index into v.Messages
+	Row        int // first row of that message in the Build() output
+}
+
 // Build returns the chat log lines for the given width.
 func (v *View) Build(width int) []string {
-	// Map tool_use_id -> path argument, if any, so tool results can be
-	// rendered with the file's language for syntax highlighting.
-	v.toolPaths = map[string]string{}
-	for _, m := range v.Messages {
-		for _, c := range m.Content {
-			if tc, ok := c.(provider.ToolCallBlock); ok {
-				if p := pathFromToolArgs(tc.Arguments); p != "" {
-					v.toolPaths[tc.ID] = p
-				}
-			}
-		}
+	lines, _ := v.BuildWithAnchors(width)
+	return lines
+}
+
+// BuildWithAnchors is like Build but additionally reports the first
+// row occupied by each message in v.Messages. Callers that need to
+// scroll to a specific turn (the /jump dialog) use the anchor slice
+// to map a message index back to a row offset.
+func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
+	v.refreshToolPaths()
+	if v.renderCache == nil {
+		v.renderCache = make(map[msgCacheKey][]string)
 	}
 
-	var out []string
-	for _, m := range v.Messages {
-		out = append(out, v.renderMessage(m, width)...)
+	// Pre-render every message (hits the cache for unchanged ones) so
+	// we can allocate `out` in a single shot with the exact capacity.
+	// Growing via append on a long transcript copies the backing array
+	// log2(N) times; for a 2000-line scrollback that's enough memcpy
+	// to visibly stutter while typing.
+	rendered := make([][]string, len(v.Messages))
+	total := 0
+	for idx, m := range v.Messages {
+		lines := v.renderMessageCached(m, width)
+		rendered[idx] = lines
+		total += len(lines) + 1 // +1 for the blank separator row
+	}
+
+	out := make([]string, 0, total+16)
+	anchors := make([]MessageAnchor, 0, len(v.Messages))
+	for idx := range v.Messages {
+		anchors = append(anchors, MessageAnchor{MessageIdx: idx, Row: len(out)})
+		out = append(out, rendered[idx]...)
 		out = append(out, "")
 	}
 	if v.StreamingActive {
@@ -117,7 +169,131 @@ func (v *View) Build(width int) []string {
 		out = append(out, v.Theme.FG256(v.Theme.Error, "✖ "+v.Err))
 		out = append(out, "")
 	}
-	return out
+	return out, anchors
+}
+
+// refreshToolPaths rebuilds the tool_use_id -> path map from the
+// current transcript. Called once per Build() so tool result blocks
+// (which may be cached) can look up their syntax language when they
+// were originally rendered. Walking the transcript here is O(N) but
+// cheap compared to markdown/chroma work it enables.
+func (v *View) refreshToolPaths() {
+	v.toolPaths = map[string]string{}
+	for _, m := range v.Messages {
+		for _, c := range m.Content {
+			if tc, ok := c.(provider.ToolCallBlock); ok {
+				if p := pathFromToolArgs(tc.Arguments); p != "" {
+					v.toolPaths[tc.ID] = p
+				}
+			}
+		}
+	}
+}
+
+// renderMessageCached returns the rendered line slice for m, using the
+// cache if the same (content hash, width, expandAll) combination has
+// been rendered before. The slice returned is shared — callers must
+// not mutate it; Build() only ever appends to its own `out` so the
+// shared slice is safe.
+func (v *View) renderMessageCached(m provider.Message, width int) []string {
+	key := msgCacheKey{
+		hash:      hashMessage(m),
+		width:     width,
+		expandAll: v.ExpandAll,
+	}
+	if v.renderCache != nil {
+		if lines, ok := v.renderCache[key]; ok {
+			return lines
+		}
+	}
+	lines := v.renderMessage(m, width)
+	if v.renderCache != nil {
+		// Bound the cache: 4x the current message count is enough to
+		// survive /compact churn without leaking memory across a very
+		// long session.
+		max := len(v.Messages) * 4
+		if max < 32 {
+			max = 32
+		}
+		if len(v.renderCache) > max {
+			// Drop half the entries. map iteration order gives us a
+			// pseudo-LRU for free.
+			dropped := 0
+			target := len(v.renderCache) / 2
+			for k := range v.renderCache {
+				if dropped >= target {
+					break
+				}
+				delete(v.renderCache, k)
+				dropped++
+			}
+		}
+		v.renderCache[key] = lines
+	}
+	return lines
+}
+
+// hashMessage returns a 64-bit FNV-1a over the role + content blocks
+// of m. Serialising each block to its salient bytes is enough: two
+// messages with the same role and same content render identically.
+func hashMessage(m provider.Message) uint64 {
+	h := fnv64aInit
+	h = fnv64aWrite(h, []byte(m.Role))
+	h = fnv64aWriteByte(h, 0)
+	for _, c := range m.Content {
+		switch b := c.(type) {
+		case provider.TextBlock:
+			h = fnv64aWriteByte(h, 't')
+			h = fnv64aWrite(h, []byte(b.Text))
+		case provider.ImageBlock:
+			h = fnv64aWriteByte(h, 'i')
+			h = fnv64aWrite(h, []byte(b.MimeType))
+			h = fnv64aWrite(h, b.Data)
+		case provider.ToolCallBlock:
+			h = fnv64aWriteByte(h, 'c')
+			h = fnv64aWrite(h, []byte(b.ID))
+			h = fnv64aWrite(h, []byte(b.Name))
+			h = fnv64aWrite(h, []byte(b.Arguments))
+		case provider.ToolResultBlock:
+			h = fnv64aWriteByte(h, 'r')
+			h = fnv64aWrite(h, []byte(b.CallID))
+			if b.IsError {
+				h = fnv64aWriteByte(h, 'E')
+			}
+			for _, inner := range b.Content {
+				switch ib := inner.(type) {
+				case provider.TextBlock:
+					h = fnv64aWrite(h, []byte(ib.Text))
+				case provider.ImageBlock:
+					h = fnv64aWrite(h, []byte(ib.MimeType))
+					h = fnv64aWrite(h, ib.Data)
+				}
+			}
+		}
+		h = fnv64aWriteByte(h, 0)
+	}
+	return h
+}
+
+// FNV-1a implementation inlined so we don't pay the interface cost of
+// hash.Hash64 on every Build(). The whole point here is speed.
+const (
+	fnv64aInit  uint64 = 0xcbf29ce484222325
+	fnv64aPrime uint64 = 0x100000001b3
+)
+
+func fnv64aWriteByte(h uint64, b byte) uint64 {
+	h ^= uint64(b)
+	h *= fnv64aPrime
+	return h
+}
+
+func fnv64aWrite(h uint64, p []byte) uint64 {
+	for _, b := range p {
+		h ^= uint64(b)
+		h *= fnv64aPrime
+	}
+	return h
 }
 
 func (v *View) renderMessage(m provider.Message, width int) []string {

@@ -20,6 +20,7 @@ var slashCatalog = []slashCommand{
 	{"/logout", "clear a provider's credentials"},
 	{"/model", "pick a model (or /model <id>)"},
 	{"/sessions", "resume a previous session for this directory"},
+	{"/jump", "scroll the chat to a previous turn (or /jump <text>)"},
 	{"/compact", "summarize and replace the transcript to free up context"},
 	{"/lock", "confine tools to the current directory"},
 	{"/unlock", "allow tools to touch paths outside this directory"},
