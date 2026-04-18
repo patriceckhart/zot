@@ -349,9 +349,12 @@ func (i *Interactive) redraw() {
 		chat = append(welcomeBanner(i.cfg.Theme), chat...)
 	}
 
-	// /help block: rendered above the welcome / transcript when active.
+	// /help block: appended to the transcript so it appears at the
+	// bottom of the chat area (right above the status bar / editor).
+	// Prepending it would push long conversations off the top of the
+	// viewport, which users would miss entirely.
 	if len(i.helpBlock) > 0 {
-		chat = append(append([]string(nil), i.helpBlock...), chat...)
+		chat = append(chat, i.helpBlock...)
 	}
 
 	if i.statusOK != "" {
@@ -716,6 +719,10 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.helpBlock = renderHelpBlock(i.cfg.Theme, i.lastCols())
 		i.statusErr = ""
 		i.statusOK = ""
+		// Pin the viewport to the newest content so the help block,
+		// which we just appended to the end of the transcript, is
+		// what the user actually sees.
+		i.scrollOffset = 0
 		i.mu.Unlock()
 	case "/login":
 		i.dialog.Open()
