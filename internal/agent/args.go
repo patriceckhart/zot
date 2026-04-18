@@ -188,6 +188,14 @@ usage:
   zot "prompt"                 interactive, pre-filled prompt
   zot -p "prompt"              print final text, exit
   zot --json "prompt"          newline-delimited json events, exit
+  zot telegram-bot setup       configure a telegram bot (from BotFather)
+  zot telegram-bot run         foreground bridge (ctrl+c to stop)
+  zot telegram-bot start       background bridge (detached)
+  zot telegram-bot stop        stop the background bridge
+  zot telegram-bot logs [-f]   tail the background bridge's log
+  zot telegram-bot status      config + running state
+  zot telegram-bot reset       forget saved token
+  (short alias: zot tg ...)
 
 flags:
   --provider  anthropic|openai

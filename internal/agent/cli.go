@@ -17,6 +17,12 @@ import (
 
 // Run is the top-level entrypoint for the zot binary.
 func Run(rawArgs []string, version string) error {
+	// Subcommand router: `zot bot ...` is handled separately so the
+	// generic flag parser doesn't reject "bot" as a positional arg.
+	if handled, err := runBotCommand(rawArgs, version); handled {
+		return err
+	}
+
 	args, err := ParseArgs(rawArgs)
 	if err != nil {
 		PrintHelp(version)

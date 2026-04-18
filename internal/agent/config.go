@@ -2,12 +2,14 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/patriceckhart/zot/internal/auth"
 )
@@ -131,15 +133,68 @@ func ResolveCredentialFull(provider, explicit string) (cred, method, accountID s
 			return c.Anthropic.APIKey, "apikey", "", nil
 		}
 		if c.Anthropic.OAuth != nil && c.Anthropic.OAuth.AccessToken != "" {
-			return c.Anthropic.OAuth.AccessToken, "oauth", "", nil
+			tok, _ := refreshIfExpired("anthropic", c.Anthropic.OAuth)
+			return tok.AccessToken, "oauth", "", nil
 		}
 	case "openai":
 		if c.OpenAI.APIKey != "" {
 			return c.OpenAI.APIKey, "apikey", "", nil
 		}
 		if c.OpenAI.OAuth != nil && c.OpenAI.OAuth.AccessToken != "" {
-			return c.OpenAI.OAuth.AccessToken, "oauth", c.OpenAI.OAuth.AccountID, nil
+			tok, _ := refreshIfExpired("openai", c.OpenAI.OAuth)
+			return tok.AccessToken, "oauth", tok.AccountID, nil
 		}
 	}
 	return "", "", "", fmt.Errorf("no credential for %s", provider)
+}
+
+// refreshIfExpired returns a usable OAuth token for the given provider,
+// refreshing it synchronously when it's past (or near) expiry. The
+// refreshed token is persisted to auth.json.
+//
+// Failures return the original token unchanged — the caller then makes
+// a request with the stale access_token, which will 401. That's still
+// better than crashing at credential-resolution time.
+func refreshIfExpired(providerName string, tok *auth.OAuthToken) (*auth.OAuthToken, error) {
+	if tok == nil {
+		return &auth.OAuthToken{}, fmt.Errorf("nil token")
+	}
+	if !tok.Expired() {
+		return tok, nil
+	}
+	if tok.RefreshToken == "" {
+		return tok, fmt.Errorf("%s oauth token expired and no refresh_token available — run /login again", providerName)
+	}
+
+	var op auth.OAuthProvider
+	switch providerName {
+	case "anthropic":
+		op = auth.AnthropicOAuth
+	case "openai":
+		op = auth.OpenAIOAuth
+	default:
+		return tok, fmt.Errorf("unknown provider %q", providerName)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	next, err := op.Refresh(ctx, tok.RefreshToken)
+	if err != nil {
+		return tok, fmt.Errorf("refresh %s: %w", providerName, err)
+	}
+	// Preserve the refresh token if the server omitted it (Anthropic often does).
+	if next.RefreshToken == "" {
+		next.RefreshToken = tok.RefreshToken
+	}
+	// Carry over account id (openai) / id_token across refreshes.
+	if next.AccountID == "" {
+		next.AccountID = tok.AccountID
+	}
+	if next.IDToken == "" {
+		next.IDToken = tok.IDToken
+	}
+	if err := AuthStoreFor().SetOAuth(providerName, *next); err != nil {
+		return next, fmt.Errorf("persist refreshed token: %w", err)
+	}
+	return next, nil
 }

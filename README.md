@@ -2,14 +2,13 @@
 
 yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 
-one static binary.
-two providers atm (anthropic, openai/codex).
-four tools (read, write, edit, bash).
-three run modes (interactive tui, print, json).
-no extensions.
-no plugins.
-no ceremony.
-no community.
+- one static binary.
+- two providers atm (anthropic, openai/codex).
+- four tools (read, write, edit, bash).
+- three run modes (interactive tui, print, json).
+- built-in telegram bot.
+- no extensions atm.
+- no community atm.
 
 ## install
 
@@ -51,6 +50,14 @@ run `zot` and type `/login`. pick one of two methods:
   - openai uses the codex cli oauth flow; messages go to `chatgpt.com/backend-api/codex/responses` with the `chatgpt-account-id` extracted from the returned id_token.
 
 > **note on subscription login**: the oauth client ids used are the ones published in anthropic's claude code cli and openai's codex cli. reusing them from a third-party tool is against their terms of service and may be revoked at any time. use it at your own risk; the api-key flow is the safe default.
+
+### token refresh
+
+oauth access tokens are short-lived (anthropic ~8h, openai ~30d). zot refreshes them automatically:
+
+- at every credential lookup, zot checks the stored `expiry` and — if past it (with a 60s safety margin) — hits the provider's `oauth/token` endpoint with the stored `refresh_token`, persists the new `access_token` + `refresh_token` + `expiry` back to `auth.json`, and hands the fresh token to the client.
+- the telegram bridge additionally refreshes once per turn so a bot that runs for days keeps working without manual intervention.
+- if the refresh itself fails (the `refresh_token` was revoked, or the account was logged out everywhere), the error bubbles up to the caller: the tui shows it in the status line, the bot replies with it in your dm. run `/login` to get a fresh token pair.
 
 all data lives under `$ZOT_HOME`:
 
@@ -199,6 +206,36 @@ frames containing images are full-repainted (no differential diff) to prevent st
 |---|---|
 | `pgup` / `pgdn` | scroll one page up / down |
 | `up` / `down` (editor empty) | scroll three lines up / down — this is how the mouse wheel reaches the scroll logic on most terminals |
+
+## telegram bot (bridge)
+
+zot can run as a telegram bot so you can dm it from your phone. it's a built-in subcommand, not a plugin:
+
+```bash
+zot telegram-bot setup     # paste a BotFather token, verify, save
+zot telegram-bot run       # foreground: long-poll in this terminal (ctrl+c to stop)
+zot telegram-bot start     # background: detach and return immediately
+zot telegram-bot stop      # sigterm the background bot (sigkill after 5s)
+zot telegram-bot logs -f   # tail $ZOT_HOME/logs/bot.log (omit -f to just cat)
+zot telegram-bot status    # config (token masked) + running/stopped
+zot telegram-bot reset     # forget the token + paired user
+# short alias: `zot tg ...` is accepted for every subcommand
+```
+
+the background flavor writes the child's pid to `$ZOT_HOME/bot.pid` and redirects stdout+stderr to `$ZOT_HOME/logs/bot.log`. `zot telegram-bot stop` reads that pid, sends sigterm, waits up to five seconds, then escalates to sigkill if the child is still alive. running two instances at once is refused at startup.
+
+> **use the installed binary for `start`.** `go run ./cmd/zot telegram-bot start` won't work — `go run` builds a binary in a temp directory and deletes it when it exits, which kills the detached child. run `make install` (or `go build`) first and invoke the installed binary.
+
+setup flow:
+
+1. talk to [@BotFather](https://t.me/BotFather) on telegram, run `/newbot`, copy the token it gives you.
+2. run `zot bot setup` and paste the token when prompted.
+3. run `zot bot run` in the directory you want the agent to operate in.
+4. open your bot on telegram, send `/start`. the first user to do this claims the bridge (stored as `allowed_user_id`); every other user is rejected.
+
+from then on, any dm you send is forwarded to the agent as a user prompt. attached photos or image/* documents are downloaded and passed to vision-capable models. in-bot telegram commands: `/help`, `/status`, `/stop` (cancel the current turn). config lives in `$ZOT_HOME/bot.json` (mode 0600).
+
+bot mode respects the usual zot flags — `--provider`, `--model`, `--cwd`, `--reasoning`, `--continue`, `--no-session`, `--no-tools`, etc. run `zot bot run -c --model claude-opus-4-1` to resume the latest session on opus, for example.
 
 ## development
 
