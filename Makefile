@@ -1,4 +1,6 @@
-VERSION ?= dev
+# Local / untagged builds ship as 0.0.0. Release builds are driven by
+# goreleaser which overrides VERSION from the git tag.
+VERSION ?= 0.0.0
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .PHONY: build install test lint fmt clean release

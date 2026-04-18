@@ -1,0 +1,122 @@
+# GoReleaser config — builds cross-platform binaries and GitHub Release
+# artifacts for zot.
+#
+# Triggered by pushing a tag like `v0.1.0`. The release workflow runs
+# `goreleaser release --clean`, which compiles every target, packs
+# them into `.tar.gz` (Unix) / `.zip` (Windows) archives, generates a
+# checksum file, and uploads everything to a GitHub Release.
+
+version: 2
+
+project_name: zot
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: zot
+    main: ./cmd/zot
+    binary: zot
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    # Windows/arm64 is shipped by Go but rarely used — skip to keep the
+    # release artifact list tidy.
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: zot
+    # Human-friendly name: zot_0.1.0_darwin_arm64.tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  # Used by `goreleaser release --snapshot`; lets contributors build
+  # a local release without pushing a tag.
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^ci:"
+      - "^test:"
+  groups:
+    - title: features
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 0
+    - title: fixes
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 1
+    - title: other
+      order: 999
+
+release:
+  github:
+    owner: patriceckhart
+    name: zot
+  draft: false
+  prerelease: auto
+  # Auto-generated release notes include the changelog groups above plus
+  # an install snippet so the release page itself is a landing page.
+  header: |
+    ## zot {{ .Tag }}
+
+    one-liner install:
+
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/patriceckhart/zot/main/install.sh | bash
+    ```
+
+    homebrew:
+
+    ```bash
+    brew install patriceckhart/tap/zot
+    ```
+
+    or download a binary below, `chmod +x`, and drop it on your `$PATH`.
+
+# Optional: publish a Homebrew formula to a tap repo on every release.
+# Requires the tap repo to exist at github.com/patriceckhart/homebrew-tap
+# and a PAT with `repo` scope exported as `HOMEBREW_TAP_TOKEN` in the
+# release workflow. Safe to leave enabled even before the tap exists;
+# goreleaser skips it when the token isn't set.
+brews:
+  - repository:
+      owner: patriceckhart
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    name: zot
+    homepage: https://github.com/patriceckhart/zot
+    description: "lightweight coding agent harness — anthropic + openai, four tools, tui"
+    license: MIT
+    install: |
+      bin.install "zot"
+    test: |
+      system "#{bin}/zot", "--help"
+    # Only publish the formula when the token is actually set, so
+    # ordinary tag pushes from forks don't explode.
+    skip_upload: auto

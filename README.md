@@ -12,11 +12,39 @@ yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 
 ## install
 
+### one-liner (macos + linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/patriceckhart/zot/main/install.sh | bash
+```
+
+detects your os/arch, downloads the latest release from github, verifies the sha256 against the release's `checksums.txt`, extracts the binary, and drops it in `/usr/local/bin`, `~/.local/bin`, or `~/bin` — whichever is writable first. pass a version or prefix to pin:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/patriceckhart/zot/main/install.sh | bash -s -- v0.0.1 ~/bin
+```
+
+### one-liner (windows, powershell)
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/patriceckhart/zot/main/install.ps1 | iex
+```
+
+drops `zot.exe` into `$HOME\bin` and adds it to the user PATH if missing. open a fresh terminal afterwards.
+
+### homebrew (macos + linux)
+
+```bash
+brew install patriceckhart/tap/zot
+```
+
+### go install
+
 ```bash
 go install github.com/patriceckhart/zot/cmd/zot@latest
 ```
 
-or from source:
+### from source
 
 ```bash
 git clone https://github.com/patriceckhart/zot
@@ -24,6 +52,10 @@ cd zot
 make build        # produces ./bin/zot
 make install      # into $GOPATH/bin
 ```
+
+### prebuilt binaries
+
+every release on the [releases page](https://github.com/patriceckhart/zot/releases) ships archives for linux, macos, and windows on amd64 + arm64 (except windows/arm64), plus a `checksums.txt` file. download, verify, `chmod +x`, and drop on your `$PATH`.
 
 ## authenticate
 
