@@ -19,6 +19,13 @@ import (
 	"github.com/patriceckhart/zot/internal/core"
 )
 
+// detachChild configures cmd to run in its own process group so tty
+// signals sent to the parent (SIGINT, SIGHUP on logout) don't also
+// reach the detached bot. Platform-specific: setsid on unix, a noop
+// on windows (Go's spawn path already detaches when no console is
+// inherited). See botcmd_unix.go and botcmd_windows.go.
+var detachChild func(cmd *exec.Cmd)
+
 // runBotCommand dispatches `zot telegram-bot ...` subcommands. The
 // short alias "tg" is also accepted. Returns true if rawArgs begins
 // with a recognised subcommand, false otherwise.
@@ -230,8 +237,10 @@ func botStart(rawTail []string) error {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Stdin = nil
-	// Detach: new session so terminal signals don't reach the child.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Detach: new session / new process group so terminal signals
+	// don't reach the child. Impl lives in botcmd_unix.go /
+	// botcmd_windows.go because Setsid is posix-only.
+	detachChild(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("spawn: %w", err)
