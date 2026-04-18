@@ -580,14 +580,16 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.scrollBy(-i.chatPage())
 		return false
 	case tui.KeyUp:
-		// Wheel-up in alt screen sends Up arrows on most terminals. When the
-		// editor is empty and we're not busy, use that for chat scroll-up.
-		if i.ed.IsEmpty() && !i.busy {
+		// Wheel-up in alt screen sends Up arrows on most terminals.
+		// When the editor is empty we use up/down for chat scroll —
+		// independently of whether the agent is busy, so users can
+		// scroll back through long streaming replies while they run.
+		if i.ed.IsEmpty() {
 			i.scrollBy(+3)
 			return false
 		}
 	case tui.KeyDown:
-		if i.ed.IsEmpty() && !i.busy {
+		if i.ed.IsEmpty() {
 			if i.scrollOffset > 0 {
 				i.scrollBy(-3)
 			}
