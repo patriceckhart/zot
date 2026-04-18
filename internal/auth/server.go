@@ -62,6 +62,7 @@ func NewServer() (*Server, error) {
 	mux.HandleFunc("/callback", s.handleCallback)
 	mux.HandleFunc("/success", s.handleSuccess)
 	mux.HandleFunc("/error", s.handleError)
+	mux.HandleFunc("/logo.png", serveLogo)
 	s.srv = &http.Server{
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
@@ -219,6 +220,7 @@ func Redirect(w http.ResponseWriter, r *http.Request, u *url.URL) {
 // rules, no rounded boxes, no color.
 
 var tpl = template.Must(template.New("index").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot login</title>` + monoStyle + `</head><body>
+` + logoTag + `
 <h1>zot login</h1>
 <hr class="rule">
 <p>paste an api key for anthropic or openai. zot probes the provider once, then saves the key to <span class="mono">~/Library/Application Support/zot/auth.json</span>.</p>
@@ -234,20 +236,8 @@ func init() {
 	template.Must(tpl.New("apikey").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot login</title>` + monoStyle + `<style>
   form { display: flex; flex-direction: column; gap: 0.75rem; }
   label { font-size: 0.875rem; }
-  input[type=password] {
-    width: 100%; padding: 0.5rem 0.6rem;
-    border: 1px solid #000000; background: #ffffff; color: #000000;
-    font-family: inherit; font-size: 0.95rem;
-  }
-  button {
-    align-self: flex-start;
-    padding: 0.5rem 1.25rem;
-    background: #000000; color: #ffffff;
-    border: 1px solid #000000; font-family: inherit; font-size: 0.95rem;
-    cursor: pointer;
-  }
-  button:hover { background: #ffffff; color: #000000; }
 </style></head><body>
+` + logoTag + `
 <h1>zot login · {{.Provider}} api key</h1>
 <hr class="rule">
 <p>paste your {{.Provider}} api key. zot will probe the provider with it once, then save it if the key is accepted.</p>
@@ -260,6 +250,7 @@ func init() {
 </body></html>`))
 
 	template.Must(tpl.New("success").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot · logged in</title>` + monoStyle + `</head><body>
+` + logoTag + `
 <h1><span class="mark">✓</span> logged in to {{.Provider}}</h1>
 <hr class="rule">
 <p class="msg">method: {{.Method}}</p>
@@ -267,6 +258,7 @@ func init() {
 </body></html>`))
 
 	template.Must(tpl.New("error").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot · error</title>` + monoStyle + `</head><body>
+` + logoTag + `
 <h1><span class="mark">✗</span> login failed</h1>
 <hr class="rule">
 <p class="msg mono">{{.Message}}</p>

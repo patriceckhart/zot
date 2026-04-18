@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/patriceckhart/zot/internal/assets"
 )
 
 // CallbackResult is what an OAuth callback server returns once the
@@ -47,6 +49,7 @@ func NewCallbackServer(p OAuthProvider, expectedState string) (*CallbackServer, 
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(p.RedirectPath, cs.handle)
+	mux.HandleFunc("/logo.png", serveLogo)
 	cs.srv = &http.Server{
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
@@ -119,8 +122,9 @@ func (cs *CallbackServer) deliver(r CallbackResult) {
 
 // ---- static HTML for the callback tab ----
 
-// All zot-served pages share a single monochrome style: black text on
-// white, thin horizontal rules, monospace type. Matches the tui aesthetic.
+// All zot-served pages share a single style: white background, black
+// text, the cyan pixel-art `z` logo at the top, thin black rules,
+// monospace type.
 const monoStyle = `<style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -132,6 +136,14 @@ const monoStyle = `<style>
     margin: 0 auto;
     padding: 3rem 1.5rem;
     line-height: 1.55;
+  }
+  .logo {
+    display: block;
+    width: 120px;
+    height: auto;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    margin: 0 0 1.5rem;
   }
   h1 {
     font-size: 1rem;
@@ -145,11 +157,36 @@ const monoStyle = `<style>
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
   .msg { padding: 0.75rem 0; }
   a { color: inherit; }
+  input[type=password], input[type=text] {
+    width: 100%; padding: 0.5rem 0.6rem;
+    border: 1px solid #000000; background: #ffffff; color: #000000;
+    font-family: inherit; font-size: 0.95rem;
+  }
+  button {
+    padding: 0.5rem 1.25rem;
+    background: #000000; color: #ffffff;
+    border: 1px solid #000000; font-family: inherit; font-size: 0.95rem;
+    cursor: pointer;
+  }
+  button:hover { background: #ffffff; color: #000000; }
 </style>`
+
+// logoTag is the <img> element used at the top of every zot-served
+// page. The image bytes are served from /logo.png by the same server.
+const logoTag = `<img class="logo" src="/logo.png" alt="zot" />`
+
+// serveLogo writes the embedded PNG with appropriate caching headers.
+// Shared between the oauth callback server and the api-key login server.
+func serveLogo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("content-type", "image/png")
+	w.Header().Set("cache-control", "public, max-age=86400")
+	_, _ = w.Write(assets.LogoPNG)
+}
 
 func oauthSuccessHTML(provider string) string {
 	p := strings.ToLower(provider)
 	return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot · logged in</title>` + monoStyle + `</head><body>
+` + logoTag + `
 <h1><span class="mark">✓</span> logged in to ` + p + `</h1>
 <hr class="rule">
 <p class="msg">zot received the callback. you can close this tab.</p>
@@ -158,6 +195,7 @@ func oauthSuccessHTML(provider string) string {
 
 func oauthErrorHTML(msg string) string {
 	return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot · error</title>` + monoStyle + `</head><body>
+` + logoTag + `
 <h1><span class="mark">✗</span> login failed</h1>
 <hr class="rule">
 <p class="msg mono">` + htmlEscape(msg) + `</p>
