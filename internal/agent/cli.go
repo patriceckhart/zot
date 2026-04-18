@@ -199,26 +199,44 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	}
 
 	term := tui.NewProcTerm()
+
+	// Kick off the async update check so the banner can appear when the
+	// http response eventually arrives (usually <1s on cached DNS). Map
+	// agent.UpdateInfo -> modes.UpdateInfo here to avoid a cyclic import.
+	updateCh := make(chan modes.UpdateInfo, 1)
+	go func() {
+		defer close(updateCh)
+		src := <-CheckForUpdateAsync(ZotHome(), version)
+		updateCh <- modes.UpdateInfo{
+			Current:   src.Current,
+			Latest:    src.Latest,
+			Available: src.Available,
+			URL:       src.URL,
+		}
+	}()
+
 	iv := modes.NewInteractive(modes.InteractiveConfig{
-		Terminal:      term,
-		Theme:         tui.Dark,
-		Model:         r.Model,
-		Provider:      r.Provider,
-		AuthMethod:    r.AuthMethod,
-		BaseURL:       r.BaseURL,
-		Reasoning:     r.Reasoning,
-		SystemPrompt:  r.SystemPrompt,
-		Tools:         r.ToolRegistry,
-		MaxSteps:      r.MaxSteps,
-		CWD:           r.CWD,
-		ZotHome:       ZotHome(),
-		Sandbox:       sharedSandbox,
-		Agent:         ag,
-		InitialInput:  args.Prompt,
-		AuthManager:   mgr,
-		BuildAgent:    buildAgent,
-		BuildAgentFor: buildAgentFor,
-		LoadSession:   loadSession,
+		Terminal:       term,
+		Theme:          tui.Dark,
+		Model:          r.Model,
+		Provider:       r.Provider,
+		AuthMethod:     r.AuthMethod,
+		BaseURL:        r.BaseURL,
+		Reasoning:      r.Reasoning,
+		SystemPrompt:   r.SystemPrompt,
+		Tools:          r.ToolRegistry,
+		MaxSteps:       r.MaxSteps,
+		CWD:            r.CWD,
+		ZotHome:        ZotHome(),
+		Version:        version,
+		UpdateInfoChan: updateCh,
+		Sandbox:        sharedSandbox,
+		Agent:          ag,
+		InitialInput:   args.Prompt,
+		AuthManager:    mgr,
+		BuildAgent:     buildAgent,
+		BuildAgentFor:  buildAgentFor,
+		LoadSession:    loadSession,
 		PersistModel: func(providerName, model string) {
 			// Update config.json so next launch uses the same pick.
 			cfg, _ := LoadConfig()

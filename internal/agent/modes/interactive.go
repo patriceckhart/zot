@@ -48,8 +48,21 @@ type InteractiveConfig struct {
 	// If providerOverride is empty, the current provider is kept.
 	BuildAgentFor func(providerOverride, modelOverride string) (*core.Agent, string, string, error)
 
-	// ZotHome is the root directory for sessions/, used by /sessions.
+	// ZotHome is the root directory for sessions/, used by /sessions
+	// and the update-check cache.
 	ZotHome string
+
+	// Version is the binary's current version (from main.version).
+	// Used only for display; the update check itself is done outside
+	// this package to avoid an import cycle.
+	Version string
+
+	// UpdateInfoChan is an optional channel that delivers the result
+	// of the github-release update check. Interactive reads at most
+	// one value, drops it if the check reported nothing, and otherwise
+	// surfaces a yellow "update available" banner at the top of the
+	// chat. Nil channel = no banner, no startup cost.
+	UpdateInfoChan <-chan UpdateInfo
 
 	// Sandbox is the shared sandbox pointer. Toggled by /lock and /unlock.
 	Sandbox *tools.Sandbox
@@ -104,6 +117,10 @@ type Interactive struct {
 	// flight. Surfaced in the status bar so the user can tell a
 	// condense pass from a regular assistant turn.
 	autoCompacting bool
+
+	// updateInfo is the result of the async update check. Zero value
+	// while the check hasn't completed or nothing is available.
+	updateInfo UpdateInfo
 
 	dialog        *loginDialog
 	modelDialog   *modelDialog
@@ -241,6 +258,8 @@ func (i *Interactive) Run(ctx context.Context) error {
 
 	i.invalidate()
 
+	updates := i.cfg.UpdateInfoChan // nil-safe; nil channel blocks forever in select
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -253,6 +272,14 @@ func (i *Interactive) Run(ctx context.Context) error {
 		case ev := <-authEvents:
 			i.handleAuthEvent(ev)
 			i.invalidate()
+		case info, ok := <-updates:
+			if ok && info.Available {
+				i.mu.Lock()
+				i.updateInfo = info
+				i.mu.Unlock()
+				i.invalidate()
+			}
+			updates = nil // single-shot; subsequent iterations skip this case
 		case <-i.dirty:
 			requestRedraw()
 		case <-tick.C:
@@ -347,6 +374,16 @@ func (i *Interactive) redraw() {
 	// no transcript yet. Disappears after the first message is sent.
 	if len(i.view.Messages) == 0 && !i.streamOn && len(i.toolOrder) == 0 {
 		chat = append(welcomeBanner(i.cfg.Theme), chat...)
+	}
+
+	// Update-available banner: prepended above everything else so it's
+	// the first thing the user sees when opening a new zot session.
+	// Once rendered, it stays until the user updates to a newer
+	// version — we don't persist a "dismissed" flag because this is
+	// cheap and re-showing it is how most users remember to update.
+	if i.updateInfo.Available {
+		banner := renderUpdateBanner(i.cfg.Theme, i.updateInfo, cols)
+		chat = append(banner, chat...)
 	}
 
 	// /help block: appended to the transcript so it appears at the
