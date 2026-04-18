@@ -20,6 +20,7 @@ var helpKeyRows = [][2]string{
 	{"ctrl+a / ctrl+e", "jump to start / end of line"},
 	{"alt+← / alt+→", "jump one word back / forward"},
 	{"ctrl+l", "redraw the screen"},
+	{"ctrl+o", "expand / collapse long tool results"},
 	{"pgup / pgdn", "scroll the chat one page up / down"},
 	{"up / down", "scroll by 3 lines (when input is empty) · prompt history (otherwise)"},
 }

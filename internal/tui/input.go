@@ -40,6 +40,7 @@ const (
 	KeyCtrlA
 	KeyCtrlE
 	KeyCtrlW
+	KeyCtrlO
 	KeyPaste
 	KeyUnknown
 )
@@ -83,6 +84,8 @@ func (r *Reader) Read() (Key, error) {
 		return Key{Kind: KeyCtrlE}, nil
 	case b == 0x17:
 		return Key{Kind: KeyCtrlW}, nil
+	case b == 0x0f:
+		return Key{Kind: KeyCtrlO}, nil
 	case b == '\r', b == '\n':
 		return Key{Kind: KeyEnter}, nil
 	case b == '\t':

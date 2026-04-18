@@ -90,6 +90,16 @@ type Interactive struct {
 	cancelTurn   context.CancelFunc
 	scrollOffset int // rows from the bottom; 0 = pinned to latest
 
+	// Messages typed while a turn is in flight. Each is delivered as
+	// its own follow-up turn once the current one finishes. Rendered
+	// above the status bar as "sliding in: ..." chips.
+	queued []string
+
+	// runCtx is the top-level context passed to Run(). Follow-up turns
+	// drained from `queued` are started against this context so they
+	// survive past the ctx of the key event that enqueued them.
+	runCtx context.Context
+
 	dialog        *loginDialog
 	modelDialog   *modelDialog
 	sessionDialog *sessionDialog
@@ -124,6 +134,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 
 // Run blocks until the user quits.
 func (i *Interactive) Run(ctx context.Context) error {
+	i.runCtx = ctx
 	term := i.cfg.Terminal
 	restore, err := term.EnterRaw()
 	if err != nil {
@@ -391,10 +402,23 @@ func (i *Interactive) redraw() {
 	})
 	edLines, curR, curC := i.ed.Render(cols)
 
+	// "Sliding in" chips for messages the user typed while a turn is
+	// in flight. Shown directly above the status bar so they're close
+	// to the editor but don't push the chat around.
+	var queue []string
+	if len(i.queued) > 0 {
+		for _, q := range i.queued {
+			label := i.cfg.Theme.FG256(i.cfg.Theme.Accent, "▸ sliding in: ")
+			text := truncateLine(q, cols-15)
+			queue = append(queue, label+i.cfg.Theme.FG256(i.cfg.Theme.Muted, text))
+		}
+	}
+
 	// Bottom-sticky sections (always visible, never scroll).
-	bottom := make([]string, 0, len(dialog)+len(suggest)+len(edLines)+1)
+	bottom := make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(edLines)+1)
 	bottom = append(bottom, dialog...)
 	bottom = append(bottom, suggest...)
+	bottom = append(bottom, queue...)
 	bottom = append(bottom, status)
 	bottom = append(bottom, edLines...)
 
@@ -443,9 +467,28 @@ func (i *Interactive) redraw() {
 	frame = append(frame, visibleChat...)
 	frame = append(frame, bottom...)
 
-	cursorRow := len(visibleChat) + len(dialog) + len(suggest) + 1 + curR
+	cursorRow := len(visibleChat) + len(dialog) + len(suggest) + len(queue) + 1 + curR
 	cursorCol := curC
 	i.rend.Draw(frame, cursorRow, cursorCol)
+}
+
+// truncateLine shortens s so it fits within n display cells, with an
+// ellipsis if trimmed. Used by the "sliding in" chips so a pasted
+// novel doesn't blow past the status line.
+func truncateLine(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	// Collapse newlines — chips are single line.
+	s = strings.ReplaceAll(s, "\n", " ↩ ")
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	if n <= 1 {
+		return "…"
+	}
+	return string(runes[:n-1]) + "…"
 }
 
 func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
@@ -513,6 +556,14 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.rend.Clear()
 		i.invalidate()
 		return false
+	case tui.KeyCtrlO:
+		// Toggle expansion of collapsed tool results. Affects every tool
+		// call in the transcript — press again to re-collapse.
+		i.mu.Lock()
+		i.view.ExpandAll = !i.view.ExpandAll
+		i.mu.Unlock()
+		i.invalidate()
+		return false
 	case tui.KeyPageUp:
 		i.scrollBy(+i.chatPage())
 		return false
@@ -535,9 +586,10 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 	}
 
-	if i.busy {
-		return false
-	}
+	// Note: we intentionally do NOT gate the editor on i.busy here.
+	// Typing while the agent is working is supported — submitted
+	// messages are queued and delivered as follow-up turns when the
+	// current turn ends. See the submit handler below.
 
 	if k.Kind == tui.KeyEnter && k.Alt {
 		i.ed.HandleKey(tui.Key{Kind: tui.KeyRune, Rune: '\n', Alt: true})
@@ -600,6 +652,18 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				i.mu.Unlock()
 				return false
 			}
+			// Slash commands need a quiet state (they may swap models,
+			// compact the transcript, open dialogs, etc). Refuse while
+			// a turn is in flight — esc / ctrl+c cancels first.
+			i.mu.Lock()
+			busy := i.busy
+			i.mu.Unlock()
+			if busy {
+				i.mu.Lock()
+				i.statusErr = "cancel the current turn (esc) before running a slash command"
+				i.mu.Unlock()
+				return false
+			}
 			return i.runSlash(ctx, text)
 		}
 
@@ -609,6 +673,17 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.mu.Unlock()
 			return false
 		}
+		// If a turn is already in flight, queue this prompt instead of
+		// starting a second one. The drain loop at the end of startTurn
+		// will pick it up when the current turn finishes.
+		i.mu.Lock()
+		if i.busy {
+			i.queued = append(i.queued, text)
+			i.mu.Unlock()
+			i.invalidate()
+			return false
+		}
+		i.mu.Unlock()
 		i.startTurn(ctx, text)
 	}
 	return false
@@ -958,8 +1033,27 @@ func (i *Interactive) startTurn(parent context.Context, prompt string) {
 		if err != nil && ctx.Err() == nil {
 			i.statusErr = err.Error()
 		}
+		// Pop the next queued message, if any, and relaunch.
+		var next string
+		var hasNext bool
+		if len(i.queued) > 0 && ctx.Err() == nil && err == nil {
+			next, i.queued = i.queued[0], i.queued[1:]
+			hasNext = true
+		}
+		// If the turn was cancelled or errored, drop the queue so the
+		// user isn't bombarded with stale messages after an interrupt.
+		if ctx.Err() != nil || err != nil {
+			i.queued = nil
+		}
 		i.mu.Unlock()
 		i.invalidate()
+		if hasNext {
+			parent := i.runCtx
+			if parent == nil {
+				parent = context.Background()
+			}
+			i.startTurn(parent, next)
+		}
 	}()
 }
 

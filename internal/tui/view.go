@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/patriceckhart/zot/internal/provider"
@@ -48,7 +49,21 @@ type View struct {
 	ToolCalls       []ToolCallView // tool calls in flight or completed
 	StatusLine      string
 	Err             string
+
+	// ExpandAll forces every long tool result to render in full.
+	// Toggled from the tui by ctrl+o. When false, results longer than
+	// ToolCollapseLines collapse to ToolCollapsePreview lines plus a
+	// "... (N more lines, M total, ctrl+o to expand)" footer.
+	ExpandAll bool
 }
+
+// ToolCollapsePreview is the number of lines shown before a long tool
+// result is replaced with a "... ctrl+o to expand" footer. Tool
+// results shorter than ToolCollapseLines always render in full.
+const (
+	ToolCollapsePreview = 10
+	ToolCollapseLines   = 12
+)
 
 // ToolCallView is a pending tool invocation plus optional result.
 type ToolCallView struct {
@@ -169,7 +184,15 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 		if tc.Error {
 			color = v.Theme.Error
 		}
-		lines = append(lines, toolResultBlock(v.Theme, tc.Result, width, color)...)
+		block := toolResultBlock(v.Theme, tc.Result, width, color)
+		// Strip rules, collapse the body, put rules back on.
+		if len(block) >= 2 {
+			top, bot := block[0], block[len(block)-1]
+			body := v.collapseToolBody(block[1:len(block)-1], false)
+			block = append([]string{top}, body...)
+			block = append(block, bot)
+		}
+		lines = append(lines, block...)
 	}
 	return lines
 }
@@ -184,18 +207,43 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 func (v *View) renderToolResultContent(blocks []provider.Content, width, color int, sourcePath string) []string {
 	rule := v.Theme.FG256(v.Theme.Muted, strings.Repeat("─", width))
 
-	var out []string
-	out = append(out, rule)
+	var body []string
+	hasImage := false
 	for _, b := range blocks {
 		switch bb := b.(type) {
 		case provider.TextBlock:
-			out = append(out, v.renderToolText(bb.Text, width, color, sourcePath)...)
+			body = append(body, v.renderToolText(bb.Text, width, color, sourcePath)...)
 		case provider.ImageBlock:
-			out = append(out, v.renderImageBlock(bb, width)...)
+			hasImage = true
+			body = append(body, v.renderImageBlock(bb, width)...)
 		}
 	}
+	body = v.collapseToolBody(body, hasImage)
+
+	out := make([]string, 0, len(body)+2)
+	out = append(out, rule)
+	out = append(out, body...)
 	out = append(out, rule)
 	return out
+}
+
+// collapseToolBody trims lines to the configured preview size when the
+// view is not in ExpandAll mode, appending a muted "... ctrl+o to
+// expand" footer. Image blocks never collapse — they're short in text
+// rows but represent real content the user wants to see.
+func (v *View) collapseToolBody(lines []string, hasImage bool) []string {
+	if v.ExpandAll || hasImage {
+		return lines
+	}
+	if len(lines) <= ToolCollapseLines {
+		return lines
+	}
+	kept := lines[:ToolCollapsePreview]
+	hidden := len(lines) - ToolCollapsePreview
+	total := len(lines)
+	footer := fmt.Sprintf("    ... (%d more lines, %d total, ctrl+o to expand)", hidden, total)
+	footer = v.Theme.FG256(v.Theme.Muted, footer)
+	return append(append([]string(nil), kept...), footer)
 }
 
 // renderToolText renders a text block inside a tool result. If the
@@ -217,6 +265,7 @@ func (v *View) renderToolText(text string, width, defaultColor int, sourcePath s
 	lines := strings.Split(text, "\n")
 
 	inDiff := false
+	oldLine, newLine := 1, 1
 	var out []string
 	for _, l := range lines {
 		// Detect diff header: "--- name" followed somewhere by "+++ name".
@@ -225,16 +274,29 @@ func (v *View) renderToolText(text string, width, defaultColor int, sourcePath s
 			out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, l))
 			continue
 		}
+		// Hunk header "@@ -a,b +c,d @@" resets the counters so patches
+		// that skip around in the file still get correct numbering.
+		if inDiff && strings.HasPrefix(l, "@@") {
+			if o, n, ok := parseHunkHeader(l); ok {
+				oldLine, newLine = o, n
+			}
+			out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, l))
+			continue
+		}
 		if inDiff && len(l) > 0 {
 			switch l[0] {
 			case '+':
-				out = append(out, v.renderDiffRow(l, width, v.Theme.Tool))
+				out = append(out, v.renderDiffRow(l, width, v.Theme.Tool, newLine, '+', sourcePath))
+				newLine++
 				continue
 			case '-':
-				out = append(out, v.renderDiffRow(l, width, v.Theme.Error))
+				out = append(out, v.renderDiffRow(l, width, v.Theme.Error, oldLine, '-', sourcePath))
+				oldLine++
 				continue
 			case ' ':
-				out = append(out, v.renderDiffRow(l, width, v.Theme.Muted))
+				out = append(out, v.renderDiffRow(l, width, v.Theme.Muted, newLine, ' ', sourcePath))
+				oldLine++
+				newLine++
 				continue
 			}
 		}
@@ -246,16 +308,94 @@ func (v *View) renderToolText(text string, width, defaultColor int, sourcePath s
 	return out
 }
 
-// renderDiffRow renders a single unified-diff line in fg color only.
-// The leading +/-/space stays visible so the user can tell at a glance
-// what changed; the rest of the line is colored the same. Long lines
-// are wrapped with a 4-cell indent preserved.
-func (v *View) renderDiffRow(line string, width, color int) string {
-	body := line
-	if len(body) > width-4 {
-		body = body[:width-7] + "…"
+// parseHunkHeader extracts the starting old/new line from a unified
+// diff hunk header ("@@ -12,5 +12,7 @@ ..."). Returns ok=false if the
+// header is malformed or missing numbers.
+func parseHunkHeader(l string) (oldStart, newStart int, ok bool) {
+	// Skip "@@ "
+	rest := strings.TrimPrefix(l, "@@")
+	rest = strings.TrimSpace(rest)
+	if !strings.HasPrefix(rest, "-") {
+		return 0, 0, false
 	}
-	return "    " + v.Theme.FG256(color, body)
+	rest = rest[1:]
+	space := strings.IndexByte(rest, ' ')
+	if space < 0 {
+		return 0, 0, false
+	}
+	oldPart := rest[:space]
+	rest = strings.TrimSpace(rest[space+1:])
+	if !strings.HasPrefix(rest, "+") {
+		return 0, 0, false
+	}
+	rest = rest[1:]
+	if sp := strings.IndexAny(rest, " \t"); sp >= 0 {
+		rest = rest[:sp]
+	}
+	parseStart := func(s string) (int, bool) {
+		if c := strings.IndexByte(s, ','); c >= 0 {
+			s = s[:c]
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 {
+			return 0, false
+		}
+		return n, true
+	}
+	o, ok1 := parseStart(oldPart)
+	n, ok2 := parseStart(rest)
+	if !ok1 || !ok2 {
+		return 0, 0, false
+	}
+	return o, n, true
+}
+
+// renderDiffRow renders one unified-diff line with a read-style gutter
+// (6-cell right-aligned line number, muted) followed by the +/-/space
+// marker and the code. Code is syntax-highlighted if sourcePath hints
+// at a known language; falls back to the plain diff color otherwise.
+func (v *View) renderDiffRow(line string, width, color int, lineNo int, mark byte, sourcePath string) string {
+	if len(line) == 0 {
+		return ""
+	}
+	code := line[1:] // strip the leading marker; we re-emit it in colour
+
+	// Syntax-highlight the code half when we know the language. Use
+	// the same HighlightCode pipeline as renderNumberedFile so the
+	// palette matches.
+	lang := LanguageFromPath(sourcePath)
+	var codeRendered string
+	if lang != "" {
+		if h := HighlightCode(code, lang); len(h) == 1 {
+			codeRendered = h[0]
+		}
+	}
+	if codeRendered == "" {
+		codeRendered = v.Theme.FG256(color, code)
+	}
+
+	gutter := v.Theme.FG256(v.Theme.Muted, fmt.Sprintf("%6d\t", lineNo))
+	marker := v.Theme.FG256(color, string(mark)+" ")
+	row := "    " + gutter + marker + codeRendered
+
+	// Cheap width clamp: truncate visible text if the raw code is too
+	// long. We work on the pre-ANSI code string because measuring ansi
+	// output is unreliable.
+	maxCode := width - 4 /* indent */ - 7 /* gutter */ - 2 /* marker */
+	if maxCode > 0 && len(code) > maxCode {
+		trunc := code[:maxCode-1] + "…"
+		if lang != "" {
+			if h := HighlightCode(trunc, lang); len(h) == 1 {
+				codeRendered = h[0]
+			} else {
+				codeRendered = v.Theme.FG256(color, trunc)
+			}
+		} else {
+			codeRendered = v.Theme.FG256(color, trunc)
+		}
+		row = "    " + gutter + marker + codeRendered
+	}
+	return row
 }
 
 // renderImageBlock returns the lines for one image, inline if possible.
