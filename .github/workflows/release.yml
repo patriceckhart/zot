@@ -1,24 +1,84 @@
 name: release
 
+# Every push to main that passes CI cuts a new release. The workflow:
+#   1. waits for the ci workflow on the same commit to succeed
+#   2. looks up the latest existing vX.Y.Z tag
+#   3. bumps the patch number (vX.Y.Z+1) — or starts at v0.0.1 if none
+#   4. creates and pushes that tag
+#   5. runs goreleaser, which builds binaries for linux/darwin/windows
+#      (amd64 + arm64) and attaches them plus checksums.txt to a fresh
+#      GitHub Release page
+#
+# Skip a release by putting [skip release] anywhere in the commit
+# message — useful for docs-only or ci-only commits.
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
 
 permissions:
-  # Needed for GoReleaser to create the GitHub Release and upload assets.
+  # Needed to create tags and to upload release archives.
   contents: write
 
+# Only one release job at a time. If two pushes land in quick
+# succession, queue them so they don't race on the tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  goreleaser:
+  release:
+    # Only run when ci succeeded and we're on main, and when the head
+    # commit doesn't opt out via [skip release].
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      !contains(github.event.workflow_run.head_commit.message, '[skip release]')
     runs-on: ubuntu-latest
     steps:
       - name: checkout
         uses: actions/checkout@v4
         with:
-          # GoReleaser needs the full history to build a useful
-          # changelog from commit messages.
+          # Full history so we can read existing tags.
           fetch-depth: 0
+          # Check out the exact sha that ci verified, not whatever the
+          # branch tip happens to be at this moment (which may have
+          # advanced since ci finished).
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: compute next version
+        id: bump
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Find the newest vX.Y.Z tag. If the repo has none yet, start
+          # at v0.0.0 so the first release becomes v0.0.1.
+          latest=$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1)
+          if [ -z "$latest" ]; then
+            latest="v0.0.0"
+          fi
+          echo "latest tag: $latest"
+
+          # Strip the v prefix, split on dots, bump the patch.
+          ver="${latest#v}"
+          IFS=. read -r major minor patch <<<"$ver"
+          patch=$((patch + 1))
+          next="v${major}.${minor}.${patch}"
+          echo "next tag:   $next"
+
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "version=${next#v}" >> "$GITHUB_OUTPUT"
+
+      - name: create and push tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.bump.outputs.next }}" \
+            -m "release ${{ steps.bump.outputs.next }}"
+          git push origin "${{ steps.bump.outputs.next }}"
 
       - name: set up go
         uses: actions/setup-go@v5
@@ -33,11 +93,10 @@ jobs:
           version: latest
           args: release --clean
         env:
-          # Default token for the release itself (uploads artifacts,
-          # creates the release page).
+          # goreleaser reads the tag we just pushed and builds binaries
+          # for every (goos, goarch) combination in .goreleaser.yaml.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Optional: PAT with `repo` scope for patriceckhart/homebrew-tap
           # so we can push a Formula/zot.rb update on every release.
-          # Create the secret in repo settings → actions → secrets.
           # If unset, goreleaser skips the brew step (skip_upload: auto).
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
