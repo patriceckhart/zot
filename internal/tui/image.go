@@ -28,10 +28,11 @@ const (
 // The default is to auto-detect: if the terminal advertises iTerm2 or
 // Kitty-graphics support, we use it. The ZOT_INLINE_IMAGES env var
 // overrides the default:
-//   ZOT_INLINE_IMAGES=off   -> force text fallback
-//   ZOT_INLINE_IMAGES=iterm -> force iTerm2 protocol
-//   ZOT_INLINE_IMAGES=kitty -> force Kitty protocol
-//   ZOT_INLINE_IMAGES=auto  -> explicit auto-detect (same as default)
+//
+//	ZOT_INLINE_IMAGES=off   -> force text fallback
+//	ZOT_INLINE_IMAGES=iterm -> force iTerm2 protocol
+//	ZOT_INLINE_IMAGES=kitty -> force Kitty protocol
+//	ZOT_INLINE_IMAGES=auto  -> explicit auto-detect (same as default)
 func DetectImageProtocol() ImageProtocol {
 	switch strings.ToLower(os.Getenv("ZOT_INLINE_IMAGES")) {
 	case "off", "none", "false", "0":

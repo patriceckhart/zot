@@ -12,6 +12,11 @@
 # release, verifies the sha256 against checksums.txt, extracts zot.exe,
 # and moves it into $ZOT_PREFIX (defaults to $HOME\bin, added to PATH
 # via the User environment if missing).
+#
+# While the repo is private, set $env:GITHUB_TOKEN to a PAT with
+# `contents:read` scope; the script uses it for every download. Once
+# the repo goes public, the token becomes optional.
+
 
 [CmdletBinding()]
 param(
@@ -24,6 +29,11 @@ $ErrorActionPreference = "Stop"
 $owner  = "patriceckhart"
 $repo   = "zot"
 $binary = "zot"
+
+# Build Authorization header list once; used on every HTTP call so the
+# script works against private repos when $env:GITHUB_TOKEN is set.
+$headers = @{}
+if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $($env:GITHUB_TOKEN)" }
 
 if (-not $Version) { $Version = "latest" }
 if (-not $Prefix)  { $Prefix  = Join-Path $HOME "bin" }
@@ -50,12 +60,17 @@ if ($arch -eq "arm64") {
 # ---- resolve version ----
 
 if ($Version -eq "latest") {
-  $resp = Invoke-WebRequest -UseBasicParsing -MaximumRedirection 5 `
-    "https://github.com/$owner/$repo/releases/latest"
-  if ($resp.BaseResponse.ResponseUri -match '/tag/([^/]+)') {
-    $Version = $Matches[1]
+  if ($headers.ContainsKey("Authorization")) {
+    $api = Invoke-RestMethod -Headers $headers "https://api.github.com/repos/$owner/$repo/releases/latest"
+    $Version = $api.tag_name
   } else {
-    Die "could not resolve latest version"
+    $resp = Invoke-WebRequest -UseBasicParsing -MaximumRedirection 5 `
+      "https://github.com/$owner/$repo/releases/latest"
+    if ($resp.BaseResponse.ResponseUri -match '/tag/([^/]+)') {
+      $Version = $Matches[1]
+    } else {
+      Die "could not resolve latest version (set `$env:GITHUB_TOKEN if the repo is private)"
+    }
   }
 }
 
@@ -73,10 +88,10 @@ $tmp = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ("zot-install-" +
 
 try {
   Msg "downloading $archive"
-  Invoke-WebRequest -UseBasicParsing -Uri $archiveUrl -OutFile (Join-Path $tmp $archive)
+  Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $archiveUrl -OutFile (Join-Path $tmp $archive)
 
   Msg "verifying checksum"
-  $checksums = Invoke-WebRequest -UseBasicParsing -Uri $checksumUrl | Select-Object -ExpandProperty Content
+  $checksums = Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $checksumUrl | Select-Object -ExpandProperty Content
   $expected  = ($checksums -split "`n" | Where-Object { $_ -match [regex]::Escape($archive) + "$" } | Select-Object -First 1)
   if (-not $expected) { Die "no checksum for $archive in checksums.txt" }
   $expectedHash = ($expected -split "\s+")[0]

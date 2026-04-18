@@ -114,15 +114,15 @@ type codexTool struct {
 }
 
 type codexRequest struct {
-	Model              string `json:"model"`
-	Store              bool   `json:"store"`
-	Stream             bool   `json:"stream"`
-	Instructions       string `json:"instructions,omitempty"`
-	Input              []any  `json:"input"`
-	Tools              []codexTool `json:"tools,omitempty"`
-	ToolChoice         string `json:"tool_choice,omitempty"`
-	ParallelToolCalls  bool   `json:"parallel_tool_calls"`
-	Include            []string `json:"include,omitempty"`
+	Model             string      `json:"model"`
+	Store             bool        `json:"store"`
+	Stream            bool        `json:"stream"`
+	Instructions      string      `json:"instructions,omitempty"`
+	Input             []any       `json:"input"`
+	Tools             []codexTool `json:"tools,omitempty"`
+	ToolChoice        string      `json:"tool_choice,omitempty"`
+	ParallelToolCalls bool        `json:"parallel_tool_calls"`
+	Include           []string    `json:"include,omitempty"`
 }
 
 // ---- Request building ----
@@ -305,11 +305,11 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 		announced bool
 	}
 	var (
-		items       = map[int]*itemState{}
-		order       []int
-		usage       Usage
-		stop        StopReason = StopEnd
-		finalErr    error
+		items    = map[int]*itemState{}
+		order    []int
+		usage    Usage
+		stop     StopReason = StopEnd
+		finalErr error
 	)
 
 	assemble := func() Message {

@@ -43,7 +43,7 @@ type View struct {
 	// toolPaths maps tool_use_id to the "path" argument of the call, if
 	// any, so tool_result rendering can pick the right syntax language.
 	// Rebuilt on each Build().
-	toolPaths map[string]string
+	toolPaths       map[string]string
 	Streaming       string // current assistant text delta
 	StreamingActive bool
 	ToolCalls       []ToolCallView // tool calls in flight or completed
@@ -582,8 +582,9 @@ func truncateLines(s string, n int) string {
 // StatusBar builds the single-line status shown above the editor.
 //
 // Layout:
-//   [busyPrefix]  provider-model   tokens-cost   ctrl+c hint        cwd
-//                                                          ↑ right-aligned
+//
+//	[busyPrefix]  provider-model   tokens-cost   ctrl+c hint        cwd
+//	                                                       ↑ right-aligned
 //
 // cols is the terminal width; when > 0 the cwd is placed flush-right
 // with spaces. busyPrefix, if non-empty, is injected at the far left.

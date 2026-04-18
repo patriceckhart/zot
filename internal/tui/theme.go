@@ -8,18 +8,18 @@ import "strings"
 // ANSI 256-color palette used by zot. Defined as numeric codes so we
 // can swap themes without changing any render code.
 type Theme struct {
-	FG           int
-	Muted        int
-	Accent       int
-	User         int // label color for the user role
-	Assistant    int // label color for the zot role
-	Tool         int
-	ToolOut      int
-	Error        int
-	Warning      int
-	Spinner      int // spinner + funny working line
-	SelectionBG  int // background for highlighted rows
-	SelectionFG  int // foreground for highlighted rows
+	FG          int
+	Muted       int
+	Accent      int
+	User        int // label color for the user role
+	Assistant   int // label color for the zot role
+	Tool        int
+	ToolOut     int
+	Error       int
+	Warning     int
+	Spinner     int // spinner + funny working line
+	SelectionBG int // background for highlighted rows
+	SelectionFG int // foreground for highlighted rows
 }
 
 var Dark = Theme{
@@ -47,7 +47,7 @@ var Light = Theme{
 	ToolOut:     240,
 	Error:       160,
 	Warning:     166,
-	Spinner:     91, // purple
+	Spinner:     91,  // purple
 	SelectionBG: 153, // light blue
 	SelectionFG: 232, // near-black
 }

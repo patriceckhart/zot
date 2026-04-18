@@ -308,7 +308,7 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 	}
 	var (
 		blocks      []*blockEntry
-		currentText *blockEntry          // most-recent text block, nil if none
+		currentText *blockEntry             // most-recent text block, nil if none
 		toolByIdx   = map[int]*blockEntry{} // openai tool_call index -> block
 		usage       Usage
 		stop        StopReason = StopEnd

@@ -11,9 +11,9 @@ import (
 
 // sessionDialog is the inline picker shown when the user runs /sessions.
 type sessionDialog struct {
-	active    bool
-	sessions  []core.SessionSummary
-	cursor    int
+	active   bool
+	sessions []core.SessionSummary
+	cursor   int
 }
 
 // sessionDialogAction is returned by HandleKey.

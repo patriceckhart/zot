@@ -9,11 +9,11 @@ import (
 // turn is streaming. It rotates through a list of playful status
 // messages and a small frame animation.
 type spinner struct {
-	frames   []string
-	messages []string
+	frames    []string
+	messages  []string
 	startedAt time.Time
-	msgIdx   int
-	lastSwap time.Time
+	msgIdx    int
+	lastSwap  time.Time
 
 	// fixedMsg overrides the rotating funnyWorkingLines message when
 	// set. Used for auto-compaction so the spinner clearly says what's

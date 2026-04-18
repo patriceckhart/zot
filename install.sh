@@ -16,6 +16,9 @@
 # Environment overrides:
 #   ZOT_VERSION    same as $1
 #   ZOT_PREFIX     same as $2
+#   GITHUB_TOKEN   personal access token — required while the repo is
+#                  private, ignored once it goes public. Must have at
+#                  least `contents:read` scope on the zot repository.
 #
 # The script detects your OS and architecture, downloads the matching
 # archive from the GitHub release, verifies the sha256 against the
@@ -38,6 +41,14 @@ die()  { printf "\033[31merror:\033[0m %s\n" "$*" >&2; exit 1; }
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar  >/dev/null 2>&1 || die "tar is required"
+
+# CURL_AUTH is prepended to every curl invocation so private-repo
+# downloads work while $GITHUB_TOKEN is set. Empty string when the repo
+# becomes public.
+CURL_AUTH=()
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  CURL_AUTH=(-H "Authorization: Bearer $GITHUB_TOKEN")
+fi
 
 # ---- detect OS + arch ----
 
@@ -62,13 +73,18 @@ esac
 # ---- resolve version ----
 
 if [ "$VERSION" = "latest" ]; then
-  # GitHub's /releases/latest endpoint redirects to /releases/tag/<tag>.
-  # We follow the redirect and grab the tag from the final URL without
-  # needing jq.
-  VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-    "https://github.com/${OWNER}/${REPO}/releases/latest" \
-    | sed -E 's|.*/tag/([^/]+).*|\1|')
-  [ -n "$VERSION" ] || die "could not resolve latest version"
+  # Private-repo friendly: hit the api, grab tag_name. Falls back to
+  # following the /releases/latest redirect on public repos.
+  if [ ${#CURL_AUTH[@]} -gt 0 ]; then
+    VERSION=$(curl -fsSL "${CURL_AUTH[@]}" \
+      "https://api.github.com/repos/${OWNER}/${REPO}/releases/latest" \
+      | sed -nE 's/.*"tag_name": *"([^"]+)".*/\1/p' | head -n1)
+  else
+    VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+      "https://github.com/${OWNER}/${REPO}/releases/latest" \
+      | sed -E 's|.*/tag/([^/]+).*|\1|')
+  fi
+  [ -n "$VERSION" ] || die "could not resolve latest version (set GITHUB_TOKEN if the repo is private)"
 fi
 
 case "$VERSION" in v*) ;; *) VERSION="v$VERSION" ;; esac
@@ -110,11 +126,11 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 msg "downloading ${ARCHIVE}"
-curl -fsSL -o "$TMP/$ARCHIVE" "$ARCHIVE_URL" \
-  || die "download failed: $ARCHIVE_URL"
+curl -fsSL "${CURL_AUTH[@]}" -o "$TMP/$ARCHIVE" "$ARCHIVE_URL" \
+  || die "download failed: $ARCHIVE_URL (set GITHUB_TOKEN if the repo is private)"
 
 msg "verifying checksum"
-curl -fsSL -o "$TMP/checksums.txt" "$CHECKSUMS_URL" \
+curl -fsSL "${CURL_AUTH[@]}" -o "$TMP/checksums.txt" "$CHECKSUMS_URL" \
   || die "download failed: $CHECKSUMS_URL"
 
 expected=$(grep " ${ARCHIVE}\$" "$TMP/checksums.txt" | awk '{print $1}' || true)

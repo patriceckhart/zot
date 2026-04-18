@@ -58,9 +58,9 @@ func HighlightCode(src, lang string) []string {
 // order). That's good enough since tool_result text doesn't change once
 // emitted, so cache hits are frequent and evictions rare.
 type highlightResultCache struct {
-	mu   sync.Mutex
-	max  int
-	data map[string][]string
+	mu    sync.Mutex
+	max   int
+	data  map[string][]string
 	order []string
 }
 

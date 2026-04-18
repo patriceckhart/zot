@@ -12,10 +12,20 @@ yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 
 ## install
 
+> the repo and prebuilt artifacts are **private at the moment**. until they go public, every download command below needs a github personal access token (PAT) with `contents:read` scope on `patriceckhart/zot`. create one at <https://github.com/settings/tokens> and export it before running any installer:
+>
+> ```bash
+> export GITHUB_TOKEN=ghp_xxx
+> ```
+>
+> once the repo is public, the token becomes optional.
+
 ### one-liner (macos + linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/patriceckhart/zot/main/install.sh | bash
+curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+  https://raw.githubusercontent.com/patriceckhart/zot/main/install.sh \
+  | GITHUB_TOKEN=$GITHUB_TOKEN bash
 ```
 
 detects your os/arch, downloads the latest release from github, verifies the sha256 against the release's `checksums.txt`, extracts the binary, and drops it in `/usr/local/bin`, `~/.local/bin`, or `~/bin` — whichever is writable first. pass a version or prefix to pin:
@@ -27,12 +37,17 @@ curl -fsSL https://raw.githubusercontent.com/patriceckhart/zot/main/install.sh |
 ### one-liner (windows, powershell)
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/patriceckhart/zot/main/install.ps1 | iex
+$env:GITHUB_TOKEN = "ghp_xxx"
+$h = @{ Authorization = "Bearer $env:GITHUB_TOKEN" }
+(Invoke-WebRequest -UseBasicParsing -Headers $h `
+  https://raw.githubusercontent.com/patriceckhart/zot/main/install.ps1).Content | iex
 ```
 
 drops `zot.exe` into `$HOME\bin` and adds it to the user PATH if missing. open a fresh terminal afterwards.
 
 ### homebrew (macos + linux)
+
+available once the repo is public. the tap lives at `patriceckhart/homebrew-tap`:
 
 ```bash
 brew install patriceckhart/tap/zot
@@ -40,9 +55,15 @@ brew install patriceckhart/tap/zot
 
 ### go install
 
+while the repo is private, `go install` needs to bypass the public go module proxy:
+
 ```bash
+export GOPRIVATE=github.com/patriceckhart/*
+export GIT_TERMINAL_PROMPT=0
 go install github.com/patriceckhart/zot/cmd/zot@latest
 ```
+
+your git must already be authenticated to github (ssh key or https PAT in `~/.netrc`). once the repo is public, `go install github.com/patriceckhart/zot/cmd/zot@latest` is enough.
 
 ### from source
 

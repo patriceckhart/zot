@@ -10,7 +10,7 @@ import (
 // Matches the thin rule style used for code blocks and tool results so
 // every dialog in the TUI looks the same.
 //
-//   ─── title ────────────────────────────────
+//	─── title ────────────────────────────────
 func frameHeader(th tui.Theme, title string, width int) string {
 	label := "── " + title + " "
 	if width <= 0 {
