@@ -143,6 +143,8 @@ shows previous sessions for the current working directory, newest first, with ti
 
 sends the current transcript through the model with a structured summarization prompt. the returned summary replaces the transcript as one synthetic user message, with the last few exchanges kept verbatim for continuity. status bar's `ctx N/M (P%)` meter resets. use it when the context meter creeps past ~80%.
 
+zot also auto-compacts in the background: after any turn that leaves context usage ≥ **85%** of the model's window, the agent kicks off a condense pass on its own. you'll see `condensing history… (esc to cancel)` above the status bar and an `(auto)` tag next to the context percentage; esc aborts it without touching the transcript.
+
 ### `/lock`
 
 enforces a sandbox rooted at the cwd shown in the status bar. `read` / `write` / `edit` resolve their target path (including through symlinks) and refuse anything outside the sandbox. `bash` refuses obvious escape patterns: `sudo`, `rm -rf /`, leading `cd /` / `cd ..` / `cd ~`, `chmod -R`, `dd of=/`, etc. status bar shows `· locked · ~/your/cwd` while active.
@@ -176,19 +178,26 @@ when a tool returns an image (e.g. `read` on a png), zot renders it inline on te
 
 frames containing images are full-repainted (no differential diff) to prevent stale image pixels from lingering through scroll. that costs one terminal flash per image-containing frame; set `ZOT_INLINE_IMAGES=off` if that bothers you.
 
+## queued messages
+
+you can keep typing while the agent is working. pressing enter during a turn queues the message instead of interrupting: it shows up above the status bar as `▸ sliding in: <text>` and is delivered as the next user turn the moment the current one finishes. queue as many as you want; they run in order. esc / ctrl+c cancels the active turn and drops the queue so a runaway turn doesn't flood you with stale follow-ups.
+
+slash commands still require an idle state — typing `/something` during a turn prints `cancel the current turn (esc) before running a slash command`.
+
 ## keys (interactive mode)
 
 ### input
 
 | key | action |
 |---|---|
-| `enter` | submit |
+| `enter` | submit (queued if the agent is busy) |
 | `alt+enter` | newline |
 | `tab` | complete the selected slash command |
 | `esc` | cancel the current turn (while busy); clear input (while idle) |
 | `ctrl+c` | exit when idle; cancel the current turn while busy |
 | `ctrl+d` | exit on empty input |
 | `ctrl+l` | redraw the screen |
+| `ctrl+o` | expand / collapse long tool results |
 
 ### editor line navigation
 
@@ -229,13 +238,13 @@ the background flavor writes the child's pid to `$ZOT_HOME/bot.pid` and redirect
 setup flow:
 
 1. talk to [@BotFather](https://t.me/BotFather) on telegram, run `/newbot`, copy the token it gives you.
-2. run `zot bot setup` and paste the token when prompted.
-3. run `zot bot run` in the directory you want the agent to operate in.
+2. run `zot telegram-bot setup` and paste the token when prompted.
+3. run `zot telegram-bot run` in the directory you want the agent to operate in.
 4. open your bot on telegram, send `/start`. the first user to do this claims the bridge (stored as `allowed_user_id`); every other user is rejected.
 
 from then on, any dm you send is forwarded to the agent as a user prompt. attached photos or image/* documents are downloaded and passed to vision-capable models. in-bot telegram commands: `/help`, `/status`, `/stop` (cancel the current turn). config lives in `$ZOT_HOME/bot.json` (mode 0600).
 
-bot mode respects the usual zot flags — `--provider`, `--model`, `--cwd`, `--reasoning`, `--continue`, `--no-session`, `--no-tools`, etc. run `zot bot run -c --model claude-opus-4-1` to resume the latest session on opus, for example.
+bot mode respects the usual zot flags — `--provider`, `--model`, `--cwd`, `--reasoning`, `--continue`, `--no-session`, `--no-tools`, etc. run `zot tg run -c --model claude-opus-4-1` to resume the latest session on opus, for example.
 
 ## development
 
