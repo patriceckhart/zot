@@ -4,10 +4,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/patriceckhart/zot/internal/provider"
 )
+
+// pathFromToolArgs returns the "path" argument from a tool_call's
+// JSON arguments, or "" if the args aren't a JSON object or don't
+// include one. Used to pick a syntax language for rendering the
+// corresponding tool_result.
+func pathFromToolArgs(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	for _, k := range []string{"path", "file_path"} {
+		if s, ok := m[k].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
 
 // osUserHomeDir is aliased so the test file can swap it.
 var osUserHomeDir = os.UserHomeDir
@@ -15,9 +36,13 @@ var osUserHomeDir = os.UserHomeDir
 // View turns a transcript + live state into a slice of styled lines,
 // already wrapped to width.
 type View struct {
-	Theme           Theme
-	ImageProto      ImageProtocol // how to render inline images in this terminal
-	Messages        []provider.Message
+	Theme      Theme
+	ImageProto ImageProtocol // how to render inline images in this terminal
+	Messages   []provider.Message
+	// toolPaths maps tool_use_id to the "path" argument of the call, if
+	// any, so tool_result rendering can pick the right syntax language.
+	// Rebuilt on each Build().
+	toolPaths map[string]string
 	Streaming       string // current assistant text delta
 	StreamingActive bool
 	ToolCalls       []ToolCallView // tool calls in flight or completed
@@ -37,6 +62,19 @@ type ToolCallView struct {
 
 // Build returns the chat log lines for the given width.
 func (v *View) Build(width int) []string {
+	// Map tool_use_id -> path argument, if any, so tool results can be
+	// rendered with the file's language for syntax highlighting.
+	v.toolPaths = map[string]string{}
+	for _, m := range v.Messages {
+		for _, c := range m.Content {
+			if tc, ok := c.(provider.ToolCallBlock); ok {
+				if p := pathFromToolArgs(tc.Arguments); p != "" {
+					v.toolPaths[tc.ID] = p
+				}
+			}
+		}
+	}
+
 	var out []string
 	for _, m := range v.Messages {
 		out = append(out, v.renderMessage(m, width)...)
@@ -103,8 +141,12 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 					title = "  error"
 					color = v.Theme.Error
 				}
+				path := ""
+				if v.toolPaths != nil {
+					path = v.toolPaths[tr.CallID]
+				}
 				lines = append(lines, v.Theme.FG256(color, title))
-				lines = append(lines, v.renderToolResultContent(tr.Content, width, color)...)
+				lines = append(lines, v.renderToolResultContent(tr.Content, width, color, path)...)
 			}
 		}
 	}
@@ -132,7 +174,7 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 // like a unified diff gets +/- coloring. Image blocks are rendered
 // inline when the terminal supports a protocol, else as a text
 // placeholder with dimensions.
-func (v *View) renderToolResultContent(blocks []provider.Content, width, color int) []string {
+func (v *View) renderToolResultContent(blocks []provider.Content, width, color int, sourcePath string) []string {
 	rule := v.Theme.FG256(v.Theme.Muted, strings.Repeat("─", width))
 
 	var out []string
@@ -140,7 +182,7 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width, color i
 	for _, b := range blocks {
 		switch bb := b.(type) {
 		case provider.TextBlock:
-			out = append(out, v.renderToolText(bb.Text, width, color)...)
+			out = append(out, v.renderToolText(bb.Text, width, color, sourcePath)...)
 		case provider.ImageBlock:
 			out = append(out, v.renderImageBlock(bb, width)...)
 		}
@@ -153,7 +195,16 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width, color i
 // text contains a unified-diff section (lines starting with "--- " /
 // "+++ " / "+" / "-"/" "), those rows are styled with add/remove
 // colors matching git diff conventions.
-func (v *View) renderToolText(text string, width, defaultColor int) []string {
+func (v *View) renderToolText(text string, width, defaultColor int, sourcePath string) []string {
+	// Detect whether the text is `read`-style numbered output
+	// ("     1\t…") so we can strip the gutter, highlight the code, and
+	// re-apply the line numbers in muted color. Runs even without a
+	// source path — language is guessed from the first line, falling
+	// back to "text" (no highlighting) if nothing obvious matches.
+	if looksLikeNumberedFile(text) {
+		return v.renderNumberedFile(text, sourcePath)
+	}
+
 	// No truncation — the full tool output is rendered into chat and
 	// becomes part of the scrollback you can page back through.
 	lines := strings.Split(text, "\n")
@@ -242,6 +293,86 @@ func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
 	return []string{v.Theme.FG256(v.Theme.Muted, info)}
 }
 
+// looksLikeNumberedFile returns true when text matches the `read`
+// tool's "     N\tcontent" format for most of its lines.
+func looksLikeNumberedFile(text string) bool {
+	lines := strings.Split(text, "\n")
+	if len(lines) == 0 {
+		return false
+	}
+	hits := 0
+	scanned := 0
+	for _, l := range lines {
+		if l == "" {
+			continue
+		}
+		scanned++
+		if scanned > 20 {
+			break
+		}
+		if numberedLineRE.MatchString(l) {
+			hits++
+		}
+	}
+	if scanned == 0 {
+		return false
+	}
+	return hits*2 >= scanned // majority of non-empty lines match
+}
+
+var numberedLineRE = regexp.MustCompile(`^\s*\d+\t`)
+
+// renderNumberedFile strips line numbers, highlights the code, and
+// re-attaches the line numbers in muted color.
+func (v *View) renderNumberedFile(text, sourcePath string) []string {
+	lines := strings.Split(text, "\n")
+	gutters := make([]string, 0, len(lines))
+	codes := make([]string, 0, len(lines))
+	for _, l := range lines {
+		idx := strings.IndexByte(l, '\t')
+		if idx < 0 || !numberedLineRE.MatchString(l) {
+			// Non-code footer (e.g. "[truncated at 2000 lines]").
+			gutters = append(gutters, "")
+			codes = append(codes, l)
+			continue
+		}
+		gutter := l[:idx+1] // keep the tab so alignment is preserved
+		code := l[idx+1:]
+		gutters = append(gutters, gutter)
+		codes = append(codes, code)
+	}
+	lang := LanguageFromPath(sourcePath)
+	var highlighted []string
+	if lang != "" {
+		highlighted = HighlightCode(strings.Join(codes, "\n"), lang)
+		// Chroma sometimes collapses the trailing empty line. Pad to
+		// align with the gutter slice so per-line zipping works.
+		for len(highlighted) < len(codes) {
+			highlighted = append(highlighted, "")
+		}
+		if len(highlighted) > len(codes) {
+			highlighted = highlighted[:len(codes)]
+		}
+	} else {
+		// No lexer for this file type — render in the ToolOut color so
+		// code is visually distinct from the muted gutter.
+		highlighted = make([]string, len(codes))
+		for i, c := range codes {
+			highlighted[i] = v.Theme.FG256(v.Theme.ToolOut, c)
+		}
+	}
+	out := make([]string, 0, len(codes))
+	for i, code := range highlighted {
+		g := gutters[i]
+		if g == "" {
+			out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, code))
+			continue
+		}
+		out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, g)+code)
+	}
+	return out
+}
+
 func toolResultBlock(th Theme, text string, width int, color int) []string {
 	rule := th.FG256(th.Muted, strings.Repeat("─", width))
 
@@ -309,37 +440,98 @@ func truncateLines(s string, n int) string {
 //
 // cols is the terminal width; when > 0 the cwd is placed flush-right
 // with spaces. busyPrefix, if non-empty, is injected at the far left.
-func StatusBar(th Theme, model, prov string, cum provider.Usage, busy bool, busyPrefix, cwd string, locked bool, ctxUsed, ctxMax int, cols int) string {
+// StatusBarParams groups the many bits of state the status bar needs.
+// Grew from a flat argument list once we started matching pi's format.
+type StatusBarParams struct {
+	Theme      Theme
+	Provider   string
+	Model      string
+	Busy       bool
+	BusyPrefix string // spinner + funny line when busy
+	CWD        string
+	Locked     bool // sandbox on?
+
+	// Cumulative session usage and cost.
+	Usage provider.Usage
+	// Subscription is true when the credential is an OAuth token (claude
+	// pro/max, chatgpt plus/pro) rather than a paid api key. We still
+	// compute a cost for visibility, but pi-style we append "(sub)" so
+	// the user knows no money actually moved.
+	Subscription bool
+
+	// Last turn's input+cache tokens (approximates current live context).
+	ContextUsed int
+	ContextMax  int // model's context window; 0 disables the percentage
+
+	Cols int // terminal width; drives right-alignment of cwd
+}
+
+// StatusBar builds the single-line status shown above the editor.
+// Format: ↑N ↓N RN WN $cost[(sub)] pct%/ctxMax
+func StatusBar(p StatusBarParams) string {
+	th := p.Theme
 	sep := " - "
-	cost := fmt.Sprintf("$%.4f", cum.CostUSD)
-	tokens := fmt.Sprintf("%d↑ %d↓", cum.InputTokens, cum.OutputTokens)
-	left := fmt.Sprintf(" %s%s%s ", prov, sep, model)
-	ctx := formatContextUsage(ctxUsed, ctxMax)
-	middle := fmt.Sprintf(" %s%s%s%s%s ", tokens, sep, cost, sep, ctx)
+
+	// Token stats: only include each segment when non-zero (pi's
+	// behavior). Keeps the bar compact on brand-new sessions.
+	var stats []string
+	if p.Usage.InputTokens > 0 {
+		stats = append(stats, fmt.Sprintf("↑%s", piFormatTokens(p.Usage.InputTokens)))
+	}
+	if p.Usage.OutputTokens > 0 {
+		stats = append(stats, fmt.Sprintf("↓%s", piFormatTokens(p.Usage.OutputTokens)))
+	}
+	if p.Usage.CacheReadTokens > 0 {
+		stats = append(stats, fmt.Sprintf("R%s", piFormatTokens(p.Usage.CacheReadTokens)))
+	}
+	if p.Usage.CacheWriteTokens > 0 {
+		stats = append(stats, fmt.Sprintf("W%s", piFormatTokens(p.Usage.CacheWriteTokens)))
+	}
+
+	var costStr string
+	if p.Subscription {
+		costStr = "$0.000 (sub)"
+	} else if p.Usage.CostUSD > 0 {
+		costStr = fmt.Sprintf("$%.3f", p.Usage.CostUSD)
+	}
+	if costStr != "" {
+		stats = append(stats, costStr)
+	}
+
+	// Context %. Color-coded: yellow >70, red >90.
+	ctx, ctxColor := piContextUsage(th, p.ContextUsed, p.ContextMax)
+	if ctx != "" {
+		stats = append(stats, th.FG256(ctxColor, ctx))
+	}
+
+	left := fmt.Sprintf(" (%s) %s ", p.Provider, p.Model)
+	middle := " " + strings.Join(stats, " ") + " "
+
 	var hint string
-	if busy {
+	if p.Busy {
 		hint = " esc cancel "
 	} else {
 		hint = " ctrl+c exit " + sep + " /help "
 	}
 
 	var leftBuilder strings.Builder
-	if busyPrefix != "" {
-		leftBuilder.WriteString(th.FG256(th.Accent, " "+busyPrefix+" "))
+	if p.BusyPrefix != "" {
+		leftBuilder.WriteString(th.FG256(th.Accent, " "+p.BusyPrefix+" "))
 		leftBuilder.WriteString("  ")
 	}
 	leftBuilder.WriteString(th.FG256(th.Muted, left))
 	leftBuilder.WriteString("  ")
+	// `middle` already has colorized context segments; wrap the rest in muted.
 	leftBuilder.WriteString(th.FG256(th.Muted, middle))
 	leftBuilder.WriteString("  ")
 	leftBuilder.WriteString(th.FG256(th.Muted, hint))
 
 	// Compose cwd on the right side. shortenHome abbreviates $HOME to "~".
-	right := shortenHome(cwd)
-	if locked && right != "" {
+	right := shortenHome(p.CWD)
+	if p.Locked && right != "" {
 		right = "· locked · " + right
 	}
-	if right == "" || cols <= 0 {
+	if right == "" || p.Cols <= 0 {
 		return leftBuilder.String()
 	}
 
@@ -348,37 +540,54 @@ func StatusBar(th Theme, model, prov string, cum provider.Usage, busy bool, busy
 	rightStr := " " + right + " "
 	rightWidth := visibleWidth(rightStr)
 
-	gap := cols - leftWidth - rightWidth
+	gap := p.Cols - leftWidth - rightWidth
 	if gap < 1 {
-		// Not enough room for the cwd; drop it silently to avoid wrapping.
 		return leftRendered
 	}
 	return leftRendered + strings.Repeat(" ", gap) + th.FG256(th.Muted, rightStr)
 }
 
-// formatContextUsage returns a short string describing the share of the
-// model's context window currently occupied by the latest turn's input.
-func formatContextUsage(used, max int) string {
+// piContextUsage renders the "N%/ctxMax" fragment, returning the
+// rendered string plus the colour to wrap it in.
+func piContextUsage(th Theme, used, max int) (string, int) {
 	if max <= 0 {
 		if used <= 0 {
-			return "ctx –"
+			return "", th.Muted
 		}
-		return fmt.Sprintf("ctx %s", shortTokens(used))
+		return piFormatTokens(used), th.Muted
 	}
 	pct := float64(used) / float64(max) * 100
-	return fmt.Sprintf("ctx %s/%s (%.0f%%)", shortTokens(used), shortTokens(max), pct)
+	text := fmt.Sprintf("%.1f%%/%s", pct, piFormatTokens(max))
+	switch {
+	case pct > 90:
+		return text, th.Error
+	case pct > 70:
+		return text, th.Warning
+	}
+	return text, th.Muted
 }
 
-func shortTokens(n int) string {
+// piFormatTokens footer formatter:
+//
+//	< 1000      -> "42"
+//	< 10_000    -> "2.7k"
+//	< 1_000_000 -> "35k"
+//	< 10M       -> "1.1M"
+//	else        -> "12M"
+func piFormatTokens(n int) string {
 	switch {
-	case n <= 0:
+	case n < 0:
 		return "0"
 	case n < 1000:
 		return fmt.Sprintf("%d", n)
-	case n < 1_000_000:
+	case n < 10000:
 		return fmt.Sprintf("%.1fk", float64(n)/1000)
-	default:
+	case n < 1_000_000:
+		return fmt.Sprintf("%dk", (n+500)/1000)
+	case n < 10_000_000:
 		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	default:
+		return fmt.Sprintf("%dM", (n+500_000)/1_000_000)
 	}
 }
 

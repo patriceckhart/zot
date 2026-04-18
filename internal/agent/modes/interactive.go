@@ -21,6 +21,7 @@ type InteractiveConfig struct {
 	Theme        tui.Theme
 	Model        string
 	Provider     string
+	AuthMethod   string // "apikey" | "oauth" — used to tag cost as (sub) in status bar
 	BaseURL      string
 	Reasoning    string
 	SystemPrompt string
@@ -173,8 +174,54 @@ func (i *Interactive) Run(ctx context.Context) error {
 		authEvents = i.cfg.AuthManager.Events()
 	}
 
+	// Animation ticker: drives spinner and dialog-related redraws when
+	// nothing else changed. 120ms is slow enough that highlighting a huge
+	// transcript doesn't spin the cpu.
 	tick := time.NewTicker(120 * time.Millisecond)
 	defer tick.Stop()
+
+	// Redraw throttle: coalesce bursts of invalidate() calls so we paint
+	// at most once every redrawMinInterval. Huge tool-result dumps can
+	// fire hundreds of invalidations while the user is typing; without
+	// this, the input goroutine never gets CPU and keystrokes lag.
+	const redrawMinInterval = 16 * time.Millisecond
+	var lastRedraw time.Time
+	var pendingRedraw bool
+	var pendingTimer *time.Timer
+
+	drainPending := func() {
+		if pendingTimer != nil {
+			pendingTimer.Stop()
+			pendingTimer = nil
+		}
+		if pendingRedraw {
+			pendingRedraw = false
+			lastRedraw = time.Now()
+			i.redraw()
+		}
+	}
+
+	requestRedraw := func() {
+		since := time.Since(lastRedraw)
+		if since >= redrawMinInterval {
+			lastRedraw = time.Now()
+			i.redraw()
+			return
+		}
+		if pendingRedraw {
+			return // already scheduled
+		}
+		pendingRedraw = true
+		wait := redrawMinInterval - since
+		if pendingTimer == nil {
+			pendingTimer = time.AfterFunc(wait, func() {
+				// Poke the dirty channel; the main loop will call drainPending().
+				i.invalidate()
+			})
+		} else {
+			pendingTimer.Reset(wait)
+		}
+	}
 
 	i.invalidate()
 
@@ -191,10 +238,11 @@ func (i *Interactive) Run(ctx context.Context) error {
 			i.handleAuthEvent(ev)
 			i.invalidate()
 		case <-i.dirty:
-			i.redraw()
+			requestRedraw()
 		case <-tick.C:
 			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() {
-				i.redraw()
+				drainPending()
+				requestRedraw()
 			}
 		}
 	}
@@ -261,10 +309,18 @@ func (i *Interactive) redraw() {
 	if n := len(i.view.Messages); n > 0 && i.view.Messages[n-1].Role == provider.RoleAssistant {
 		i.view.StreamingActive = false
 	}
-	i.view.ToolCalls = make([]tui.ToolCallView, 0, len(i.toolOrder))
-	for _, id := range i.toolOrder {
-		if tc, ok := i.toolCalls[id]; ok {
-			i.view.ToolCalls = append(i.view.ToolCalls, *tc)
+	// Live tool-call view: only shown while a turn is in flight. Once
+	// the agent is idle, every tool call has already been folded into
+	// the transcript (as assistant.ToolCallBlock + a tool-role message),
+	// so showing v.ToolCalls a second time would duplicate them below
+	// the final assistant text — which looks like the summary came
+	// "before" the tools.
+	i.view.ToolCalls = i.view.ToolCalls[:0]
+	if i.busy {
+		for _, id := range i.toolOrder {
+			if tc, ok := i.toolCalls[id]; ok {
+				i.view.ToolCalls = append(i.view.ToolCalls, *tc)
+			}
 		}
 	}
 	i.view.Err = i.statusErr
@@ -319,7 +375,20 @@ func (i *Interactive) redraw() {
 	if m, err := provider.FindModel(i.cfg.Provider, i.cfg.Model); err == nil {
 		ctxMax = m.ContextWindow
 	}
-	status := tui.StatusBar(i.cfg.Theme, i.cfg.Model, i.cfg.Provider, i.cumUsage, i.busy, busyPrefix, i.cfg.CWD, i.cfg.Sandbox.Locked(), i.lastCtxInput, ctxMax, cols)
+	status := tui.StatusBar(tui.StatusBarParams{
+		Theme:        i.cfg.Theme,
+		Provider:     i.cfg.Provider,
+		Model:        i.cfg.Model,
+		Busy:         i.busy,
+		BusyPrefix:   busyPrefix,
+		CWD:          i.cfg.CWD,
+		Locked:       i.cfg.Sandbox.Locked(),
+		Usage:        i.cumUsage,
+		Subscription: i.cfg.AuthMethod == "oauth",
+		ContextUsed:  i.lastCtxInput,
+		ContextMax:   ctxMax,
+		Cols:         cols,
+	})
 	edLines, curR, curC := i.ed.Render(cols)
 
 	// Bottom-sticky sections (always visible, never scroll).

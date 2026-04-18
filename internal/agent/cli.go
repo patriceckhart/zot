@@ -204,6 +204,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		Theme:        tui.Dark,
 		Model:        r.Model,
 		Provider:     r.Provider,
+		AuthMethod:   r.AuthMethod,
 		BaseURL:      r.BaseURL,
 		Reasoning:    r.Reasoning,
 		SystemPrompt: r.SystemPrompt,

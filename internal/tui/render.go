@@ -3,7 +3,13 @@ package tui
 import (
 	"io"
 	"strings"
+
+	"github.com/mattn/go-runewidth"
 )
+
+// runewidthRune reports the number of cells a rune occupies, pinned
+// here so the renderer does not depend on the editor's helper.
+func runewidthRune(r rune) int { return runewidth.RuneWidth(r) }
 
 // Renderer maintains a previous frame and writes only the lines that
 // changed on each Draw(). Callers pass a full target frame (slice of
@@ -58,6 +64,46 @@ func containsImageEscape(s string) bool {
 	return strings.Contains(s, "\x1b]1337;File=") || strings.Contains(s, "\x1b_G")
 }
 
+// truncateToWidth clips s so its on-screen width doesn't exceed cols
+// cells, preserving ANSI CSI escape sequences (which don't consume
+// cells). Lines carrying an inline-image escape are returned as-is
+// since we can't measure their painted size.
+func truncateToWidth(s string, cols int) string {
+	if cols <= 0 || containsImageEscape(s) {
+		return s
+	}
+	var out strings.Builder
+	out.Grow(len(s))
+	seen := 0
+	runes := []rune(s)
+	for i := 0; i < len(runes); {
+		r := runes[i]
+		// CSI escape sequence (ESC [ ... final): zero-width.
+		if r == 0x1b && i+1 < len(runes) && runes[i+1] == '[' {
+			out.WriteRune(r)
+			out.WriteRune(runes[i+1])
+			i += 2
+			for i < len(runes) {
+				c := runes[i]
+				out.WriteRune(c)
+				i++
+				if c >= 0x40 && c <= 0x7e {
+					break
+				}
+			}
+			continue
+		}
+		rw := runewidthRune(r)
+		if seen+rw > cols {
+			break
+		}
+		out.WriteRune(r)
+		seen += rw
+		i++
+	}
+	return out.String()
+}
+
 func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 	if r.cols == 0 || r.rows == 0 {
 		return
@@ -68,14 +114,16 @@ func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 		visible = visible[len(visible)-r.rows:]
 		cursorRow -= len(lines) - len(visible)
 	}
-	// Pad to r.rows with empty lines at the top.
+	// Pad to r.rows with empty lines at the top. Every line is also
+	// hard-truncated to cols so the terminal never soft-wraps our output
+	// (which would push the status bar out of its row).
 	frame := make([]string, r.rows)
 	top := r.rows - len(visible)
 	for i := 0; i < top; i++ {
 		frame[i] = ""
 	}
 	for i, line := range visible {
-		frame[top+i] = line
+		frame[top+i] = truncateToWidth(line, r.cols)
 	}
 
 	var w strings.Builder

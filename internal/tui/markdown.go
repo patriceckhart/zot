@@ -20,19 +20,42 @@ func RenderMarkdown(src string, th Theme, width int) string {
 
 	lines := strings.Split(src, "\n")
 	var out strings.Builder
+	var fenceBuf strings.Builder
 	inFence := false
+	fenceLang := ""
 	fenceIndent := ""
+
+	flushFence := func() {
+		if fenceBuf.Len() == 0 {
+			return
+		}
+		code := strings.TrimRight(fenceBuf.String(), "\n")
+		if fenceLang != "" {
+			for _, l := range HighlightCode(code, fenceLang) {
+				out.WriteString(l)
+				out.WriteString("\n")
+			}
+		} else {
+			for _, l := range strings.Split(code, "\n") {
+				out.WriteString(th.FG256(th.Accent, l))
+				out.WriteString("\n")
+			}
+		}
+		fenceBuf.Reset()
+	}
+
 	for _, line := range lines {
 		trim := strings.TrimLeft(line, " ")
 		if strings.HasPrefix(trim, "```") {
 			if inFence {
-				// closing fence: emit bottom rule
+				flushFence()
 				inFence = false
+				fenceLang = ""
 				out.WriteString(rule + "\n")
 			} else {
-				// opening fence: emit top rule
 				inFence = true
 				fenceIndent = line[:len(line)-len(trim)]
+				fenceLang = strings.TrimSpace(strings.TrimPrefix(trim, "```"))
 				out.WriteString(rule + "\n")
 			}
 			continue
@@ -41,7 +64,8 @@ func RenderMarkdown(src string, th Theme, width int) string {
 			if strings.HasPrefix(line, fenceIndent) {
 				line = line[len(fenceIndent):]
 			}
-			out.WriteString(th.FG256(th.Accent, line) + "\n")
+			fenceBuf.WriteString(line)
+			fenceBuf.WriteString("\n")
 			continue
 		}
 		// Headings.
