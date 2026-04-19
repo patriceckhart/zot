@@ -189,6 +189,17 @@ func (i *Interactive) Run(ctx context.Context) error {
 		i.ed.SetValue(i.cfg.InitialInput)
 	}
 
+	// If the agent was constructed with a pre-loaded transcript
+	// (--continue, --resume, --session) park the viewport on the
+	// most recent turn so the user lands looking at where the
+	// previous session left off rather than at the bottom of an
+	// already-rendered final reply.
+	if i.agent != nil {
+		if msgs := i.agent.Messages(); len(msgs) > 0 {
+			i.scrollToLastTurn(msgs)
+		}
+	}
+
 	// No credential at startup? Auto-open the login dialog, and mark
 	// the status line. The user can Esc out of the dialog if they
 	// want to dismiss it (e.g. to check /help or /exit first).
@@ -1086,7 +1097,16 @@ func totalTurnsLocked(msgs []provider.Message) int {
 	return n
 }
 
-// applySessionSelection loads the given session via the cli-provided callback.
+// applySessionSelection loads the given session via the cli-provided
+// callback and parks the viewport on the last turn so the user lands
+// looking at where the conversation left off (their last prompt at the
+// top of the chat, the assistant's last reply right below). Older
+// history is one scroll up; pgdn or end snaps to the current tail.
+//
+// Without this, scrollOffset stayed at 0 (pinned to the live tail),
+// which on a long resumed session showed only the last few rows of
+// the final assistant message — the user read that as "only one liner
+// happened, the resume didn't work".
 func (i *Interactive) applySessionSelection(path string) {
 	if i.cfg.LoadSession == nil {
 		i.mu.Lock()
@@ -1100,14 +1120,99 @@ func (i *Interactive) applySessionSelection(path string) {
 		i.mu.Unlock()
 		return
 	}
+
 	i.mu.Lock()
 	i.statusOK = "resumed session: " + path
 	i.statusErr = ""
-	i.scrollOffset = 0
 	i.parkedTurn = 0
 	i.parkedTotal = 0
 	i.view.InvalidateRenderCache()
+	// Pull the freshly-loaded transcript into the view so the anchor
+	// math below sees the post-resume messages, not the empty pre-load
+	// state. redraw() does the same on its next pass; we just front-run
+	// it here to compute the scroll target.
+	if i.agent != nil {
+		i.view.Messages = i.agent.Messages()
+	}
+	msgs := i.view.Messages
 	i.mu.Unlock()
+
+	i.scrollToLastTurn(msgs)
+}
+
+// scrollToLastTurn parks the viewport at the most recent user turn,
+// or at the top if the transcript has no user messages. Used after
+// resume so the user lands looking at where they left off.
+func (i *Interactive) scrollToLastTurn(msgs []provider.Message) {
+	if len(msgs) == 0 {
+		i.mu.Lock()
+		i.scrollOffset = 0
+		i.mu.Unlock()
+		return
+	}
+	// Find the last user message index.
+	lastUser := -1
+	turnNo, totalTurns := 0, 0
+	for idx, m := range msgs {
+		if m.Role == provider.RoleUser {
+			totalTurns++
+			lastUser = idx
+		}
+	}
+	if lastUser < 0 {
+		i.mu.Lock()
+		i.scrollOffset = 0
+		i.mu.Unlock()
+		return
+	}
+	turnNo = totalTurns
+
+	cols := i.lastCols()
+	chat, anchors := i.view.BuildWithAnchors(cols)
+	var row int
+	found := false
+	for _, a := range anchors {
+		if a.MessageIdx == lastUser {
+			row = a.Row
+			found = true
+			break
+		}
+	}
+	if !found {
+		i.mu.Lock()
+		i.scrollOffset = 0
+		i.mu.Unlock()
+		return
+	}
+
+	chatLen := len(chat)
+	page := i.chatPage()
+	if page < 1 {
+		page = 1
+	}
+	offset := chatLen - (row + page)
+	if offset < 0 {
+		offset = 0
+	}
+	maxOffset := chatLen - page
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+
+	i.mu.Lock()
+	i.scrollOffset = offset
+	// Mark the parked-turn footer so the user sees "viewing turn N of
+	// M · pgdn to catch up" — same affordance as /jump. Tells them at
+	// a glance that they're looking at history, not the live tail.
+	if offset > 0 {
+		i.parkedTurn = turnNo
+		i.parkedTotal = totalTurns
+	}
+	i.mu.Unlock()
+	i.invalidate()
 }
 
 func (i *Interactive) applyModelSelection(prov, model string) {
