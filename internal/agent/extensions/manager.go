@@ -448,7 +448,9 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 const readyIdleWindow = 250 * time.Millisecond
 
 func (m *Manager) assumeReadyAfterIdle(ext *Extension) {
+	ext.mu.Lock()
 	last := ext.lastFrameTime
+	ext.mu.Unlock()
 	for {
 		select {
 		case <-ext.readyCh:
@@ -507,8 +509,12 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 		case "register_command":
 			var rc extproto.RegisterCommandFromExt
 			if err := json.Unmarshal(line, &rc); err == nil {
-				ext.commands = append(ext.commands, rc)
+				// Both ext.commands and m.commandIndex are read by
+				// the public Commands() / HasCommand() helpers under
+				// m.mu, so the writes have to take the same lock to
+				// keep the race detector happy.
 				m.mu.Lock()
+				ext.commands = append(ext.commands, rc)
 				if _, exists := m.commandIndex[rc.Name]; !exists {
 					m.commandIndex[rc.Name] = ext
 				}
@@ -529,8 +535,8 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 					continue
 				}
 			}
-			ext.tools = append(ext.tools, rt)
 			m.mu.Lock()
+			ext.tools = append(ext.tools, rt)
 			if _, exists := m.toolIndex[rt.Name]; !exists {
 				m.toolIndex[rt.Name] = ext
 			}
