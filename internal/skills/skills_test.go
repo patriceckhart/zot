@@ -108,12 +108,15 @@ func TestVisibleSkillsHidesBuiltins(t *testing.T) {
 
 func TestSystemPromptAddendum(t *testing.T) {
 	skills := []*Skill{
-		{Name: "a", Description: "Do A."},
-		{Name: "b", Description: "Do B."},
+		{Name: "built-a", Description: "Do A.", Builtin: true},
+		{Name: "user-b", Description: "Do B.", Path: "/tmp/skills/user-b/SKILL.md"},
 	}
 	out := SystemPromptAddendum(skills)
-	if want := "- a — Do A.\n- b — Do B.\n"; !contains(out, want) {
-		t.Errorf("addendum missing entries:\n%s", out)
+	if !contains(out, "- built-a [builtin]: Do A.\n") {
+		t.Errorf("builtin entry missing or wrong:\n%s", out)
+	}
+	if !contains(out, "- user-b [/tmp/skills/user-b/SKILL.md]: Do B.\n") {
+		t.Errorf("user entry missing path pointer:\n%s", out)
 	}
 }
 

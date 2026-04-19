@@ -155,22 +155,54 @@ func scanUserSkills(zotHome, cwd, userHome string, seen map[string]*Skill) []err
 // SystemPromptAddendum returns the text to append to the system
 // prompt when at least one skill is loaded. Empty string if none.
 //
-// Format kept short and explicit so the model reliably calls the
-// `skill` tool with a name from the list rather than guessing.
+// The format is deliberately compact: name, one-line description,
+// and a source pointer telling the model where the full body
+// lives. Built-in skills show "builtin" since their markdown is
+// embedded in the zot binary and not on the filesystem; user
+// skills show their SKILL.md path (shortened with ~ for HOME).
+//
+// Loading still goes through the `skill` tool with just the name.
+// The pointer is there so the model can (a) mention the source
+// honestly in explanations and (b) distinguish between built-ins
+// and user-authored instruction sets when reasoning about trust.
 func SystemPromptAddendum(skills []*Skill) string {
 	if len(skills) == 0 {
 		return ""
 	}
+	home, _ := os.UserHomeDir()
 	var sb strings.Builder
-	sb.WriteString("Available skills (call the `skill` tool with one of these names to load full instructions):\n")
+	sb.WriteString("Available skills (call the `skill` tool with a name from this list to load its full instructions):\n")
 	for _, s := range skills {
 		desc := strings.TrimSpace(s.Description)
 		if desc == "" {
 			desc = "(no description)"
 		}
-		fmt.Fprintf(&sb, "- %s — %s\n", s.Name, desc)
+		pointer := skillSourcePointer(s, home)
+		fmt.Fprintf(&sb, "- %s [%s]: %s\n", s.Name, pointer, desc)
 	}
 	return sb.String()
+}
+
+// skillSourcePointer returns a short tag describing where a skill
+// originates. Built-ins are tagged "builtin" because their markdown
+// is embedded in the zot binary and not reachable through the
+// filesystem. User skills are tagged with their SKILL.md path,
+// collapsed to use ~ for the user home when possible.
+func skillSourcePointer(s *Skill, home string) string {
+	if s == nil {
+		return "unknown"
+	}
+	if s.Builtin {
+		return "builtin"
+	}
+	p := s.Path
+	if p == "" {
+		return "unknown"
+	}
+	if home != "" && strings.HasPrefix(p, home+string(filepath.Separator)) {
+		return "~" + p[len(home):]
+	}
+	return p
 }
 
 // FindByName returns the skill with the given name, or nil.
