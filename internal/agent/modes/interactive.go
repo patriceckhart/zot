@@ -537,9 +537,17 @@ func (i *Interactive) redraw() {
 		catalog := i.cfg.Extensions.Commands()
 		extra := make([]slashCommand, 0, len(catalog))
 		for _, c := range catalog {
+			// The popup renders extension commands under a dedicated
+			// "── extensions ───" divider, so the description doesn't
+			// need to repeat the source. If the description is empty,
+			// fall back to the extension name so the row isn't blank.
+			desc := c.Description
+			if strings.TrimSpace(desc) == "" {
+				desc = "(" + c.Extension + ")"
+			}
 			extra = append(extra, slashCommand{
 				Name: "/" + c.Name,
-				Desc: c.Description + "  (ext: " + c.Extension + ")",
+				Desc: desc,
 			})
 		}
 		i.suggest.SetExtra(extra)
