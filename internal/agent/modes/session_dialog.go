@@ -25,9 +25,21 @@ type sessionDialogAction struct {
 
 func newSessionDialog() *sessionDialog { return &sessionDialog{} }
 
-// Open populates the dialog from root + cwd and shows it.
+// Open populates the dialog from root + cwd and shows it. Empty
+// sessions (zero messages) are filtered out so the currently-running
+// session, a freshly-opened one that hasn't received a prompt yet,
+// and any stale empties that haven't been pruned yet all stay out
+// of the picker. Resuming an empty session is a no-op anyway.
 func (d *sessionDialog) Open(root, cwd string) {
-	d.sessions = core.DescribeSessions(root, cwd)
+	all := core.DescribeSessions(root, cwd)
+	filtered := make([]core.SessionSummary, 0, len(all))
+	for _, s := range all {
+		if s.MessageCount == 0 {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+	d.sessions = filtered
 	d.cursor = 0
 	d.active = true
 }
