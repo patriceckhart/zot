@@ -152,11 +152,18 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 		// Stream the partial assistant text through the same markdown
 		// renderer used for finalised messages so code fences, diffs,
 		// lists, and inline styles look the same while streaming and
-		// don't suddenly reflow when the turn ends.
-		md := RenderMarkdown(v.Streaming, v.Theme, width)
+		// don't suddenly reflow when the turn ends. Indent matches the
+		// finalised assistant body in renderMessage so the column
+		// stays consistent across the stream/finalise transition.
+		const indent = "    "
+		inner := width - len(indent)
+		if inner < 1 {
+			inner = width
+		}
+		md := RenderMarkdown(v.Streaming, v.Theme, inner)
 		for _, l := range strings.Split(md, "\n") {
-			for _, w := range wrapLine(l, width, "") {
-				out = append(out, w)
+			for _, w := range wrapLine(l, inner, "") {
+				out = append(out, indent+w)
 			}
 		}
 		out = append(out, "")
@@ -306,28 +313,37 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 			switch b := c.(type) {
 			case provider.TextBlock:
 				for _, l := range strings.Split(b.Text, "\n") {
-					for _, w := range wrapLine(l, width-2, "  ") {
-						lines = append(lines, "  "+v.Theme.FG256(v.Theme.Muted, w))
+					for _, w := range wrapLine(l, width-2, "    ") {
+						lines = append(lines, "    "+v.Theme.FG256(v.Theme.Muted, w))
 					}
 				}
 			case provider.ImageBlock:
-				lines = append(lines, "  "+v.Theme.FG256(v.Theme.Muted, fmt.Sprintf("[image %s, %d bytes]", b.MimeType, len(b.Data))))
+				lines = append(lines, "    "+v.Theme.FG256(v.Theme.Muted, fmt.Sprintf("[image %s, %d bytes]", b.MimeType, len(b.Data))))
 			}
 		}
 	case provider.RoleAssistant:
 		header := v.Theme.FG256(v.Theme.Assistant, "▍ zot")
 		lines = append(lines, header)
+		// Indent assistant body the same 4 cells the user body uses,
+		// so the conversation column lines up vertically. The width
+		// passed into the markdown renderer / wrap is reduced by the
+		// indent so long lines wrap inside the indented column.
+		const indent = "    "
+		inner := width - len(indent)
+		if inner < 1 {
+			inner = width
+		}
 		for _, c := range m.Content {
 			switch b := c.(type) {
 			case provider.TextBlock:
-				md := RenderMarkdown(b.Text, v.Theme, width)
+				md := RenderMarkdown(b.Text, v.Theme, inner)
 				for _, l := range strings.Split(md, "\n") {
-					for _, w := range wrapLine(l, width, "") {
-						lines = append(lines, w)
+					for _, w := range wrapLine(l, inner, "") {
+						lines = append(lines, indent+w)
 					}
 				}
 			case provider.ToolCallBlock:
-				lines = append(lines, v.Theme.FG256(v.Theme.Tool, "▸ "+b.Name+" "+shortArgs(b.Arguments)))
+				lines = append(lines, indent+v.Theme.FG256(v.Theme.Tool, "▸ "+b.Name+" "+shortArgs(b.Arguments)))
 			}
 		}
 	case provider.RoleTool:
@@ -855,18 +871,27 @@ func StatusBar(p StatusBarParams) []string {
 		stats = append(stats, th.FG256(ctxColor, ctx))
 	}
 
-	left := fmt.Sprintf(" (%s) %s ", p.Provider, p.Model)
-	middle := " " + strings.Join(stats, " ") + " "
+	// Layout uses exactly 2 spaces of horizontal padding everywhere:
+	//   2 spaces  (openai) gpt-5.4  $0.000 (sub) 0.0%/400k  ~/Sites/zot
+	// matches the editor prompt's left inset so the bar lines up
+	// vertically with the conversation column.
+	const pad = "  " // 2 spaces
+
+	left := fmt.Sprintf("(%s) %s", p.Provider, p.Model)
+	middle := strings.Join(stats, " ")
 
 	var leftBuilder strings.Builder
 	if p.BusyPrefix != "" {
-		leftBuilder.WriteString(th.FG256(th.Accent, " "+p.BusyPrefix+" "))
-		leftBuilder.WriteString("  ")
+		leftBuilder.WriteString(th.FG256(th.Accent, pad+p.BusyPrefix))
+		leftBuilder.WriteString(pad)
 	}
+	leftBuilder.WriteString(pad)
 	leftBuilder.WriteString(th.FG256(th.Muted, left))
-	leftBuilder.WriteString("  ")
-	// `middle` already has colorized context segments; wrap the rest in muted.
-	leftBuilder.WriteString(th.FG256(th.Muted, middle))
+	if middle != "" {
+		leftBuilder.WriteString(pad)
+		// `middle` already has colorized context segments; wrap the rest in muted.
+		leftBuilder.WriteString(th.FG256(th.Muted, middle))
+	}
 
 	cwd := shortenHome(p.CWD)
 	if p.Locked && cwd != "" {
@@ -879,8 +904,7 @@ func StatusBar(p StatusBarParams) []string {
 	}
 
 	cwdRendered := th.FG256(th.Muted, cwd)
-	const gap = "   " // exactly three spaces between stats and cwd
-	combined := primary + gap + cwdRendered
+	combined := primary + pad + cwdRendered
 
 	// Wrap to a second line when the combined width would overflow.
 	if p.Cols > 0 && visibleWidth(combined) > p.Cols {
