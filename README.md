@@ -223,7 +223,7 @@ frames containing images are full-repainted (no differential diff) to prevent st
 
 you can keep typing while the agent is working. pressing enter during a turn queues the message instead of interrupting: it shows up above the status bar as `▸ sliding in: <text>` and is delivered as the next user turn the moment the current one finishes. queue as many as you want; they run in order. esc / ctrl+c cancels the active turn and drops the queue so a runaway turn doesn't flood you with stale follow-ups.
 
-slash commands still require an idle state — typing `/something` during a turn prints `cancel the current turn (esc) before running a slash command`.
+slash commands also work while the agent is busy. read-only ones (`/help`, `/jump`, `/sessions`, `/lock`, `/unlock`, `/exit`) take effect immediately. destructive ones (`/clear`, `/compact`, `/login`, `/logout`, `/model`) cancel the active turn first and then run.
 
 ## keys (interactive mode)
 

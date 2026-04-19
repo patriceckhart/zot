@@ -739,17 +739,19 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				i.mu.Unlock()
 				return false
 			}
-			// Slash commands need a quiet state (they may swap models,
-			// compact the transcript, open dialogs, etc). Refuse while
-			// a turn is in flight — esc / ctrl+c cancels first.
-			i.mu.Lock()
-			busy := i.busy
-			i.mu.Unlock()
-			if busy {
-				i.mu.Lock()
-				i.statusErr = "cancel the current turn (esc) before running a slash command"
-				i.mu.Unlock()
-				return false
+			// Slash commands run regardless of busy state. Commands that
+			// would mutate the transcript or replace the agent (/clear,
+			// /compact, /logout, /login, /model) cancel the active turn
+			// first and wait for the goroutine to wind down so they don't
+			// race with a streaming response. Safe commands (/help,
+			// /jump, /sessions, /lock, /unlock, /exit) run immediately
+			// without disturbing the active turn.
+			head := text
+			if idx := strings.IndexAny(text, " \t"); idx >= 0 {
+				head = text[:idx]
+			}
+			if slashCancelsTurn(head) {
+				i.cancelAndWaitForIdle()
 			}
 			return i.runSlash(ctx, text)
 		}
@@ -943,6 +945,38 @@ func (i *Interactive) startOAuthFlow(provider string) {
 // applyModelSelection switches the active model (and provider, if the
 // new model belongs to a different one). It rebuilds the underlying
 // client when needed so the provider wire-protocol matches.
+// cancelAndWaitForIdle cancels the active turn (if any) and blocks
+// briefly until the turn goroutine has updated i.busy = false. Used
+// before destructive slash commands so transcript-mutating work
+// (/clear, /compact, /logout, /login completion, cross-provider
+// /model swap) doesn't race with the still-running stream.
+//
+// The wait is bounded; if the turn doesn't release within the timeout
+// we proceed anyway. Worst case is a brief overlap that the agent's
+// own mutex protects against.
+func (i *Interactive) cancelAndWaitForIdle() {
+	i.mu.Lock()
+	busy := i.busy
+	cancel := i.cancelTurn
+	i.mu.Unlock()
+	if !busy {
+		return
+	}
+	if cancel != nil {
+		cancel()
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		i.mu.Lock()
+		done := !i.busy
+		i.mu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // openJumpDialog builds a /jump picker from the current transcript.
 // If the user typed "/jump foo" with a filter and it matches exactly
 // one turn, jump there directly without showing the dialog.

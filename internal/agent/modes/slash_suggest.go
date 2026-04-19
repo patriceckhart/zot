@@ -12,6 +12,19 @@ type slashCommand struct {
 	Desc string
 }
 
+// slashCancelsTurn reports whether the named slash command, when run
+// while a turn is in flight, requires the active turn to be cancelled
+// first. The destructive commands (those that mutate the transcript
+// or rebuild the agent) need a quiet state; the rest run alongside
+// the streaming response without trouble.
+func slashCancelsTurn(head string) bool {
+	switch head {
+	case "/clear", "/compact", "/logout", "/login", "/model":
+		return true
+	}
+	return false
+}
+
 // slashCatalog lists every slash command the interactive mode handles.
 // Keep in sync with runSlash().
 var slashCatalog = []slashCommand{
