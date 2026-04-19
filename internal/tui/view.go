@@ -983,7 +983,11 @@ func StatusBar(p StatusBarParams) []string {
 
 	var leftBuilder strings.Builder
 	if p.BusyPrefix != "" {
-		leftBuilder.WriteString(th.FG256(th.Accent, pad+p.BusyPrefix))
+		// Don't re-color the payload itself — the caller already set
+		// fg colors on the spinner glyph, message, and elapsed
+		// segments. Wrapping the whole thing here would override
+		// those choices. The pad itself needs no color (it's spaces).
+		leftBuilder.WriteString(pad + p.BusyPrefix)
 		leftBuilder.WriteString(pad)
 	}
 	leftBuilder.WriteString(pad)

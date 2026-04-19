@@ -298,8 +298,8 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 		// rotating funny-line, elapsed seconds, then a muted hint
 		// that esc cancels.
 		prefix := fmt.Sprintf("%s %s · %s",
-			th.FG256(th.Spinner, d.spin.Frame()),
-			th.FG256(th.Spinner, d.spin.Message()),
+			th.FG256(th.Assistant, d.spin.Frame()),
+			th.FG256(th.Assistant, d.spin.Message()),
 			th.FG256(th.Muted, d.spin.Elapsed().String()),
 		)
 		out = append(out, "  "+prefix+"  "+th.FG256(th.Muted, "(esc cancels)"))

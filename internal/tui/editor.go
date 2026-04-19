@@ -780,23 +780,18 @@ func wrapLine(s string, width int, cont string) []string {
 			continue
 		}
 
-		// Token overflows. If current line has content, break first.
-		if cur.Len() > 0 && !(firstLine && curW == 0) {
-			// Drop trailing whitespace on the line we're about to break.
-			trimmed := strings.TrimRight(cur.String(), " \t")
-			cur.Reset()
-			cur.WriteString(trimmed)
-			curW = visibleWidth(trimmed)
-			newLine()
-			// Re-process this token on the fresh line.
-			if tk.space {
-				continue
-			}
-		}
-
-		// Token is longer than the available width on an empty line.
-		// Split the token itself rune-by-rune.
-		if tk.width > width-curW {
+		// Token overflows.
+		//
+		// If the token on its own is wider than what fits on a
+		// continuation line (width - contW), it'll need to be split
+		// rune-by-rune no matter what. In that case, don't break
+		// first: let the rune-split start right here at the current
+		// column and wrap naturally. Breaking first would strand the
+		// prompt (on firstLine) or the cont indent (on later lines)
+		// on a row by itself, which is the drag-drop-long-path bug.
+		if tk.width > width-contW {
+			// Rune-by-rune starting from the current column. newLine()
+			// inside handles wrapping and re-indents.
 			for _, r := range tk.text {
 				rw := runewidth.RuneWidth(r)
 				if curW+rw > width {
@@ -805,10 +800,23 @@ func wrapLine(s string, width int, cont string) []string {
 				cur.WriteRune(r)
 				curW += rw
 			}
-		} else {
-			cur.WriteString(tk.text)
-			curW += tk.width
+			continue
 		}
+
+		// Token fits on a fresh continuation line; break first, then
+		// emit it whole.
+		if cur.Len() > 0 && !(firstLine && curW == 0) {
+			trimmed := strings.TrimRight(cur.String(), " \t")
+			cur.Reset()
+			cur.WriteString(trimmed)
+			curW = visibleWidth(trimmed)
+			newLine()
+			if tk.space {
+				continue
+			}
+		}
+		cur.WriteString(tk.text)
+		curW += tk.width
 	}
 
 	if cur.Len() > 0 || len(out) == 0 {

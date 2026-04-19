@@ -611,12 +611,16 @@ func (i *Interactive) redraw() {
 		suggest = i.suggest.Render(currentInput, i.cfg.Theme, cols)
 	}
 
-	// Busy prefix shown at the far left of the status bar.
+	// Busy prefix shown at the far left of the status bar. The
+	// spinner glyph and its funny-line message share the `zot`
+	// label colour (Theme.Assistant) so the whole "who's working"
+	// band reads at a glance. Elapsed time stays muted because it
+	// drifts every second and shouldn't grab focus.
 	var busyPrefix string
 	if i.busy {
 		busyPrefix = fmt.Sprintf("%s %s · %s",
-			i.cfg.Theme.FG256(i.cfg.Theme.Spinner, i.spin.Frame()),
-			i.cfg.Theme.FG256(i.cfg.Theme.Spinner, i.spin.Message()),
+			i.cfg.Theme.FG256(i.cfg.Theme.Assistant, i.spin.Frame()),
+			i.cfg.Theme.FG256(i.cfg.Theme.Assistant, i.spin.Message()),
 			i.cfg.Theme.FG256(i.cfg.Theme.Muted, i.spin.Elapsed().String()),
 		)
 	}

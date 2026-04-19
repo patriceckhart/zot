@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mattn/go-runewidth"
 	"github.com/patriceckhart/zot/internal/tui"
 )
 
@@ -40,23 +41,31 @@ func renderHelpBlock(th tui.Theme, width int) []string {
 		width = 20
 	}
 
+	// Label column width uses display cells, not byte length, so
+	// single-cell multibyte runes (← → · …) don't over-count and leave
+	// a raggedy right edge. `len("alt+← / alt+→")` is 17 bytes but
+	// only 13 cells; padding off byte length would either overshoot
+	// (setting labelWidth too high and wasting space on every row)
+	// or undershoot (never padding that row because len >= labelWidth
+	// already, leaving its description mis-aligned).
 	labelWidth := 14
 	for _, c := range slashCatalog {
-		if n := len(c.Name); n > labelWidth {
+		if n := runewidth.StringWidth(c.Name); n > labelWidth {
 			labelWidth = n
 		}
 	}
 	for _, k := range helpKeyRows {
-		if n := len(k[0]); n > labelWidth {
+		if n := runewidth.StringWidth(k[0]); n > labelWidth {
 			labelWidth = n
 		}
 	}
 
 	pad := func(s string) string {
-		if len(s) >= labelWidth {
+		w := runewidth.StringWidth(s)
+		if w >= labelWidth {
 			return s
 		}
-		return s + strings.Repeat(" ", labelWidth-len(s))
+		return s + strings.Repeat(" ", labelWidth-w)
 	}
 
 	var out []string
