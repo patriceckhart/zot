@@ -97,19 +97,19 @@ var confirmOptions = []struct {
 	decision core.ConfirmDecision
 }{
 	{
-		label:    "yes  (run this call)",
+		label:    "yes (run this call)",
 		decision: core.ConfirmDecision{Allow: true},
 	},
 	{
-		label:    "yes, always this tool  (skip prompts for this tool for the rest of the session)",
+		label:    "yes, always this tool (skip prompts for this tool for the rest of the session)",
 		decision: core.ConfirmDecision{Allow: true, RememberTool: true},
 	},
 	{
-		label:    "yes, always  (skip all prompts for the rest of the session)",
+		label:    "yes, always (skip all prompts for the rest of the session)",
 		decision: core.ConfirmDecision{Allow: true, RememberAll: true},
 	},
 	{
-		label:    "no  (refuse and let the model try something else)",
+		label:    "no (refuse and let the model try something else)",
 		decision: core.ConfirmDecision{Allow: false, Reason: "user declined"},
 	},
 }

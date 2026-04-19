@@ -183,6 +183,68 @@ func Run(rawArgs []string, version string) error {
 
 // ---- print / json modes: require credentials, run single-shot ----
 
+// nonInteractiveExtHooks is the HostHooks impl used by print / json
+// modes. They have no TUI, so notify / display go to stderr and
+// submit / insert are no-ops (the extension can't steer a
+// single-shot run once it's in flight anyway).
+type nonInteractiveExtHooks struct{}
+
+func (nonInteractiveExtHooks) Notify(ext, level, message string) {
+	fmt.Fprintf(os.Stderr, "[%s] %s: %s\n", ext, level, message)
+}
+func (nonInteractiveExtHooks) Submit(string)          {}
+func (nonInteractiveExtHooks) Insert(string)          {}
+func (nonInteractiveExtHooks) Display(string, string) {}
+
+// setupNonInteractiveExtensions loads --ext paths and (unless
+// --no-ext) runs discovery. Returns the manager so the caller can
+// wire tools into the resolved registry, and a cleanup closure to
+// defer. Mirrors the interactive-mode setup minus the TUI hooks.
+func setupNonInteractiveExtensions(ctx context.Context, args Args, r *Resolved, version string) (*extensions.Manager, func()) {
+	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, nonInteractiveExtHooks{})
+	for _, e := range extMgr.LoadExplicit(ctx, args.Exts) {
+		fmt.Fprintln(os.Stderr, "extension load:", e)
+	}
+	if !args.NoExt {
+		for _, e := range extMgr.Discover(ctx) {
+			fmt.Fprintln(os.Stderr, "extension load:", e)
+		}
+	}
+	extMgr.WaitForReady(3 * time.Second)
+	r.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
+	extMgr.EmitEvent(extproto.EventFromHost{Event: "session_start"})
+	return extMgr, func() { extMgr.Stop(2 * time.Second) }
+}
+
+// wireNonInteractiveAgentExtHooks installs the same BeforeToolExecute
+// / BeforeTurn / BeforeAssistantMessage / OnEvent hooks the
+// interactive path wires up, so extensions get their normal
+// event-intercept surface in print / json / rpc flows too.
+func wireNonInteractiveAgentExtHooks(ctx context.Context, ag *core.Agent, extMgr *extensions.Manager) {
+	if ag == nil || extMgr == nil {
+		return
+	}
+	ag.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
+		res := extMgr.InterceptToolCall(ctx, call.ID, call.Name, call.Arguments)
+		if res.Block {
+			return false, res.Reason, nil
+		}
+		return true, "", res.ModifiedArgs
+	}
+	ag.BeforeTurn = func(step int) (bool, string) {
+		res := extMgr.InterceptTurnStart(ctx, step)
+		return !res.Block, res.Reason
+	}
+	ag.BeforeAssistantMessage = func(text string) (bool, string, string) {
+		res := extMgr.InterceptAssistantMessage(ctx, text)
+		if res.Block {
+			return false, res.Reason, ""
+		}
+		return true, "", res.ReplaceText
+	}
+	ag.OnEvent = func(ev core.AgentEvent) { fanoutAgentEvent(extMgr, ev) }
+}
+
 func runPrintMode(ctx context.Context, args Args, version string) error {
 	if args.NoYolo {
 		fmt.Fprintln(os.Stderr, "warning: --no-yolo has no effect in print mode (no interactive prompt available); tools will run without confirmation")
@@ -191,7 +253,11 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 	if err != nil {
 		return err
 	}
+	extMgr, stopExt := setupNonInteractiveExtensions(ctx, args, &r, version)
+	defer stopExt()
+
 	ag := r.NewAgent()
+	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 	sess, _ := openOrCreateSession(args, r, ag, version)
 	defer sess.Close()
 
@@ -218,7 +284,11 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 	if err != nil {
 		return err
 	}
+	extMgr, stopExt := setupNonInteractiveExtensions(ctx, args, &r, version)
+	defer stopExt()
+
 	ag := r.NewAgent()
+	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 	sess, _ := openOrCreateSession(args, r, ag, version)
 	defer sess.Close()
 
