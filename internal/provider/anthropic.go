@@ -184,11 +184,16 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 	// System prompt assembly differs between api-key and OAuth modes.
 	// OAuth requests MUST begin with the Claude Code identity line or
 	// Anthropic rejects them (429 rate_limit_error with zero tokens used).
+	//
+	// Cache budget: anthropic caps cache_control to 4 breakpoints per
+	// request. We spend them on (system prompt) + (tools tail) + (last
+	// two user messages). The claude-code identity line stays uncached
+	// because it's a few tokens and gets folded into the larger prefix
+	// implicitly anyway.
 	if c.oauthTok != "" {
 		out.System = []anthSystemBlock{{
-			Type:         "text",
-			Text:         claudeCodeIdentity,
-			CacheControl: &anthCacheCtrl{Type: "ephemeral"},
+			Type: "text",
+			Text: claudeCodeIdentity,
 		}}
 		if req.System != "" {
 			out.System = append(out.System, anthSystemBlock{
