@@ -342,6 +342,9 @@ func (s *slashSuggester) Render(input string, th tui.Theme, width int) []string 
 		}
 	}
 	lines = append(lines, th.FG256(th.Muted, "  ↑/↓ navigate · tab complete · enter run"))
+	// Blank row separates the popup from the status bar / editor
+	// below it so the hint line doesn't visually crash into them.
+	lines = append(lines, "")
 	return lines
 }
 
