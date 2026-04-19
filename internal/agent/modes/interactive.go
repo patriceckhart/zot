@@ -1135,6 +1135,20 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.statusErr = ""
 		i.mu.Unlock()
 	default:
+		// Last-resort fallback: try the extension manager. Built-in
+		// cases above always win; this branch only fires for slash
+		// commands the extension manager registered. Same routing as
+		// the editor's submit-handler dispatch path so the autocomplete
+		// "enter on highlighted suggestion" flow also works.
+		extName := strings.TrimPrefix(parts[0], "/")
+		if i.cfg.Extensions != nil && i.cfg.Extensions.HasCommand(extName) {
+			rest := ""
+			if len(parts) > 1 {
+				rest = strings.Join(parts[1:], " ")
+			}
+			go i.invokeExtensionCommand(ctx, extName, rest)
+			return false
+		}
 		i.mu.Lock()
 		i.statusErr = "unknown command: " + parts[0]
 		i.mu.Unlock()
