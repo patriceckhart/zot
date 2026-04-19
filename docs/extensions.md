@@ -61,6 +61,25 @@ zot ext install ./hello-py
 
 Restart `zot`, type `/hellopy`, the agent greets you. Done.
 
+## Built-in extensions
+
+**zot ships with no extensions installed by default.** A fresh `zot install` (or `go install`) gives you a clean agent. Extensions are entirely opt-in: you install (or `--ext` for one run) only the ones you want.
+
+The `examples/extensions/` directory in the repo is reference code, not a default install set. To use any of those:
+
+```bash
+# go-based examples need a build first
+cd path/to/zot/examples/extensions/hello && go build -o hello .
+
+# install (copies to $ZOT_HOME/extensions/hello/)
+zot ext install path/to/zot/examples/extensions/hello
+
+# or load straight from the repo for one zot session
+zot --ext path/to/zot/examples/extensions/hello
+```
+
+Nothing is auto-installed and nothing reaches out to the network without your explicit action.
+
 ## Layout & discovery
 
 zot scans two directories on startup, in this order:

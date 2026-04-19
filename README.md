@@ -7,7 +7,7 @@ yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 - four tools (read, write, edit, bash).
 - three run modes (interactive tui, print, json).
 - built-in telegram bot.
-- extensions in any language via subprocess + json-rpc; see [docs/extensions.md](docs/extensions.md).
+- extensions in any language via subprocess + json-rpc — none installed by default; opt in with `zot ext install` or `zot --ext`. see [docs/extensions.md](docs/extensions.md).
 - reusable instructions via `SKILL.md` files; see [docs/skills.md](docs/skills.md).
 - no community atm.
 
