@@ -29,34 +29,52 @@ var helpKeyRows = [][2]string{
 // frameHeader/frameRule helpers so the rules match every other block
 // in the tui (tool results, code fences, dialogs) — full terminal width
 // in the muted colour.
+//
+// Slash commands and keybindings share the same label column width so
+// every description starts at the same x-position, regardless of which
+// section it lives in. The width is computed from the longest label
+// across BOTH lists, with a minimum of 14 cells so changes to either
+// list don't compress the column visually.
 func renderHelpBlock(th tui.Theme, width int) []string {
 	if width < 20 {
 		width = 20
 	}
+
+	labelWidth := 14
+	for _, c := range slashCatalog {
+		if n := len(c.Name); n > labelWidth {
+			labelWidth = n
+		}
+	}
+	for _, k := range helpKeyRows {
+		if n := len(k[0]); n > labelWidth {
+			labelWidth = n
+		}
+	}
+
+	pad := func(s string) string {
+		if len(s) >= labelWidth {
+			return s
+		}
+		return s + strings.Repeat(" ", labelWidth-len(s))
+	}
+
 	var out []string
 	out = append(out, frameHeader(th, "zot help", width))
 
 	// commands section
 	out = append(out, tui.Bold("slash commands:"))
 	for _, c := range slashCatalog {
-		name := c.Name
-		if len(name) < 10 {
-			name = name + strings.Repeat(" ", 10-len(name))
-		}
 		out = append(out, fmt.Sprintf("  %s  %s",
-			th.FG256(th.Accent, name),
+			th.FG256(th.Accent, pad(c.Name)),
 			th.FG256(th.Muted, c.Desc)))
 	}
 
 	// keys section
 	out = append(out, "", tui.Bold("keys:"))
 	for _, k := range helpKeyRows {
-		name := k[0]
-		if len(name) < 14 {
-			name = name + strings.Repeat(" ", 14-len(name))
-		}
 		out = append(out, fmt.Sprintf("  %s  %s",
-			th.FG256(th.Accent, name),
+			th.FG256(th.Accent, pad(k[0])),
 			th.FG256(th.Muted, k[1])))
 	}
 
