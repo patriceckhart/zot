@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"net/url"
 	"strings"
 
 	"github.com/mattn/go-runewidth"
@@ -124,11 +125,190 @@ func (e *Editor) HandleKey(k Key) (submit bool) {
 	case KeyCtrlW:
 		e.deleteWord()
 	case KeyPaste:
-		e.insert(k.Paste)
+		// macOS Terminal / iTerm / Ghostty deliver drag-dropped files
+		// as bracketed-paste text. Detect that pattern and wrap the
+		// path(s) in single quotes so the agent sees them as one
+		// argument and any spaces / parens in the filename don't
+		// confuse downstream tool calls.
+		e.insert(quotePastedFilePaths(k.Paste))
 	case KeyEsc:
 		e.Clear()
 	}
 	return false
+}
+
+// quotePastedFilePaths returns paste with any drag-dropped file
+// paths wrapped in single quotes. Heuristics:
+//
+//   - one line only; multi-line text is returned unchanged so we
+//     never touch a real paste of code.
+//   - whitespace-separated tokens are inspected one by one. A token
+//     that looks like a filesystem path (absolute, ~/relative, or
+//     file:// URL) is normalised and re-quoted; everything else is
+//     left exactly as the user dropped it.
+//   - terminal-style backslash escapes ("foo\ bar.png") are folded
+//     back to literal characters before quoting, since wrapping in
+//     single quotes makes them unnecessary.
+//   - file:// URLs are URL-decoded and stripped of the scheme so
+//     the agent receives a plain filesystem path.
+//   - if a path contains a literal single quote, it's escaped using
+//     the standard '\” splice.
+//
+// Pastes that don't contain any path-shaped tokens are returned
+// unchanged.
+func quotePastedFilePaths(paste string) string {
+	if paste == "" || strings.ContainsRune(paste, '\n') {
+		return paste
+	}
+	trimmed := strings.TrimSpace(paste)
+	if trimmed == "" {
+		return paste
+	}
+
+	// Split on runs of whitespace, preserving the original separators
+	// so multi-file drops keep their spacing on rebuild. Backslash
+	// before a space is treated as part of the preceding token, since
+	// macOS Terminal escapes spaces in dropped paths that way.
+	tokens := splitPreservingSeparators(paste)
+	changed := false
+	for i, tk := range tokens {
+		if tk.isSpace {
+			continue
+		}
+		if p, ok := normalisePathToken(tk.text); ok {
+			tokens[i].text = singleQuote(p)
+			changed = true
+		}
+	}
+	if !changed {
+		return paste
+	}
+	var out strings.Builder
+	out.Grow(len(paste) + 8)
+	for _, tk := range tokens {
+		out.WriteString(tk.text)
+	}
+	return out.String()
+}
+
+type pasteToken struct {
+	text    string
+	isSpace bool
+}
+
+// splitPreservingSeparators splits s into runs of whitespace and
+// runs of non-whitespace, keeping the separator runs intact so a
+// rebuild via concatenation reproduces the original string exactly.
+// A backslash immediately followed by a space ("\ ") is treated as
+// part of the preceding non-whitespace run, since that's how macOS
+// Terminal escapes spaces in drag-dropped file paths.
+func splitPreservingSeparators(s string) []pasteToken {
+	runes := []rune(s)
+	var out []pasteToken
+	var buf strings.Builder
+	inSpace := false
+	flush := func() {
+		if buf.Len() == 0 {
+			return
+		}
+		out = append(out, pasteToken{text: buf.String(), isSpace: inSpace})
+		buf.Reset()
+	}
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		isEscapedSpace := r == '\\' && i+1 < len(runes) && (runes[i+1] == ' ' || runes[i+1] == '\t')
+		rSpace := !isEscapedSpace && (r == ' ' || r == '\t')
+		if buf.Len() == 0 {
+			inSpace = rSpace
+		} else if rSpace != inSpace {
+			flush()
+			inSpace = rSpace
+		}
+		if isEscapedSpace {
+			// Skip the backslash; emit the literal space as part of
+			// this non-whitespace token. normalisePathToken's
+			// unescapeBackslashes is now redundant for this path but
+			// stays in case some other source escapes other chars.
+			buf.WriteRune(runes[i+1])
+			i++
+			continue
+		}
+		buf.WriteRune(r)
+	}
+	flush()
+	return out
+}
+
+// normalisePathToken decides whether tk is a drag-dropped path and,
+// if so, returns the cleaned-up path string.
+func normalisePathToken(tk string) (string, bool) {
+	// Strip pre-existing surrounding quotes; we'll re-quote consistently.
+	if n := len(tk); n >= 2 {
+		if (tk[0] == '\'' && tk[n-1] == '\'') || (tk[0] == '"' && tk[n-1] == '"') {
+			tk = tk[1 : n-1]
+		}
+	}
+
+	// file:// URL form: decode and strip the scheme.
+	if strings.HasPrefix(tk, "file://") {
+		decoded, err := url.PathUnescape(strings.TrimPrefix(tk, "file://"))
+		if err != nil {
+			return "", false
+		}
+		if decoded == "" || decoded[0] != '/' {
+			return "", false
+		}
+		return decoded, true
+	}
+
+	// Looks-like-a-path heuristic: starts with /, ~, ~/. Must contain
+	// at least one path separator after the prefix (otherwise a bare
+	// "/" or "~" gets quoted, which is never what the user meant).
+	if !strings.HasPrefix(tk, "/") && !strings.HasPrefix(tk, "~") {
+		return "", false
+	}
+	if !strings.ContainsAny(tk[1:], "/.") {
+		return "", false
+	}
+	unescaped := unescapeBackslashes(tk)
+	if strings.ContainsAny(unescaped, "|;&$`<>") {
+		return "", false
+	}
+	return unescaped, true
+}
+
+// unescapeBackslashes turns "foo\ bar" into "foo bar". Terminal
+// drag-and-drop on macOS uses backslash escaping by default; quoting
+// makes that unnecessary.
+func unescapeBackslashes(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var out strings.Builder
+	out.Grow(len(s))
+	prev := false
+	for _, r := range s {
+		if prev {
+			out.WriteRune(r)
+			prev = false
+			continue
+		}
+		if r == '\\' {
+			prev = true
+			continue
+		}
+		out.WriteRune(r)
+	}
+	if prev {
+		out.WriteRune('\\')
+	}
+	return out.String()
+}
+
+// singleQuote wraps s in single quotes, escaping any embedded single
+// quote using the splice idiom: 'foo'\”bar' for foo'bar.
+func singleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func (e *Editor) insert(s string) {

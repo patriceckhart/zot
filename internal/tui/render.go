@@ -40,11 +40,19 @@ func NewRenderer(out io.Writer) *Renderer {
 }
 
 // Resize tells the renderer the current terminal size.
+//
+// On a real size change we also issue a clear-screen so the next Draw
+// starts from a blank slate. Without the clear, characters from the
+// old (wider) layout linger past the new right edge and rows from
+// before the new bottom hang around as garbage.
 func (r *Renderer) Resize(cols, rows int) {
 	if cols != r.cols || rows != r.rows {
 		r.cols = cols
 		r.rows = rows
 		r.prev = nil
+		if r.out != nil {
+			_, _ = io.WriteString(r.out, SeqClearScreen)
+		}
 	}
 }
 

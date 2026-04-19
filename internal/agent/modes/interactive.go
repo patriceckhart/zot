@@ -187,7 +187,13 @@ func (i *Interactive) Run(ctx context.Context) error {
 	term.OnResize(func() {
 		c, r := term.Size()
 		i.rend.Resize(c, r)
-		i.invalidate()
+		// Force an immediate redraw on resize. The throttled invalidate
+		// path is fine for animation, but a window resize is a discrete
+		// user action where any visible delay (or stale frame) reads as
+		// brokenness. redraw() is mutex-safe; the worst that happens is
+		// a duplicate paint if the throttler is mid-flight, which is
+		// invisible.
+		i.redraw()
 	})
 
 	if i.cfg.InitialInput != "" {
@@ -448,7 +454,15 @@ func (i *Interactive) redraw() {
 	}
 
 	if i.statusOK != "" {
-		chat = append(chat, i.cfg.Theme.FG256(i.cfg.Theme.Tool, "✓ "+i.statusOK), "")
+		// Hard-truncate the OK line to the visible width so a long
+		// session path ("resumed session: /Users/.../sessions/...")
+		// doesn't overflow past the right edge and look broken on a
+		// narrow terminal.
+		line := "✓ " + i.statusOK
+		if cols > 4 && len(line) > cols {
+			line = line[:cols-1] + "…"
+		}
+		chat = append(chat, i.cfg.Theme.FG256(i.cfg.Theme.Tool, line), "")
 	}
 
 	// Dialogs (login or model picker) render between chat and the editor.
