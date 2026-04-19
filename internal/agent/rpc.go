@@ -54,7 +54,7 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 	for _, e := range discoveryErrs {
 		fmt.Fprintln(os.Stderr, "extension load:", e)
 	}
-	extMgr.WaitForReady(500 * time.Millisecond)
+	extMgr.WaitForReady(3 * time.Second)
 	defer extMgr.Stop(2 * time.Second)
 	r.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
 

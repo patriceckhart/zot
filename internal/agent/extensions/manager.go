@@ -272,9 +272,26 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	ext.logFile = logFile
 	fmt.Fprintf(logFile, "\n[zot] starting %s/%s at %s\n", ext.Manifest.Name, ext.Manifest.Version, time.Now().Format(time.RFC3339))
 
+	// Exec resolution rules:
+	//   - absolute path:                 used as-is.
+	//   - starts with "." (./ or ../):  resolved relative to ext.Dir.
+	//   - bare name (no path separator): looked up via $PATH so
+	//                                    "node", "npx", "python3",
+	//                                    "tsx" etc. work without
+	//                                    forcing absolute paths.
+	//   - other relative form (foo/bar): resolved relative to ext.Dir.
 	execPath := ext.Manifest.Exec
-	if !filepath.IsAbs(execPath) {
+	switch {
+	case filepath.IsAbs(execPath):
+		// keep
+	case strings.HasPrefix(execPath, "."+string(filepath.Separator)) ||
+		strings.HasPrefix(execPath, ".."+string(filepath.Separator)) ||
+		execPath == "." || execPath == "..":
 		execPath = filepath.Join(ext.Dir, execPath)
+	case strings.ContainsRune(execPath, filepath.Separator):
+		execPath = filepath.Join(ext.Dir, execPath)
+	default:
+		// bare name: leave as-is for exec.LookPath via exec.Command.
 	}
 	cmd := exec.CommandContext(ctx, execPath, ext.Manifest.Args...)
 	cmd.Dir = ext.Dir

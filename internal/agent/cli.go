@@ -262,7 +262,12 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// frames before we build the agent's tool registry. Half a second
 	// is plenty for any extension that's actually well-behaved; ones
 	// that don't send a ready frame eat the full grace and proceed.
-	extMgr.WaitForReady(500 * time.Millisecond)
+	// 3s is the per-extension grace period for the ready frame.
+	// Native binaries are instant; runtimes like `npx tsx` take ~1.5s
+	// from cold cache. The wait is tight only for extensions that
+	// haven't sent ready by then; ones that signalled earlier release
+	// the wait immediately.
+	extMgr.WaitForReady(3 * time.Second)
 	defer extMgr.Stop(2 * time.Second)
 
 	extToolAdapter := &extToolAdapter{mgr: extMgr}
