@@ -13,6 +13,7 @@ import (
 	"github.com/patriceckhart/zot/internal/auth"
 	"github.com/patriceckhart/zot/internal/core"
 	"github.com/patriceckhart/zot/internal/provider"
+	"github.com/patriceckhart/zot/internal/skills"
 	"github.com/patriceckhart/zot/internal/tui"
 )
 
@@ -84,6 +85,11 @@ type InteractiveConfig struct {
 	// slash commands. Commands declared by extensions are looked up
 	// AFTER the built-in catalog so a built-in name always wins.
 	Extensions *extensions.Manager
+
+	// SkillSnapshot, if non-nil, returns the current list of
+	// discovered SKILL.md files. Re-invoked each time /skills opens
+	// so the picker reflects edits made during the session.
+	SkillSnapshot func() []*skills.Skill
 }
 
 // Interactive is the TUI chat loop.
@@ -133,6 +139,7 @@ type Interactive struct {
 	sessionDialog *sessionDialog
 	jumpDialog    *jumpDialog
 	btwDialog     *btwDialog
+	skillsDialog  *skillsDialog
 	suggest       *slashSuggester
 	spin          *spinner
 
@@ -181,6 +188,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		sessionDialog: newSessionDialog(),
 		jumpDialog:    newJumpDialog(),
 		btwDialog:     newBtwDialog(),
+		skillsDialog:  newSkillsDialog(),
 		suggest:       newSlashSuggester(),
 		spin:          newSpinner(),
 	}
@@ -363,7 +371,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// and the AfterFunc-driven invalidate got dropped on a
 			// full channel.
 			drainPending()
-			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() {
+			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() {
 				requestRedraw() // keep the spinner / dialog animation moving
 			}
 		}
@@ -517,6 +525,8 @@ func (i *Interactive) redraw() {
 		dialog = i.jumpDialog.Render(i.cfg.Theme, cols)
 	case i.btwDialog.Active():
 		dialog = i.btwDialog.Render(i.cfg.Theme, cols)
+	case i.skillsDialog.Active():
+		dialog = i.skillsDialog.Render(i.cfg.Theme, cols)
 	}
 
 	// Slash-command autocomplete: popup above the status line, only
@@ -764,6 +774,16 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return false
 		}
 		i.btwDialog.HandleKey(k, i.invalidate)
+		return false
+	}
+	if i.skillsDialog.Active() {
+		if k.Kind == tui.KeyCtrlC {
+			i.skillsDialog.Close()
+			i.invalidate()
+			return false
+		}
+		i.skillsDialog.HandleKey(k)
+		i.invalidate()
 		return false
 	}
 
@@ -1108,6 +1128,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.openJumpDialog(parts[1:])
 	case "/btw":
 		i.openBtwDialog(parts[1:])
+	case "/skills":
+		i.openSkillsDialog()
 	case "/compact":
 		i.runCompact(ctx, false)
 	case "/lock":
@@ -1286,6 +1308,18 @@ func (i *Interactive) openBtwDialog(args []string) {
 	}
 	seed := strings.TrimSpace(strings.Join(args, " "))
 	i.btwDialog.Open(i.cfg.Theme, i.agent, i.agent.System, i.cfg.Model, seed)
+	i.invalidate()
+}
+
+// openSkillsDialog opens the skill inspector. The picker reflects
+// whatever SkillSnapshot returns at call time, so edits to a
+// SKILL.md made during a session show up on the next /skills.
+func (i *Interactive) openSkillsDialog() {
+	var list []*skills.Skill
+	if i.cfg.SkillSnapshot != nil {
+		list = i.cfg.SkillSnapshot()
+	}
+	i.skillsDialog.Open(list)
 	i.invalidate()
 }
 

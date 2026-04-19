@@ -14,6 +14,7 @@ import (
 	"github.com/patriceckhart/zot/internal/auth"
 	"github.com/patriceckhart/zot/internal/core"
 	"github.com/patriceckhart/zot/internal/provider"
+	"github.com/patriceckhart/zot/internal/skills"
 	"github.com/patriceckhart/zot/internal/tui"
 )
 
@@ -300,6 +301,13 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		BuildAgentFor:  buildAgentFor,
 		LoadSession:    loadSession,
 		Extensions:     extMgr,
+		SkillSnapshot: func() []*skills.Skill {
+			// Re-discover so the picker reflects edits made during
+			// the session. Cheap; SKILL.md files are small.
+			userHome, _ := os.UserHomeDir()
+			list, _ := skills.Discover(ZotHome(), r.CWD, userHome)
+			return list
+		},
 		PersistModel: func(providerName, model string) {
 			// Update config.json so next launch uses the same pick.
 			cfg, _ := LoadConfig()

@@ -8,6 +8,7 @@ yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 - three run modes (interactive tui, print, json).
 - built-in telegram bot.
 - extensions in any language via subprocess + json-rpc; see [docs/extensions.md](docs/extensions.md).
+- reusable instructions via `SKILL.md` files; see [docs/skills.md](docs/skills.md).
 - no community atm.
 
 ## install

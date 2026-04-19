@@ -2,10 +2,12 @@ package agent
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/patriceckhart/zot/internal/agent/tools"
 	"github.com/patriceckhart/zot/internal/core"
 	"github.com/patriceckhart/zot/internal/provider"
+	"github.com/patriceckhart/zot/internal/skills"
 )
 
 // Resolved is the effective configuration after merging CLI, config, defaults.
@@ -24,6 +26,11 @@ type Resolved struct {
 	SystemPrompt string
 	MaxSteps     int
 	Sandbox      *tools.Sandbox
+
+	// SkillTool is the on-demand skill loader registered with the
+	// agent's tool registry, or nil if no SKILL.md files were
+	// discovered. Exposed so the tui can list / preview skills.
+	SkillTool *skills.Tool
 }
 
 // HasCredential reports whether a credential was resolved.
@@ -91,13 +98,34 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	sandbox := tools.NewSandbox(args.CWD)
 	reg := buildToolRegistry(args, args.CWD, sandbox)
+
+	// Skill discovery: scan project + global locations and, if any
+	// SKILL.md files were found, register the on-demand `skill`
+	// loader tool plus a system-prompt manifest so the model knows
+	// what's available.
+	homeDir, _ := os.UserHomeDir()
+	discovered, _ := skills.Discover(ZotHome(), args.CWD, homeDir)
+	var skillTool *skills.Tool
+	var skillAddendum string
+	if len(discovered) > 0 {
+		skillTool = skills.NewTool(discovered)
+		reg[skillTool.Name()] = skillTool
+		skillAddendum = skills.SystemPromptAddendum(discovered)
+	}
+	_ = skillTool
+
 	summaries := toolSummaries(reg, args)
+
+	append_ := append([]string(nil), args.AppendSystemPrompt...)
+	if skillAddendum != "" {
+		append_ = append(append_, skillAddendum)
+	}
 
 	sys := BuildSystemPrompt(SystemPromptOpts{
 		CWD:    args.CWD,
 		Tools:  summaries,
 		Custom: args.SystemPrompt,
-		Append: args.AppendSystemPrompt,
+		Append: append_,
 	})
 
 	reasoning := firstNonEmpty(args.Reasoning, cfg.Reasoning)
@@ -121,6 +149,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		SystemPrompt: sys,
 		MaxSteps:     max,
 		Sandbox:      sandbox,
+		SkillTool:    skillTool,
 	}, nil
 }
 
