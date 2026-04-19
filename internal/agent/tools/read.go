@@ -31,20 +31,11 @@ type readArgs struct {
 	Limit  int    `json:"limit,omitempty"`
 }
 
-const readSchema = `{
-  "type":"object",
-  "properties":{
-    "path":{"type":"string","description":"Path to the file to read (relative or absolute)"},
-    "offset":{"type":"integer","description":"Line number to start reading from (1-indexed)"},
-    "limit":{"type":"integer","description":"Maximum number of lines to read"}
-  },
-  "required":["path"],
-  "additionalProperties":false
-}`
+const readSchema = `{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["path"]}`
 
 func (t *ReadTool) Name() string { return "read" }
 func (t *ReadTool) Description() string {
-	return "Read the contents of a text file or an image (png/jpg/jpeg/gif/webp). Large files are truncated."
+	return "Read a file. Images (png/jpg/gif/webp) return inline."
 }
 func (t *ReadTool) Schema() json.RawMessage { return json.RawMessage(readSchema) }
 

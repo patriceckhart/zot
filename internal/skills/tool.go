@@ -52,21 +52,12 @@ func (*Tool) Name() string { return "skill" }
 // Description tells the model what this tool does. Kept blunt so the
 // model reliably uses it instead of guessing what a "skill" is.
 func (*Tool) Description() string {
-	return "Load the full body of a named skill. Use this when the user's request matches one of the skills listed in the system prompt; the tool returns the skill's instructions, which you should then follow."
+	return "Load a named skill's instructions. Use when the user's request matches a skill listed above."
 }
 
 // Schema is one required string parameter: the skill name.
 func (*Tool) Schema() json.RawMessage {
-	return json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"name": {
-				"type": "string",
-				"description": "The skill name (must match one listed in the system prompt)."
-			}
-		},
-		"required": ["name"]
-	}`)
+	return json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
 }
 
 // Execute returns the markdown body of the requested skill.

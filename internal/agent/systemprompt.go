@@ -6,8 +6,10 @@ import (
 	"time"
 )
 
-// ToolSummary is a name+one-line description, used when rendering the
-// "available tools" section of the system prompt.
+// ToolSummary is a name+one-line description. Kept for backwards
+// compatibility with callers that still pass tool summaries in; the
+// built-in system prompt no longer lists tools by name, since the
+// tool schemas themselves already reach the model.
 type ToolSummary struct {
 	Name        string
 	Description string
@@ -23,6 +25,22 @@ type SystemPromptOpts struct {
 }
 
 // BuildSystemPrompt constructs the system prompt.
+//
+// Design note: the prompt is intentionally tiny. Every byte here
+// is re-sent on every request (cached after the first, but still
+// counts toward cache-write on turn 1 and live context throughout).
+// We avoid:
+//
+//   - Listing the tool names and descriptions (the provider sends
+//     the tool schemas separately; duplicating them costs tokens
+//     for zero benefit, the model already sees the tools).
+//   - Repeating generic coding-assistant advice the frontier models
+//     already internalise ("always read before editing", "prefer
+//     minimal diffs", "don't apologize"). These were free tokens
+//     on older models; they are pure overhead now.
+//
+// Anything the user explicitly needs can still be added via
+// --system-prompt, --append-system-prompt, or $ZOT_HOME/SYSTEM.md.
 func BuildSystemPrompt(o SystemPromptOpts) string {
 	if o.Now.IsZero() {
 		o.Now = time.Now()
@@ -39,10 +57,6 @@ func BuildSystemPrompt(o SystemPromptOpts) string {
 		sb.WriteString(o.Custom)
 	} else {
 		sb.WriteString(defaultIdentity)
-		sb.WriteString("\n\n")
-		sb.WriteString(renderToolsSection(o.Tools))
-		sb.WriteString("\n")
-		sb.WriteString(defaultGuidelines)
 	}
 
 	for _, a := range o.Append {
@@ -57,26 +71,4 @@ func BuildSystemPrompt(o SystemPromptOpts) string {
 	return sb.String()
 }
 
-func renderToolsSection(tools []ToolSummary) string {
-	if len(tools) == 0 {
-		return "No tools are available in this session."
-	}
-	var sb strings.Builder
-	sb.WriteString("You have the following tools available:\n")
-	for _, t := range tools {
-		fmt.Fprintf(&sb, "- %s: %s\n", t.Name, t.Description)
-	}
-	return sb.String()
-}
-
-const defaultIdentity = `You are zot, a lightweight terminal coding assistant.
-You help a developer by reading files, writing files, editing files, and running shell commands.
-You are concise. You explain your plan briefly, then act. You do not apologize or hedge.`
-
-const defaultGuidelines = `Operating guidelines:
-- Prefer "edit" over "write" for existing files. Always read a file before editing it.
-- Before running "bash", explain what the command will do in one short sentence.
-- Avoid destructive commands (rm -rf, dropping tables, force-pushing, etc.) unless the user explicitly asks.
-- Keep shell commands non-interactive (pass -y / --yes where needed; pipe "yes" if required).
-- When unsure about a file's contents or structure, read it first rather than guess.
-- When you are done, reply with a short summary of what you changed and any commands the user should run.`
+const defaultIdentity = `You are zot, a lightweight terminal coding agent. Be concise, act on the user's request directly, and reply with a short summary when done.`

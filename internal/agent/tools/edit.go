@@ -28,31 +28,11 @@ type editArgs struct {
 	Edits []editOp `json:"edits"`
 }
 
-const editSchema = `{
-  "type":"object",
-  "properties":{
-    "path":{"type":"string","description":"Path to the file to edit (relative or absolute)"},
-    "edits":{
-      "type":"array",
-      "description":"One or more targeted replacements. Each oldText must match exactly once in the original file.",
-      "items":{
-        "type":"object",
-        "properties":{
-          "oldText":{"type":"string","description":"Exact text to replace. Must be unique in the file."},
-          "newText":{"type":"string","description":"Replacement text."}
-        },
-        "required":["oldText","newText"],
-        "additionalProperties":false
-      }
-    }
-  },
-  "required":["path","edits"],
-  "additionalProperties":false
-}`
+const editSchema = `{"type":"object","properties":{"path":{"type":"string"},"edits":{"type":"array","items":{"type":"object","properties":{"oldText":{"type":"string"},"newText":{"type":"string"}},"required":["oldText","newText"]}}},"required":["path","edits"]}`
 
 func (t *EditTool) Name() string { return "edit" }
 func (t *EditTool) Description() string {
-	return "Edit an existing file via exact-match replacements. Preserves line endings and BOM."
+	return "Edit a file via exact-match replacements. Each oldText must be unique in the file."
 }
 func (t *EditTool) Schema() json.RawMessage { return json.RawMessage(editSchema) }
 

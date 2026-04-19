@@ -22,19 +22,11 @@ type writeArgs struct {
 	Content string `json:"content"`
 }
 
-const writeSchema = `{
-  "type":"object",
-  "properties":{
-    "path":{"type":"string","description":"Path to the file to write (relative or absolute)"},
-    "content":{"type":"string","description":"File contents. Overwrites any existing file."}
-  },
-  "required":["path","content"],
-  "additionalProperties":false
-}`
+const writeSchema = `{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}`
 
 func (t *WriteTool) Name() string { return "write" }
 func (t *WriteTool) Description() string {
-	return "Write content to a file. Creates parent directories. Overwrites existing files."
+	return "Write a file. Creates parent dirs. Overwrites."
 }
 func (t *WriteTool) Schema() json.RawMessage { return json.RawMessage(writeSchema) }
 

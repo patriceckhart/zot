@@ -36,18 +36,10 @@ type bashArgs struct {
 	Timeout int    `json:"timeout,omitempty"`
 }
 
-const bashSchema = `{
-  "type":"object",
-  "properties":{
-    "command":{"type":"string","description":"Shell command to execute."},
-    "timeout":{"type":"integer","description":"Timeout in seconds. No default timeout."}
-  },
-  "required":["command"],
-  "additionalProperties":false
-}`
+const bashSchema = `{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]}`
 
 func (t *BashTool) Name() string            { return "bash" }
-func (t *BashTool) Description() string     { return "Run a shell command. stdout and stderr are merged." }
+func (t *BashTool) Description() string     { return "Run a shell command. stdout+stderr merged." }
 func (t *BashTool) Schema() json.RawMessage { return json.RawMessage(bashSchema) }
 
 func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
