@@ -54,6 +54,13 @@ type Skill struct {
 	// Shown in the /skills picker.
 	Source string
 
+	// Builtin marks skills that ship inside the zot binary. They are
+	// fully active for the model (system-prompt manifest + skill
+	// tool) but hidden from user-facing surfaces like the /skills
+	// picker so users only see skills they actually installed or
+	// shipped in their project.
+	Builtin bool
+
 	// AllowedTools and Permissions are parsed for forward-
 	// compatibility but NOT enforced in this version. They appear
 	// in the skill body so the model can self-regulate.
@@ -61,11 +68,31 @@ type Skill struct {
 	Permissions  map[string][]string
 }
 
+// VisibleSkills returns the subset of skills users should see in
+// pickers, /skills, and other interactive surfaces. Built-ins are
+// hidden because they're implementation detail; the model still
+// loads them through the system-prompt manifest + the skill tool.
+func VisibleSkills(in []*Skill) []*Skill {
+	out := make([]*Skill, 0, len(in))
+	for _, s := range in {
+		if s == nil || s.Builtin {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // Discover walks every supported location, parses each SKILL.md, and
 // returns the merged skill set. First-match-wins per name; the order
 // matches the priority list in the package doc. Errors per skill are
 // returned alongside the partial result so a single broken file
 // doesn't suppress the rest.
+//
+// Built-in skills (compiled into the zot binary) are added LAST so
+// any user-installed skill with the same name shadows the built-in.
+// That lets users customise the help text by dropping their own
+// SKILL.md with the same name into $ZOT_HOME/skills/<name>/.
 func Discover(zotHome, cwd, userHome string) ([]*Skill, []error) {
 	var errs []error
 	seen := map[string]*Skill{}
@@ -95,6 +122,14 @@ func Discover(zotHome, cwd, userHome string) ([]*Skill, []error) {
 			seen[s.Name] = s
 		}
 	}
+	// Built-ins fill in any name the user didn't already provide.
+	for _, s := range loadBuiltins() {
+		if _, dup := seen[s.Name]; dup {
+			continue
+		}
+		seen[s.Name] = s
+	}
+
 	out := make([]*Skill, 0, len(seen))
 	for _, s := range seen {
 		out = append(out, s)

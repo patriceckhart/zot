@@ -67,8 +67,12 @@ func TestDiscoverProjectAndGlobalPriorityAndDedup(t *testing.T) {
 	if len(errs) > 0 {
 		t.Fatalf("errs: %v", errs)
 	}
-	if len(skills) != 2 {
-		t.Fatalf("expected 2 skills, got %d (%v)", len(skills), skills)
+	// Expect the two user skills + every built-in shipped with the
+	// binary (currently the write-zot-extension authoring guide).
+	builtins := loadBuiltins()
+	want := 2 + len(builtins)
+	if len(skills) != want {
+		t.Fatalf("expected %d skills (2 user + %d built-in), got %d (%v)", want, len(builtins), len(skills), skills)
 	}
 	shared := FindByName(skills, "shared")
 	if shared == nil || shared.Description != "project version" {
@@ -76,6 +80,29 @@ func TestDiscoverProjectAndGlobalPriorityAndDedup(t *testing.T) {
 	}
 	if FindByName(skills, "global-only") == nil {
 		t.Errorf("global-only skill missing")
+	}
+	// At least one built-in should have made it through.
+	for _, b := range builtins {
+		if FindByName(skills, b.Name) == nil {
+			t.Errorf("built-in skill %q missing from Discover output", b.Name)
+		}
+	}
+}
+
+func TestVisibleSkillsHidesBuiltins(t *testing.T) {
+	in := []*Skill{
+		{Name: "user-one"},
+		{Name: "built-one", Builtin: true},
+		{Name: "user-two"},
+	}
+	out := VisibleSkills(in)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 visible skills, got %d (%v)", len(out), out)
+	}
+	for _, s := range out {
+		if s.Builtin {
+			t.Errorf("built-in %q leaked into visible set", s.Name)
+		}
 	}
 }
 

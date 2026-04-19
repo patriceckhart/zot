@@ -409,10 +409,14 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		Extensions:     extMgr,
 		SkillSnapshot: func() []*skills.Skill {
 			// Re-discover so the picker reflects edits made during
-			// the session. Cheap; SKILL.md files are small.
+			// the session. Cheap; SKILL.md files are small. Filter
+			// out built-in skills — they're hidden from user-facing
+			// surfaces because they're implementation detail; the
+			// model still sees them through the system-prompt
+			// manifest and the skill tool.
 			userHome, _ := os.UserHomeDir()
 			list, _ := skills.Discover(ZotHome(), r.CWD, userHome)
-			return list
+			return skills.VisibleSkills(list)
 		},
 		PersistModel: func(providerName, model string) {
 			// Update config.json so next launch uses the same pick.
