@@ -60,6 +60,15 @@ func (a *Agent) Cost() provider.Usage {
 	return a.cost.Total
 }
 
+// SeedCost sets the cumulative usage as a baseline before the first
+// turn runs. Used when transferring state from another agent (model
+// or provider switch) so the running cost meter doesn't reset to 0.
+func (a *Agent) SeedCost(u provider.Usage) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cost.Total = u
+}
+
 // Prompt sends a user message and runs the agent loop until the model
 // stops or an error occurs. Events are delivered via sink in order.
 // sink must not block the caller for long; buffer as needed.

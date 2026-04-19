@@ -1316,6 +1316,17 @@ func (i *Interactive) applyModelSelection(prov, model string) {
 		i.mu.Unlock()
 		return
 	}
+	// Snapshot the current transcript and cumulative usage BEFORE we
+	// build the replacement agent so we can hand them off. Without
+	// this the user perceives the entire session as wiped on a
+	// cross-provider /model swap.
+	var carryMsgs []provider.Message
+	var carryCost provider.Usage
+	if i.agent != nil {
+		carryMsgs = i.agent.Messages()
+		carryCost = i.agent.Cost()
+	}
+
 	ag, p, md, err := i.cfg.BuildAgentFor(m.Provider, m.ID)
 	if err != nil {
 		i.mu.Lock()
@@ -1323,12 +1334,27 @@ func (i *Interactive) applyModelSelection(prov, model string) {
 		i.mu.Unlock()
 		return
 	}
+
+	// Replay the transcript and seed the cost on the freshly-built
+	// agent. Messages travel cleanly between providers because they
+	// use the same provider.Message shape; tool-call ids are local
+	// to a turn so cross-provider continuation never confuses the
+	// new model (it just sees the assistant's reply, no orphan
+	// tool_use blocks because /model swaps are gated to idle state).
+	if len(carryMsgs) > 0 {
+		ag.SetMessages(carryMsgs)
+	}
+	ag.SeedCost(carryCost)
+
 	i.mu.Lock()
 	i.agent = ag
 	i.cfg.Provider = p
 	i.cfg.Model = md
 	i.statusOK = "switched to " + p + " / " + md
 	i.statusErr = ""
+	// Render cache keys are width+content based, so the new agent's
+	// identical messages will reuse the existing entries. Nothing
+	// to invalidate.
 	i.mu.Unlock()
 	if i.cfg.PersistModel != nil {
 		i.cfg.PersistModel(p, md)
