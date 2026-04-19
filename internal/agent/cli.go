@@ -259,9 +259,13 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	for _, e := range extMgr.LoadExplicit(ctx, args.Exts) {
 		fmt.Fprintln(os.Stderr, "extension load:", e)
 	}
-	discoveryErrs := extMgr.Discover(ctx)
-	for _, e := range discoveryErrs {
-		fmt.Fprintln(os.Stderr, "extension load:", e)
+	// --no-ext skips the global + project-local discovery scan;
+	// explicit --ext paths above are still honoured so you can run
+	// "only this extension" with --no-ext --ext ./x.
+	if !args.NoExt {
+		for _, e := range extMgr.Discover(ctx) {
+			fmt.Fprintln(os.Stderr, "extension load:", e)
+		}
 	}
 	// Wait briefly for extensions to flush their initial register_tool
 	// frames before we build the agent's tool registry. Half a second

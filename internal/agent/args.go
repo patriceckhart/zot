@@ -44,6 +44,11 @@ type Args struct {
 	// the same name.
 	Exts []string
 
+	// NoExt disables extension discovery + spawn entirely for this
+	// run. --ext PATH still works (explicit beats implicit) so you
+	// can run "with only this one extension" via --no-ext --ext PATH.
+	NoExt bool
+
 	ListModels bool
 	Help       bool
 	Version    bool
@@ -135,6 +140,8 @@ func ParseArgs(in []string) (Args, error) {
 			// extension.json. Resolved to absolute later so paths like
 			// "." survive a later cwd change.
 			a.Exts = append(a.Exts, v)
+		case "--no-ext", "--no-extensions":
+			a.NoExt = true
 		case "--reasoning":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -237,6 +244,9 @@ flags:
   -e, --ext PATH               load an extension from PATH for this run
                                (repeatable; takes precedence over
                                installed extensions of the same name)
+  --no-ext                     skip extension discovery for this run
+                               (--ext PATH still works on top, so
+                               --no-ext --ext ./x runs only x)
 
   --max-steps N                agent loop iteration cap (default 50)
   --list-models                print known models and exit

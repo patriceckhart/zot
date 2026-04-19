@@ -317,10 +317,8 @@ func (s *slashSuggester) Render(input string, th tui.Theme, width int) []string 
 	var lines []string
 	for i, c := range m {
 		if c.Header {
-			// Breathing room before group dividers — a blank row
-			// makes the boundary read at a glance, and the popup
-			// only ever has at most one or two groups so the cost
-			// is negligible.
+			// Breathing room around group dividers — a blank row
+			// before AND after makes the boundary read at a glance.
 			lines = append(lines, "")
 			rule := strings.Repeat("─", width)
 			label := "── " + c.Name + " "
@@ -328,6 +326,7 @@ func (s *slashSuggester) Render(input string, th tui.Theme, width int) []string 
 				rule = label + strings.Repeat("─", width-len(label))
 			}
 			lines = append(lines, th.FG256(th.Muted, rule))
+			lines = append(lines, "")
 			continue
 		}
 		name := c.Name
@@ -341,9 +340,12 @@ func (s *slashSuggester) Render(input string, th tui.Theme, width int) []string 
 			lines = append(lines, th.FG256(th.Muted, plain))
 		}
 	}
+	// Blank row before the hint visually detaches it from the
+	// command list and groups it with its trailing blank.
+	lines = append(lines, "")
 	lines = append(lines, th.FG256(th.Muted, "  ↑/↓ navigate · tab complete · enter run"))
-	// Blank row separates the popup from the status bar / editor
-	// below it so the hint line doesn't visually crash into them.
+	// Blank row after the hint separates the popup from the status
+	// bar / editor below it.
 	lines = append(lines, "")
 	return lines
 }

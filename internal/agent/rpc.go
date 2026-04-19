@@ -53,9 +53,10 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 	for _, e := range extMgr.LoadExplicit(ctx, args.Exts) {
 		fmt.Fprintln(os.Stderr, "extension load:", e)
 	}
-	discoveryErrs := extMgr.Discover(ctx)
-	for _, e := range discoveryErrs {
-		fmt.Fprintln(os.Stderr, "extension load:", e)
+	if !args.NoExt {
+		for _, e := range extMgr.Discover(ctx) {
+			fmt.Fprintln(os.Stderr, "extension load:", e)
+		}
 	}
 	extMgr.WaitForReady(3 * time.Second)
 	defer extMgr.Stop(2 * time.Second)
