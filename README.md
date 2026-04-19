@@ -151,6 +151,16 @@ when the sandbox is on (see `/lock`), all four tools refuse paths outside the se
 - **interactive** (default): chat tui with streaming output, spinner, cost meter, slash commands.
 - **print**: `zot -p "prompt"` runs the agent to completion and writes only the final assistant text to stdout.
 - **json**: `zot --json "prompt"` emits one json object per agent event to stdout, newline-delimited. the schema is documented in `instructions.md` §8.
+- **rpc**: `zot rpc` runs as a long-lived child process; commands in on stdin, events + responses out on stdout, both as ndjson. designed for embedding zot in third-party apps written in any language. see `docs/rpc.md` for the wire schema and `examples/rpc/{python,node,shell,go}` for working clients.
+
+## embedding
+
+two ways to drive zot from another program:
+
+- **go in-process**: import `github.com/patriceckhart/zot/pkg/zotcore`. one `Runtime` per project; `Prompt(ctx, text, images)` returns a channel of `Event`. small example in `examples/sdk/`.
+- **any language out-of-process**: spawn `zot rpc` as a subprocess and exchange newline-delimited json over its stdin/stdout. wire format and event schema in [docs/rpc.md](docs/rpc.md). reference clients live under `examples/rpc/`.
+
+both interfaces share the same event schema, so transcripts captured by one can be replayed through the other.
 
 ## slash commands
 
@@ -235,7 +245,7 @@ slash commands also work while the agent is busy. read-only ones (`/help`, `/jum
 | `alt+enter` | newline |
 | `tab` | complete the selected slash command |
 | `esc` | cancel the current turn (while busy); clear input (while idle) |
-| `ctrl+c` | exit when idle; cancel the current turn while busy |
+| `ctrl+c` | clear the input + queue (or cancel the current turn). press again within 2s to exit. |
 | `ctrl+d` | exit on empty input |
 | `ctrl+l` | redraw the screen |
 | `ctrl+o` | expand / collapse long tool results |

@@ -22,6 +22,12 @@ func Run(rawArgs []string, version string) error {
 	if handled, err := runBotCommand(rawArgs, version); handled {
 		return err
 	}
+	// `zot rpc` is shorthand for `zot --rpc` so third-party apps can
+	// spawn the binary with a clean argv. Strip the leading 'rpc'
+	// token and let the rest flow through the normal arg parser.
+	if len(rawArgs) > 0 && rawArgs[0] == "rpc" {
+		rawArgs = append([]string{"--rpc"}, rawArgs[1:]...)
+	}
 
 	args, err := ParseArgs(rawArgs)
 	if err != nil {
@@ -56,6 +62,8 @@ func Run(rawArgs []string, version string) error {
 		return runPrintMode(ctx, args, version)
 	case ModeJSON:
 		return runJSONMode(ctx, args, version)
+	case ModeRPC:
+		return runRPCMode(ctx, args, version)
 	default:
 		return runInteractive(ctx, args, version)
 	}

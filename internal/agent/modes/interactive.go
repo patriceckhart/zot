@@ -135,6 +135,11 @@ type Interactive struct {
 	// don't forget they're looking at history.
 	parkedTurn  int
 	parkedTotal int
+
+	// lastCtrlC is when the user last pressed ctrl+c. The first press
+	// clears the editor / cancels a turn / shows a hint; a second press
+	// within ctrlCExitWindow exits. Mirrors the python-repl convention.
+	lastCtrlC time.Time
 }
 
 // NewInteractive constructs an Interactive from cfg.
@@ -481,7 +486,7 @@ func (i *Interactive) redraw() {
 	if m, err := provider.FindModel(i.cfg.Provider, i.cfg.Model); err == nil {
 		ctxMax = m.ContextWindow
 	}
-	status := tui.StatusBar(tui.StatusBarParams{
+	statusLines := tui.StatusBar(tui.StatusBarParams{
 		Theme:          i.cfg.Theme,
 		Provider:       i.cfg.Provider,
 		Model:          i.cfg.Model,
@@ -515,7 +520,7 @@ func (i *Interactive) redraw() {
 	bottom = append(bottom, dialog...)
 	bottom = append(bottom, suggest...)
 	bottom = append(bottom, queue...)
-	bottom = append(bottom, status)
+	bottom = append(bottom, statusLines...)
 	bottom = append(bottom, edLines...)
 
 	_, rows := i.cfg.Terminal.Size()
@@ -571,7 +576,7 @@ func (i *Interactive) redraw() {
 	frame = append(frame, visibleChat...)
 	frame = append(frame, bottom...)
 
-	cursorRow := len(visibleChat) + len(dialog) + len(suggest) + len(queue) + 1 + curR
+	cursorRow := len(visibleChat) + len(dialog) + len(suggest) + len(queue) + len(statusLines) + curR
 	cursorCol := curC
 	i.rend.Draw(frame, cursorRow, cursorCol)
 }
@@ -595,7 +600,44 @@ func truncateLine(s string, n int) string {
 	return string(runes[:n-1]) + "…"
 }
 
+// ctrlCExitWindow is how long after a ctrl+c press a *second* press
+// will exit instead of just clearing input. Long enough to be
+// deliberate (rules out accidental key chord), short enough that the
+// hint stays meaningful.
+const ctrlCExitWindow = 2 * time.Second
+
+// armCtrlCExit records the timestamp of the current ctrl+c so the next
+// one within ctrlCExitWindow exits.
+func (i *Interactive) armCtrlCExit() {
+	i.mu.Lock()
+	i.lastCtrlC = time.Now()
+	i.mu.Unlock()
+}
+
+// ctrlCExitArmed reports whether a previous ctrl+c was recent enough
+// that another press should now exit.
+func (i *Interactive) ctrlCExitArmed() bool {
+	i.mu.Lock()
+	t := i.lastCtrlC
+	i.mu.Unlock()
+	return !t.IsZero() && time.Since(t) <= ctrlCExitWindow
+}
+
 func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
+	// Any key that isn't ctrl+c invalidates an armed ctrl+c-exit, so
+	// pressing ctrl+c then typing then ctrl+c much later doesn't quit
+	// unexpectedly. The hint message also goes stale; clear it.
+	if k.Kind != tui.KeyCtrlC {
+		i.mu.Lock()
+		if !i.lastCtrlC.IsZero() {
+			i.lastCtrlC = time.Time{}
+			if strings.HasPrefix(i.statusOK, "input cleared") || strings.HasPrefix(i.statusOK, "press ctrl+c") {
+				i.statusOK = ""
+			}
+		}
+		i.mu.Unlock()
+	}
+
 	// Dialogs consume keys while open (except ctrl+c, which always closes them).
 	if i.dialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
@@ -651,11 +693,39 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	// Global keys.
 	switch k.Kind {
 	case tui.KeyCtrlC:
+		// While busy: cancel the active turn (same as esc). The exit
+		// hint stays armed so a quick second ctrl+c after the turn
+		// dies still exits, matching habits from other repls.
 		if i.busy && i.cancelTurn != nil {
 			i.cancelTurn()
+			i.armCtrlCExit()
 			return false
 		}
-		return true
+		// Idle: first press clears the editor (and any queued
+		// follow-up messages); a second press within ctrlCExitWindow
+		// exits. With both an empty editor and no queue the first
+		// press still just arms — require a deliberate double-tap.
+		hadInput := !i.ed.IsEmpty() || len(i.queued) > 0
+		if hadInput {
+			i.ed.Clear()
+			i.suggest.Reset()
+			i.mu.Lock()
+			i.queued = nil
+			i.statusOK = "input cleared — ctrl+c again to exit"
+			i.statusErr = ""
+			i.mu.Unlock()
+			i.armCtrlCExit()
+			return false
+		}
+		if i.ctrlCExitArmed() {
+			return true
+		}
+		i.mu.Lock()
+		i.statusOK = "press ctrl+c again to exit"
+		i.statusErr = ""
+		i.mu.Unlock()
+		i.armCtrlCExit()
+		return false
 	case tui.KeyEsc:
 		// Esc interrupts a running turn. When idle, fall through so the
 		// editor can clear itself.

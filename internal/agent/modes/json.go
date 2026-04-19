@@ -20,7 +20,7 @@ func RunJSON(ctx context.Context, ag *core.Agent, prompt string, images []provid
 
 	var runErr error
 	sink := func(ev core.AgentEvent) {
-		write(eventToJSON(ev))
+		write(EventToJSON(ev))
 	}
 
 	if err := ag.Prompt(ctx, prompt, images, sink); err != nil {
@@ -33,18 +33,19 @@ func RunJSON(ctx context.Context, ag *core.Agent, prompt string, images []provid
 	return runErr
 }
 
-// eventToJSON converts an AgentEvent to a JSON-friendly map. The on-wire
-// schema is deliberately simple and flat.
-func eventToJSON(ev core.AgentEvent) map[string]any {
+// EventToJSON converts an AgentEvent to a JSON-friendly map. The on-wire
+// schema is deliberately simple and flat. Exported so the RPC mode can
+// reuse the same serialisation as `zot --json`.
+func EventToJSON(ev core.AgentEvent) map[string]any {
 	m := map[string]any{"type": ev.Type()}
 	switch e := ev.(type) {
 	case core.EvTurnStart:
 		m["step"] = e.Step
 	case core.EvUserMessage:
-		m["content"] = contentToJSON(e.Message.Content)
+		m["content"] = ContentToJSON(e.Message.Content)
 		m["time"] = e.Message.Time
 	case core.EvAssistantMessage:
-		m["content"] = contentToJSON(e.Message.Content)
+		m["content"] = ContentToJSON(e.Message.Content)
 		m["time"] = e.Message.Time
 	case core.EvTextDelta:
 		m["delta"] = e.Delta
@@ -60,7 +61,7 @@ func eventToJSON(ev core.AgentEvent) map[string]any {
 	case core.EvToolResult:
 		m["id"] = e.ID
 		m["is_error"] = e.Result.IsError
-		m["content"] = contentToJSON(e.Result.Content)
+		m["content"] = ContentToJSON(e.Result.Content)
 	case core.EvUsage:
 		m["input"] = e.Usage.InputTokens
 		m["output"] = e.Usage.OutputTokens
@@ -83,7 +84,10 @@ func eventToJSON(ev core.AgentEvent) map[string]any {
 	return m
 }
 
-func contentToJSON(blocks []provider.Content) []map[string]any {
+// ContentToJSON serialises a transcript content slice into the same
+// shape used in EventToJSON. Exported alongside EventToJSON for the
+// RPC mode.
+func ContentToJSON(blocks []provider.Content) []map[string]any {
 	out := make([]map[string]any, 0, len(blocks))
 	for _, b := range blocks {
 		switch v := b.(type) {
@@ -100,7 +104,7 @@ func contentToJSON(blocks []provider.Content) []map[string]any {
 				"type":     "tool_result",
 				"call_id":  v.CallID,
 				"is_error": v.IsError,
-				"content":  contentToJSON(v.Content),
+				"content":  ContentToJSON(v.Content),
 			})
 		}
 	}

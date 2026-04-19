@@ -795,11 +795,25 @@ type StatusBarParams struct {
 	Cols int // terminal width; drives right-alignment of cwd
 }
 
-// StatusBar builds the single-line status shown above the editor.
-// Format: ↑N ↓N RN WN $cost[(sub)] pct%/ctxMax
-func StatusBar(p StatusBarParams) string {
+// StatusBar builds the status shown above the editor. Returns one or
+// two lines depending on whether the (provider, model, stats, cwd)
+// payload fits the terminal width.
+//
+// Layout:
+//
+//	<busyPrefix>  (provider) model  stats   cwd   <- one line if it fits
+//
+// or, when it doesn't:
+//
+//	<busyPrefix>  (provider) model  stats        <- line 1
+//	cwd                                          <- line 2
+//
+// The right-side gap is a fixed three spaces, not a stretched-to-fill
+// fill. The old "ctrl+c exit - /help" / "esc cancel" hint is gone
+// entirely — the slash-command popup and the queued/sliding-in chips
+// already cover the discoverability of those keybindings.
+func StatusBar(p StatusBarParams) []string {
 	th := p.Theme
-	sep := " - "
 
 	// Token stats: only include each segment when non-zero (pi's
 	// behavior). Keeps the bar compact on brand-new sessions.
@@ -817,11 +831,16 @@ func StatusBar(p StatusBarParams) string {
 		stats = append(stats, fmt.Sprintf("W%s", piFormatTokens(p.Usage.CacheWriteTokens)))
 	}
 
+	// Cost: always show the dollar value computed from token counts,
+	// even on subscription — lets you see what the equivalent api cost
+	// would be (handy for gauging subscription value). Append "(sub)"
+	// only as a hint that no real money moved.
 	var costStr string
-	if p.Subscription {
-		costStr = "$0.000 (sub)"
-	} else if p.Usage.CostUSD > 0 {
+	if p.Usage.CostUSD > 0 || p.Subscription {
 		costStr = fmt.Sprintf("$%.3f", p.Usage.CostUSD)
+		if p.Subscription {
+			costStr += " (sub)"
+		}
 	}
 	if costStr != "" {
 		stats = append(stats, costStr)
@@ -839,13 +858,6 @@ func StatusBar(p StatusBarParams) string {
 	left := fmt.Sprintf(" (%s) %s ", p.Provider, p.Model)
 	middle := " " + strings.Join(stats, " ") + " "
 
-	var hint string
-	if p.Busy {
-		hint = " esc cancel "
-	} else {
-		hint = " ctrl+c exit " + sep + " /help "
-	}
-
 	var leftBuilder strings.Builder
 	if p.BusyPrefix != "" {
 		leftBuilder.WriteString(th.FG256(th.Accent, " "+p.BusyPrefix+" "))
@@ -855,28 +867,26 @@ func StatusBar(p StatusBarParams) string {
 	leftBuilder.WriteString("  ")
 	// `middle` already has colorized context segments; wrap the rest in muted.
 	leftBuilder.WriteString(th.FG256(th.Muted, middle))
-	leftBuilder.WriteString("  ")
-	leftBuilder.WriteString(th.FG256(th.Muted, hint))
 
-	// Compose cwd on the right side. shortenHome abbreviates $HOME to "~".
-	right := shortenHome(p.CWD)
-	if p.Locked && right != "" {
-		right = "· locked · " + right
-	}
-	if right == "" || p.Cols <= 0 {
-		return leftBuilder.String()
+	cwd := shortenHome(p.CWD)
+	if p.Locked && cwd != "" {
+		cwd = "· locked · " + cwd
 	}
 
-	leftRendered := leftBuilder.String()
-	leftWidth := visibleWidth(leftRendered)
-	rightStr := " " + right + " "
-	rightWidth := visibleWidth(rightStr)
-
-	gap := p.Cols - leftWidth - rightWidth
-	if gap < 1 {
-		return leftRendered
+	primary := leftBuilder.String()
+	if cwd == "" {
+		return []string{primary}
 	}
-	return leftRendered + strings.Repeat(" ", gap) + th.FG256(th.Muted, rightStr)
+
+	cwdRendered := th.FG256(th.Muted, cwd)
+	const gap = "   " // exactly three spaces between stats and cwd
+	combined := primary + gap + cwdRendered
+
+	// Wrap to a second line when the combined width would overflow.
+	if p.Cols > 0 && visibleWidth(combined) > p.Cols {
+		return []string{primary, cwdRendered}
+	}
+	return []string{combined}
 }
 
 // piContextUsage renders the "N%/ctxMax" fragment, returning the

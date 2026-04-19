@@ -102,22 +102,25 @@ type anthImageSource struct {
 }
 
 type anthImageBlock struct {
-	Type   string          `json:"type"` // "image"
-	Source anthImageSource `json:"source"`
+	Type         string          `json:"type"` // "image"
+	Source       anthImageSource `json:"source"`
+	CacheControl *anthCacheCtrl  `json:"cache_control,omitempty"`
 }
 
 type anthToolUseBlock struct {
-	Type  string          `json:"type"` // "tool_use"
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
+	Type         string          `json:"type"` // "tool_use"
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Input        json.RawMessage `json:"input"`
+	CacheControl *anthCacheCtrl  `json:"cache_control,omitempty"`
 }
 
 type anthToolResultBlock struct {
-	Type      string          `json:"type"` // "tool_result"
-	ToolUseID string          `json:"tool_use_id"`
-	Content   json.RawMessage `json:"content"` // string or array of blocks
-	IsError   bool            `json:"is_error,omitempty"`
+	Type         string          `json:"type"` // "tool_result"
+	ToolUseID    string          `json:"tool_use_id"`
+	Content      json.RawMessage `json:"content"` // string or array of blocks
+	IsError      bool            `json:"is_error,omitempty"`
+	CacheControl *anthCacheCtrl  `json:"cache_control,omitempty"`
 }
 
 type anthCacheCtrl struct {
@@ -255,7 +258,59 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 		}
 	}
 
+	// Mark the last two user messages with cache_control so anthropic
+	// caches the running conversation prefix. Combined with the system
+	// + tools breakpoints above this is the recommended layout for
+	// multi-turn caching: turn N writes a cache that turn N+1 reads,
+	// dropping per-turn input tokens from "system + history" down to
+	// just the new user message. Anthropic allows up to 4 breakpoints
+	// per request; we use system + tools + 2 conversation = 4.
+	tagUserCache(out.Messages)
+
 	return out, nil
+}
+
+// tagUserCache attaches a cache_control marker to the last block of
+// the most recent (and second-most-recent, if any) user message in
+// msgs. The marker tells the api to checkpoint the prefix at that
+// point so subsequent requests can replay everything up to and
+// including that block as a cache hit.
+func tagUserCache(msgs []anthMessage) {
+	indexes := make([]int, 0, 2)
+	for i := len(msgs) - 1; i >= 0 && len(indexes) < 2; i-- {
+		if msgs[i].Role == "user" {
+			indexes = append(indexes, i)
+		}
+	}
+	for _, idx := range indexes {
+		markLastBlockEphemeral(msgs[idx].Content)
+	}
+}
+
+// markLastBlockEphemeral sets CacheControl on the last entry in blocks
+// regardless of whether it's a text, image, tool_use, or tool_result.
+// Each block type carries its own CacheControl pointer so we type-
+// switch + reassign the slice element.
+func markLastBlockEphemeral(blocks []interface{}) {
+	if len(blocks) == 0 {
+		return
+	}
+	i := len(blocks) - 1
+	cc := &anthCacheCtrl{Type: "ephemeral"}
+	switch v := blocks[i].(type) {
+	case anthTextBlock:
+		v.CacheControl = cc
+		blocks[i] = v
+	case anthImageBlock:
+		v.CacheControl = cc
+		blocks[i] = v
+	case anthToolUseBlock:
+		v.CacheControl = cc
+		blocks[i] = v
+	case anthToolResultBlock:
+		v.CacheControl = cc
+		blocks[i] = v
+	}
 }
 
 func anthropicReasoningBudget(level string) int {

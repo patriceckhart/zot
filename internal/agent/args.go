@@ -13,6 +13,7 @@ const (
 	ModeInteractive Mode = "interactive"
 	ModePrint       Mode = "print"
 	ModeJSON        Mode = "json"
+	ModeRPC         Mode = "rpc"
 )
 
 // Args holds parsed command-line options.
@@ -68,6 +69,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.Mode = ModePrint
 		case "--json":
 			a.Mode = ModeJSON
+		case "--rpc":
+			a.Mode = ModeRPC
 		case "-c", "--continue":
 			a.Continue = true
 		case "-r", "--resume":
@@ -188,6 +191,7 @@ usage:
   zot "prompt"                 interactive, pre-filled prompt
   zot -p "prompt"              print final text, exit
   zot --json "prompt"          newline-delimited json events, exit
+  zot rpc                      json-rpc loop on stdin/stdout (see docs/rpc.md)
   zot telegram-bot setup       configure a telegram bot (from BotFather)
   zot telegram-bot run         foreground bridge (ctrl+c to stop)
   zot telegram-bot start       background bridge (detached)
