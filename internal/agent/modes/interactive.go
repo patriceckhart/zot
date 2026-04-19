@@ -246,6 +246,16 @@ func (i *Interactive) Run(ctx context.Context) error {
 	requestRedraw := func() {
 		since := time.Since(lastRedraw)
 		if since >= redrawMinInterval {
+			// Redrawing right now subsumes any pending redraw, so clear
+			// the throttle state. Without this, a pending flag stays
+			// stuck at true and subsequent invalidate() calls within
+			// redrawMinInterval get dropped — which is exactly how the
+			// final "turn finished" frame went missing until the user
+			// nudged the ui by typing or scrolling.
+			if pendingTimer != nil {
+				pendingTimer.Stop()
+			}
+			pendingRedraw = false
 			lastRedraw = time.Now()
 			i.redraw()
 			return
@@ -257,7 +267,10 @@ func (i *Interactive) Run(ctx context.Context) error {
 		wait := redrawMinInterval - since
 		if pendingTimer == nil {
 			pendingTimer = time.AfterFunc(wait, func() {
-				// Poke the dirty channel; the main loop will call drainPending().
+				// Poke the dirty channel so the main loop wakes and
+				// drains the pending redraw on its own goroutine. We
+				// can't call drainPending here directly — it touches
+				// closure state shared with the main loop.
 				i.invalidate()
 			})
 		} else {
@@ -292,9 +305,15 @@ func (i *Interactive) Run(ctx context.Context) error {
 		case <-i.dirty:
 			requestRedraw()
 		case <-tick.C:
+			// Always drain a pending redraw on the tick. This is the
+			// safety net that catches the case where the dirty channel
+			// was saturated when the final "turn finished" invalidate
+			// fired, or where the throttle scheduled a deferred redraw
+			// and the AfterFunc-driven invalidate got dropped on a
+			// full channel.
+			drainPending()
 			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() {
-				drainPending()
-				requestRedraw()
+				requestRedraw() // keep the spinner / dialog animation moving
 			}
 		}
 	}
