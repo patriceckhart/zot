@@ -28,6 +28,7 @@ package zotext
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,11 +38,60 @@ import (
 	"github.com/patriceckhart/zot/internal/extproto"
 )
 
+func base64Encode(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
+
 // CommandHandler is invoked when the user runs the extension's
 // registered slash command. args is everything the user typed after
 // the command name (already trimmed). Return a Response describing
 // what zot should do next.
 type CommandHandler func(args string) Response
+
+// ToolHandler is invoked when the LLM calls a tool the extension
+// registered. args is the raw JSON object the model produced; the
+// handler is responsible for parsing/validating it. Return a
+// ToolResult describing what zot should send back to the model.
+type ToolHandler func(args json.RawMessage) ToolResult
+
+// ToolResult is the extension's reply to a tool invocation. Build
+// one with TextResult, ImageResult, or directly when you need to
+// combine multiple blocks.
+type ToolResult struct {
+	Content []ToolContent
+	IsError bool
+}
+
+// ToolContent is one block of tool output. Either Text is set, or
+// MimeType+Data (base64-encoded). Use the Text/Image helpers below.
+type ToolContent struct {
+	Type     string // "text" | "image"
+	Text     string
+	MimeType string
+	Data     string // base64
+}
+
+// Text returns a text content block.
+func Text(s string) ToolContent { return ToolContent{Type: "text", Text: s} }
+
+// Image returns an image content block. data must already be
+// base64-encoded; use ImageBytes to encode raw bytes.
+func Image(mimeType, base64Data string) ToolContent {
+	return ToolContent{Type: "image", MimeType: mimeType, Data: base64Data}
+}
+
+// ImageBytes returns an image content block from raw bytes,
+// encoding them to base64 for the wire.
+func ImageBytes(mimeType string, data []byte) ToolContent {
+	return ToolContent{Type: "image", MimeType: mimeType, Data: base64Encode(data)}
+}
+
+// TextResult returns a tool result with one text block, success.
+func TextResult(s string) ToolResult { return ToolResult{Content: []ToolContent{Text(s)}} }
+
+// TextErrorResult returns a tool result with one text block, marked
+// as an error to the model.
+func TextErrorResult(s string) ToolResult {
+	return ToolResult{Content: []ToolContent{Text(s)}, IsError: true}
+}
 
 // Response tells zot how to react to a command invocation. Construct
 // one with Prompt(), Insert(), Display(), or Noop().
@@ -91,10 +141,12 @@ type Extension struct {
 	mu           sync.Mutex
 	commands     map[string]CommandHandler
 	descriptions []descTuple // ordered so register frames arrive in registration order
+	tools        map[string]ToolHandler
+	toolDefs     []toolDef // ordered so register frames arrive in registration order
 
 	// Caps reported in the hello frame. The SDK enables "commands"
-	// automatically; future capabilities (tools, events) will live
-	// here when those phases land.
+	// and "tools" automatically; future capabilities (events) will
+	// live here when those phases land.
 	caps []string
 
 	// hostInfo is filled in once HelloAck arrives.
@@ -103,6 +155,12 @@ type Extension struct {
 
 type descTuple struct {
 	name, desc string
+}
+
+type toolDef struct {
+	name        string
+	description string
+	schema      json.RawMessage
 }
 
 // HostInfo is what the host (zot) tells us in HelloAck. Useful for
@@ -125,7 +183,8 @@ func New(name, version string) *Extension {
 		out:      os.Stdout,
 		stderr:   os.Stderr,
 		commands: map[string]CommandHandler{},
-		caps:     []string{"commands"},
+		tools:    map[string]ToolHandler{},
+		caps:     []string{"commands", "tools"},
 	}
 }
 
@@ -151,6 +210,20 @@ func (e *Extension) Command(name, description string, fn CommandHandler) {
 	e.mu.Lock()
 	e.commands[name] = fn
 	e.descriptions = append(e.descriptions, descTuple{name: name, desc: description})
+	e.mu.Unlock()
+}
+
+// Tool registers an LLM-callable tool. schema is a JSON Schema
+// object describing the tool's args (the same shape Anthropic /
+// OpenAI accept). Call this BEFORE Run(); zot folds extension tools
+// into the agent's registry once the extension's ready frame fires.
+//
+// Naming conflicts with built-in tools (read, write, edit, bash,
+// skill) are silently shadowed by the built-in.
+func (e *Extension) Tool(name, description string, schema json.RawMessage, fn ToolHandler) {
+	e.mu.Lock()
+	e.tools[name] = fn
+	e.toolDefs = append(e.toolDefs, toolDef{name: name, description: description, schema: schema})
 	e.mu.Unlock()
 }
 
@@ -180,6 +253,7 @@ func (e *Extension) Run() error {
 	}
 	e.mu.Lock()
 	descs := append([]descTuple(nil), e.descriptions...)
+	toolDefs := append([]toolDef(nil), e.toolDefs...)
 	e.mu.Unlock()
 	for _, d := range descs {
 		_ = e.send(extproto.RegisterCommandFromExt{
@@ -188,6 +262,19 @@ func (e *Extension) Run() error {
 			Description: d.desc,
 		})
 	}
+	for _, td := range toolDefs {
+		_ = e.send(extproto.RegisterToolFromExt{
+			Type:        "register_tool",
+			Name:        td.name,
+			Description: td.description,
+			Schema:      td.schema,
+		})
+	}
+	// Sentinel: tells the host that all initial registrations have
+	// been flushed and the agent registry can be built. Never block
+	// on this; if the host doesn't act on it, registrations still
+	// land in time for the typical use case.
+	_ = e.send(extproto.ReadyFromExt{Type: "ready"})
 
 	scanner := bufio.NewScanner(e.in)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -233,6 +320,27 @@ func (e *Extension) Run() error {
 				resp := fn(args)
 				e.respond(id, resp)
 			}(ci.ID, fn, ci.Args)
+		case "tool_call":
+			var tc extproto.ToolCallFromHost
+			if err := json.Unmarshal(line, &tc); err != nil {
+				continue
+			}
+			e.mu.Lock()
+			fn := e.tools[tc.Name]
+			e.mu.Unlock()
+			if fn == nil {
+				e.respondTool(tc.ID, TextErrorResult(fmt.Sprintf("no handler for tool %q", tc.Name)))
+				continue
+			}
+			go func(id string, fn ToolHandler, args json.RawMessage) {
+				defer func() {
+					if r := recover(); r != nil {
+						e.respondTool(id, TextErrorResult(fmt.Sprintf("panic: %v", r)))
+					}
+				}()
+				res := fn(args)
+				e.respondTool(id, res)
+			}(tc.ID, fn, tc.Args)
 		case "shutdown":
 			_ = e.send(extproto.ShutdownAckFromExt{Type: "shutdown_ack"})
 			return nil
@@ -256,6 +364,25 @@ func (e *Extension) respond(id string, r Response) {
 		Insert:  r.Insert,
 		Display: r.Display,
 		Error:   r.Error,
+	})
+}
+
+// respondTool serialises a ToolResultFromExt for the given id.
+func (e *Extension) respondTool(id string, r ToolResult) {
+	blocks := make([]extproto.ContentBlock, 0, len(r.Content))
+	for _, c := range r.Content {
+		blocks = append(blocks, extproto.ContentBlock{
+			Type:     c.Type,
+			Text:     c.Text,
+			MimeType: c.MimeType,
+			Data:     c.Data,
+		})
+	}
+	_ = e.send(extproto.ToolResultFromExt{
+		Type:    "tool_result",
+		ID:      id,
+		Content: blocks,
+		IsError: r.IsError,
 	})
 }
 

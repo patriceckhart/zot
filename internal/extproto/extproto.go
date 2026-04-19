@@ -50,6 +50,52 @@ type RegisterCommandFromExt struct {
 	Description string `json:"description,omitempty"`
 }
 
+// RegisterToolFromExt asks zot to expose a tool to the LLM. The
+// schema is a JSON Schema object describing Args; zot doesn't validate
+// the model's arguments against it (the model providers do that), but
+// it must parse as valid JSON or registration is rejected.
+//
+// Tool names live in the same namespace as built-in tools (read,
+// write, edit, bash, skill). Conflicts are silently shadowed by the
+// built-in; check the extension's log for a warning.
+type RegisterToolFromExt struct {
+	Type        string          `json:"type"` // "register_tool"
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Schema      json.RawMessage `json:"schema"`
+}
+
+// ReadyFromExt signals "all initial registrations sent". The host
+// waits for this (with a short timeout) before building the agent's
+// tool registry, so model calls don't race extension tool
+// registration.
+type ReadyFromExt struct {
+	Type string `json:"type"` // "ready"
+}
+
+// ToolResultFromExt is the extension's reply to a ToolCallFromHost.
+// Content[] follows the same shape as elsewhere in zot:
+//
+//	{"type":"text", "text":"..."}
+//	{"type":"image", "mime_type":"image/png", "data":"<base64>"}
+//
+// Set IsError true to mark the tool call as failed; the model sees
+// the content as the error explanation.
+type ToolResultFromExt struct {
+	Type    string         `json:"type"` // "tool_result"
+	ID      string         `json:"id"`
+	Content []ContentBlock `json:"content"`
+	IsError bool           `json:"is_error,omitempty"`
+}
+
+// ContentBlock is one entry in a tool result's content array.
+type ContentBlock struct {
+	Type     string `json:"type"` // "text" | "image"
+	Text     string `json:"text,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+	Data     string `json:"data,omitempty"` // base64
+}
+
 // CommandResponseFromExt is the extension's answer to a
 // CommandInvokedFromHost. Action drives what zot does next:
 //
@@ -105,6 +151,17 @@ type CommandInvokedFromHost struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Args string `json:"args,omitempty"`
+}
+
+// ToolCallFromHost is sent when the LLM invokes a tool the extension
+// registered. Args is the raw JSON object the model produced; the
+// extension is responsible for validating/coercing it. Reply with
+// ToolResultFromExt within the host's tool timeout (default 60s).
+type ToolCallFromHost struct {
+	Type string          `json:"type"` // "tool_call"
+	ID   string          `json:"id"`
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args"`
 }
 
 // ShutdownFromHost asks the extension to clean up and exit. Zot

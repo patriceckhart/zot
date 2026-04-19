@@ -6,9 +6,13 @@ its stdin/stdout. Extensions can be written in **any language** that
 can read and write JSON lines from stdio — Go, TypeScript, Python,
 Rust, shell with `jq`, anything.
 
-This is **phase 1**: slash commands and chat notifications. Future
-phases will add tools the model can call, lifecycle event subscriptions,
-and tool-call interception.
+Two phases shipped so far:
+
+- **Phase 1**: slash commands + chat notifications.
+- **Phase 2**: tools the LLM can call.
+
+Phase 3 (lifecycle event subscriptions + tool-call interception for
+guardrail extensions) is on the roadmap below.
 
 ## Quick start
 
@@ -122,8 +126,8 @@ restarted.
 ## Wire format
 
 All frames are one JSON object per line. Top-level `type` is the
-discriminator. Optional `id` correlates command invocations with
-their responses.
+discriminator. Optional `id` correlates request frames with their
+responses.
 
 ### Extension → host
 
@@ -131,7 +135,7 @@ their responses.
 
 ```json
 {"type":"hello","name":"weather","version":"1.0.0",
- "capabilities":["commands"]}
+ "capabilities":["commands","tools"]}
 ```
 
 #### `register_command`
@@ -139,6 +143,47 @@ their responses.
 ```json
 {"type":"register_command","name":"weather",
  "description":"current weather for a city"}
+```
+
+#### `register_tool`
+
+Registers a tool the LLM can call. `schema` is a JSON Schema object
+describing the tool's args (the same shape Anthropic and OpenAI accept).
+
+```json
+{"type":"register_tool","name":"weather",
+ "description":"Get the current weather for a city.",
+ "schema":{
+   "type":"object",
+   "properties":{"city":{"type":"string"}},
+   "required":["city"]
+ }}
+```
+
+Tool names live in the same namespace as built-in tools (`read`,
+`write`, `edit`, `bash`, `skill`). Conflicts are silently shadowed by
+the built-in.
+
+#### `ready`
+
+Sentinel telling zot "all initial registrations are flushed". Send it
+right after your last `register_*` frame so the host can build the
+agent's tool registry without racing the registration window.
+
+```json
+{"type":"ready"}
+```
+
+#### `tool_result`
+
+Reply to a `tool_call` from the host. `content[]` is a list of
+message blocks; each block is `{"type":"text","text":"..."}` or
+`{"type":"image","mime_type":"image/png","data":"<base64>"}`. Set
+`is_error: true` to mark the call as failed.
+
+```json
+{"type":"tool_result","id":"...",
+ "content":[{"type":"text","text":"Berlin: 16°C, fog"}]}
 ```
 
 #### `command_response` (reply to `command_invoked`)
@@ -200,6 +245,21 @@ on macOS, only register a model-specific shortcut for opus, etc.).
 
 `args` is everything the user typed after the command name, trimmed.
 
+#### `tool_call`
+
+Sent when the LLM invokes a tool the extension registered. `args` is
+the parsed JSON object the model produced; the extension is
+responsible for validating/coercing it.
+
+```json
+{"type":"tool_call","id":"...","name":"weather",
+ "args":{"city":"Berlin"}}
+```
+
+Reply with `tool_result` within the host's tool timeout (default 60s).
+Missing the timeout surfaces an error to the model and the call is
+marked as failed.
+
 #### `shutdown`
 
 Sent during graceful zot exit (or `/reload-ext` once that lands).
@@ -230,13 +290,28 @@ for anything bigger the SDKs handle the boilerplate.
 ```go
 package main
 
-import "github.com/patriceckhart/zot/pkg/zotext"
+import (
+    "encoding/json"
+    "github.com/patriceckhart/zot/pkg/zotext"
+)
 
 func main() {
     ext := zotext.New("hello", "1.0.0")
+
+    // Slash command
     ext.Command("hello", "say hi", func(args string) zotext.Response {
         return zotext.Prompt("Greet me in one short sentence.")
     })
+
+    // LLM-callable tool
+    ext.Tool("weather", "Current weather for a city.",
+        json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
+        func(args json.RawMessage) zotext.ToolResult {
+            var in struct{ City string `json:"city"` }
+            json.Unmarshal(args, &in)
+            return zotext.TextResult(in.City + ": sunny")
+        })
+
     ext.Run()
 }
 ```
@@ -244,7 +319,10 @@ func main() {
 Build with `go build -o hello .`, drop the binary + an `extension.json`
 into `$ZOT_HOME/extensions/hello/`.
 
-See `examples/extensions/hello/` for the full working example.
+See:
+- `examples/extensions/hello/` — slash commands
+- `examples/extensions/clock/` — slash commands in plain Node, no SDK
+- `examples/extensions/weather/` — LLM-callable tool
 
 ### TypeScript / Python
 
@@ -266,16 +344,16 @@ trust or run zot under your platform's sandboxing tool (`bwrap` /
 
 ## Roadmap
 
-Phase 1 (this document):
+Phase 1 (shipped):
 - [x] subprocess lifecycle + hello handshake
 - [x] `register_command` + `command_invoked`
 - [x] `notify`
 - [x] `zot ext` CLI
 
-Phase 2:
-- [ ] `register_tool` + `tool_call` + `tool_result` (extension-defined
-      tools that the LLM can call)
-- [ ] tool result rendering with extension attribution
+Phase 2 (shipped):
+- [x] `register_tool` + `tool_call` + `tool_result`
+- [x] `ready` sentinel for safe agent-registry build timing
+- [x] tool result attribution surfaces extension name in details
 
 Phase 3:
 - [ ] event subscriptions (`turn_start`, `turn_end`, `tool_call_*`,

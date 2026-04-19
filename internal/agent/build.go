@@ -31,10 +31,88 @@ type Resolved struct {
 	// agent's tool registry, or nil if no SKILL.md files were
 	// discovered. Exposed so the tui can list / preview skills.
 	SkillTool *skills.Tool
+
+	// Bookkeeping for MergeExtensionTools. Captured at Resolve time
+	// so the system prompt can be rebuilt later without re-running
+	// resolve.
+	systemAppend     []string
+	systemCustom     string
+	toolDescriptions map[string]string
 }
 
 // HasCredential reports whether a credential was resolved.
 func (r Resolved) HasCredential() bool { return r.Credential != "" }
+
+// MergeExtensionTools folds every tool registered by an extension
+// into r's ToolRegistry and re-renders the system prompt's tool
+// summary so the model sees both built-in and extension tools.
+//
+// Idempotent: calling twice with the same manager state has no
+// effect on the second pass (existing names are preserved). Built-in
+// tools always win on conflict.
+func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
+	if mgr == nil {
+		return
+	}
+	infos := mgr.Tools()
+	if len(infos) == 0 {
+		return
+	}
+	changed := false
+	for _, info := range infos {
+		if _, exists := r.ToolRegistry[info.Name]; exists {
+			continue
+		}
+		r.ToolRegistry[info.Name] = mgr.NewExtensionTool(info)
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	// Re-render the system prompt with the merged tool list. Skill
+	// addendum is preserved by walking the existing append slice.
+	append_ := r.systemAppend
+	r.SystemPrompt = BuildSystemPrompt(SystemPromptOpts{
+		CWD:    r.CWD,
+		Tools:  toolSummariesFromRegistry(r.ToolRegistry, r.toolDescriptions),
+		Custom: r.systemCustom,
+		Append: append_,
+	})
+}
+
+// ExtensionToolSource is the slice of the extension manager that
+// MergeExtensionTools needs. Lives here as an interface so the
+// build package doesn't import internal/agent/extensions (which
+// imports core, which imports... avoid the cycle).
+type ExtensionToolSource interface {
+	Tools() []ExtensionToolInfo
+	NewExtensionTool(info ExtensionToolInfo) core.Tool
+}
+
+// ExtensionToolInfo mirrors extensions.ToolInfo so we can declare
+// ExtensionToolSource here without importing the extensions
+// package. The cli wires a tiny adapter to bridge them.
+type ExtensionToolInfo struct {
+	Extension   string
+	Name        string
+	Description string
+	Schema      []byte
+}
+
+// toolSummariesFromRegistry rebuilds the system-prompt tool list
+// from a (possibly extended) registry, using cached descriptions for
+// the human-readable summary text.
+func toolSummariesFromRegistry(reg core.Registry, cached map[string]string) []ToolSummary {
+	out := make([]ToolSummary, 0, len(reg))
+	for name, t := range reg {
+		desc := t.Description()
+		if d, ok := cached[name]; ok && d != "" {
+			desc = d
+		}
+		out = append(out, ToolSummary{Name: name, Description: desc})
+	}
+	return out
+}
 
 // Resolve merges args, config, and env into a Resolved set.
 //
@@ -136,21 +214,34 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}
 
 	return Resolved{
-		Provider:     provName,
-		Model:        model,
-		Credential:   cred,
-		AuthMethod:   method,
-		AccountID:    accountID,
-		BaseURL:      args.BaseURL,
-		CWD:          args.CWD,
-		Reasoning:    reasoning,
-		ToolRegistry: reg,
-		ToolSummary:  summaries,
-		SystemPrompt: sys,
-		MaxSteps:     max,
-		Sandbox:      sandbox,
-		SkillTool:    skillTool,
+		Provider:         provName,
+		Model:            model,
+		Credential:       cred,
+		AuthMethod:       method,
+		AccountID:        accountID,
+		BaseURL:          args.BaseURL,
+		CWD:              args.CWD,
+		Reasoning:        reasoning,
+		ToolRegistry:     reg,
+		ToolSummary:      summaries,
+		SystemPrompt:     sys,
+		MaxSteps:         max,
+		Sandbox:          sandbox,
+		SkillTool:        skillTool,
+		systemAppend:     append_,
+		systemCustom:     args.SystemPrompt,
+		toolDescriptions: descMapFromSummaries(summaries),
 	}, nil
+}
+
+// descMapFromSummaries indexes the human-readable descriptions for
+// the renderToolsSection rebuild path.
+func descMapFromSummaries(summaries []ToolSummary) map[string]string {
+	out := make(map[string]string, len(summaries))
+	for _, s := range summaries {
+		out[s.Name] = s.Description
+	}
+	return out
 }
 
 // NewClient returns a provider.Client for r, choosing the auth mode

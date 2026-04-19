@@ -1,0 +1,8 @@
+{
+  "name": "weather",
+  "version": "1.0.0",
+  "exec": "./weather",
+  "language": "go",
+  "description": "registers a `weather` tool the LLM can call",
+  "enabled": true
+}

@@ -10,7 +10,9 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/patriceckhart/zot/internal/agent/extensions"
 	"github.com/patriceckhart/zot/internal/agent/modes"
 	"github.com/patriceckhart/zot/internal/core"
 	"github.com/patriceckhart/zot/internal/provider"
@@ -41,6 +43,20 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 	if err != nil {
 		return err
 	}
+
+	// Extensions: same lifecycle as interactive mode, minus the
+	// host-hooks integration. Notify/Display calls from extensions
+	// emit RPC events instead of TUI lines so any consumer can react.
+	extHooks := &rpcExtHooks{}
+	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, extHooks)
+	discoveryErrs := extMgr.Discover(ctx)
+	for _, e := range discoveryErrs {
+		fmt.Fprintln(os.Stderr, "extension load:", e)
+	}
+	extMgr.WaitForReady(500 * time.Millisecond)
+	defer extMgr.Stop(2 * time.Second)
+	r.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
+
 	ag := r.NewAgent()
 
 	server := &rpcServer{
@@ -52,8 +68,39 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 		out:      os.Stdout,
 		version:  version,
 	}
+	extHooks.server = server
 	return server.run(os.Stdin)
 }
+
+// rpcExtHooks implements extensions.HostHooks for the headless RPC
+// loop. Notify and Display surface as `event` frames so any RPC
+// client can render them; Submit and Insert are no-ops because the
+// RPC loop has no editor and the prompt comes from the client.
+type rpcExtHooks struct {
+	server *rpcServer
+}
+
+func (h *rpcExtHooks) Notify(extName, level, message string) {
+	if h.server != nil {
+		h.server.writeEvent(map[string]any{
+			"type":      "ext_notify",
+			"extension": extName,
+			"level":     level,
+			"message":   message,
+		})
+	}
+}
+func (h *rpcExtHooks) Display(extName, text string) {
+	if h.server != nil {
+		h.server.writeEvent(map[string]any{
+			"type":      "ext_display",
+			"extension": extName,
+			"text":      text,
+		})
+	}
+}
+func (h *rpcExtHooks) Submit(string) {} // ignored in rpc mode
+func (h *rpcExtHooks) Insert(string) {} // ignored in rpc mode
 
 type rpcServer struct {
 	ctx      context.Context

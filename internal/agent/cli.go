@@ -54,6 +54,38 @@ func (h *interactiveExtHooks) Display(extName, text string) {
 	}
 }
 
+// extToolAdapter bridges *extensions.Manager to the
+// ExtensionToolSource interface declared in build.go (kept narrow to
+// avoid a build->extensions import cycle). One adapter instance per
+// run; used at every Resolve point so re-built agents pick up the
+// same set of extension tools.
+type extToolAdapter struct {
+	mgr *extensions.Manager
+}
+
+func (a *extToolAdapter) Tools() []ExtensionToolInfo {
+	infos := a.mgr.Tools()
+	out := make([]ExtensionToolInfo, len(infos))
+	for i, t := range infos {
+		out[i] = ExtensionToolInfo{
+			Extension:   t.Extension,
+			Name:        t.Name,
+			Description: t.Description,
+			Schema:      t.Schema,
+		}
+	}
+	return out
+}
+
+func (a *extToolAdapter) NewExtensionTool(info ExtensionToolInfo) core.Tool {
+	return extensions.NewTool(a.mgr, extensions.ToolInfo{
+		Extension:   info.Extension,
+		Name:        info.Name,
+		Description: info.Description,
+		Schema:      info.Schema,
+	})
+}
+
 // Run is the top-level entrypoint for the zot binary.
 func Run(rawArgs []string, version string) error {
 	// Subcommand router: `zot bot ...` is handled separately so the
@@ -179,6 +211,26 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// rebuilt tool instances must share the same one so the lock sticks.
 	sharedSandbox := r.Sandbox
 
+	// Build the extension manager BEFORE the agent so we can fold
+	// extension-defined tools into the registry. Forward-declare iv so
+	// the host hooks adapter can dereference it after construction.
+	var iv *modes.Interactive
+	extHooks := &interactiveExtHooks{ivPtr: &iv}
+	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, extHooks)
+	discoveryErrs := extMgr.Discover(ctx)
+	for _, e := range discoveryErrs {
+		fmt.Fprintln(os.Stderr, "extension load:", e)
+	}
+	// Wait briefly for extensions to flush their initial register_tool
+	// frames before we build the agent's tool registry. Half a second
+	// is plenty for any extension that's actually well-behaved; ones
+	// that don't send a ready frame eat the full grace and proceed.
+	extMgr.WaitForReady(500 * time.Millisecond)
+	defer extMgr.Stop(2 * time.Second)
+
+	extToolAdapter := &extToolAdapter{mgr: extMgr}
+	r.MergeExtensionTools(extToolAdapter)
+
 	// Capture current args in a closure so BuildAgent can re-resolve
 	// after a successful login (picks up the newly stored credential).
 	buildAgent := func() (*core.Agent, string, string, error) {
@@ -187,6 +239,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return nil, "", "", err
 		}
 		resolved.UseSandbox(sharedSandbox)
+		resolved.MergeExtensionTools(extToolAdapter)
 		return resolved.NewAgent(), resolved.Provider, resolved.Model, nil
 	}
 
@@ -204,6 +257,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return nil, "", "", err
 		}
 		resolved.UseSandbox(sharedSandbox)
+		resolved.MergeExtensionTools(extToolAdapter)
 		return resolved.NewAgent(), resolved.Provider, resolved.Model, nil
 	}
 
@@ -264,19 +318,6 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			URL:       src.URL,
 		}
 	}()
-
-	// Forward-declare iv so the extension manager hook adapter can
-	// dereference it after construction. The manager is started after
-	// iv is built so iv (which implements extensions.HostHooks) is
-	// available as the hook target.
-	var iv *modes.Interactive
-	extHooks := &interactiveExtHooks{ivPtr: &iv}
-	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, extHooks)
-	discoveryErrs := extMgr.Discover(ctx)
-	for _, e := range discoveryErrs {
-		fmt.Fprintln(os.Stderr, "extension load:", e)
-	}
-	defer extMgr.Stop(2 * time.Second)
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
 		Terminal:       term,

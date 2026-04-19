@@ -63,11 +63,19 @@ type Extension struct {
 	logFile  *os.File
 	helloAck bool
 	commands []extproto.RegisterCommandFromExt
+	tools    []extproto.RegisterToolFromExt
+
+	// readyCh is closed when the extension sends a ReadyFromExt
+	// frame, or when the host gives up waiting (registrationGrace).
+	readyCh   chan struct{}
+	readyOnce sync.Once
 
 	// pending command invocations waiting on a CommandResponseFromExt
 	// keyed by the id we sent in CommandInvokedFromHost.
-	mu      sync.Mutex
-	pending map[string]chan extproto.CommandResponseFromExt
+	// pendingTool is the same idea for tool calls.
+	mu          sync.Mutex
+	pending     map[string]chan extproto.CommandResponseFromExt
+	pendingTool map[string]chan extproto.ToolResultFromExt
 }
 
 // HostHooks is the small interface the manager calls back into the
@@ -106,6 +114,10 @@ type Manager struct {
 	// later registrations of the same command are dropped with a
 	// warning.
 	commandIndex map[string]*Extension
+
+	// toolIndex maps an extension-defined tool name to its owning
+	// extension. Same first-come-first-served rule as commandIndex.
+	toolIndex map[string]*Extension
 }
 
 // New constructs an empty Manager. Call Discover to populate it from
@@ -120,6 +132,7 @@ func New(zotHome, cwd, zotVersion, provider, model string, hooks HostHooks) *Man
 		hooks:        hooks,
 		ext:          map[string]*Extension{},
 		commandIndex: map[string]*Extension{},
+		toolIndex:    map[string]*Extension{},
 	}
 }
 
@@ -193,9 +206,11 @@ func (m *Manager) loadOne(ctx context.Context, dir string) error {
 	}
 
 	ext := &Extension{
-		Manifest: mf,
-		Dir:      dir,
-		pending:  map[string]chan extproto.CommandResponseFromExt{},
+		Manifest:    mf,
+		Dir:         dir,
+		readyCh:     make(chan struct{}),
+		pending:     map[string]chan extproto.CommandResponseFromExt{},
+		pendingTool: map[string]chan extproto.ToolResultFromExt{},
 	}
 	if err := m.spawn(ctx, ext); err != nil {
 		return err
@@ -203,16 +218,32 @@ func (m *Manager) loadOne(ctx context.Context, dir string) error {
 
 	m.mu.Lock()
 	m.ext[mf.Name] = ext
-	for _, c := range ext.commands {
-		if _, exists := m.commandIndex[c.Name]; exists {
-			// Conflict: keep the existing registration; drop this one.
-			fmt.Fprintf(ext.logFile, "[zot] /%s already registered, ignoring\n", c.Name)
-			continue
-		}
-		m.commandIndex[c.Name] = ext
-	}
+	// Note: ext.commands and ext.tools may be empty here — they're
+	// populated by the read loop as register_* frames arrive after
+	// hello. Indexing happens in the read loop too. Discover()'s
+	// caller can WaitForReady() before relying on the registries.
 	m.mu.Unlock()
 	return nil
+}
+
+// WaitForReady blocks until every loaded extension has sent its
+// ReadyFromExt sentinel, or the per-extension grace period expires.
+// Call after Discover and before relying on tool registrations.
+func (m *Manager) WaitForReady(grace time.Duration) {
+	m.mu.RLock()
+	exts := make([]*Extension, 0, len(m.ext))
+	for _, e := range m.ext {
+		exts = append(exts, e)
+	}
+	m.mu.RUnlock()
+	for _, ext := range exts {
+		select {
+		case <-ext.readyCh:
+		case <-time.After(grace):
+			fmt.Fprintf(ext.logFile, "[zot] timed out waiting for ready frame; proceeding\n")
+			ext.readyOnce.Do(func() { close(ext.readyCh) })
+		}
+	}
 }
 
 // spawn launches the subprocess, hooks up pipes, logs stderr, and
@@ -292,16 +323,22 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 // Returns when stdout closes.
 func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 	defer func() {
-		// On close, drop every command this extension owned so future
-		// invocations don't dangle. The subprocess is gone; we won't
-		// hear back about its commands anymore.
+		// On close, drop every command + tool this extension owned so
+		// future invocations don't dangle. The subprocess is gone; we
+		// won't hear back about its commands or tool calls anymore.
 		m.mu.Lock()
 		for name, owner := range m.commandIndex {
 			if owner == ext {
 				delete(m.commandIndex, name)
 			}
 		}
+		for name, owner := range m.toolIndex {
+			if owner == ext {
+				delete(m.toolIndex, name)
+			}
+		}
 		m.mu.Unlock()
+		ext.readyOnce.Do(func() { close(ext.readyCh) })
 		fmt.Fprintf(ext.logFile, "[zot] extension %s read loop exited at %s\n", ext.Manifest.Name, time.Now().Format(time.RFC3339))
 	}()
 
@@ -322,6 +359,45 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 					m.commandIndex[rc.Name] = ext
 				}
 				m.mu.Unlock()
+			}
+		case "register_tool":
+			var rt extproto.RegisterToolFromExt
+			if err := json.Unmarshal(line, &rt); err != nil {
+				fmt.Fprintf(ext.logFile, "[zot] bad register_tool frame: %v\n", err)
+				continue
+			}
+			// Validate the schema parses as JSON. If not, refuse to
+			// register — a broken schema confuses the model.
+			if len(rt.Schema) > 0 {
+				var tmp any
+				if err := json.Unmarshal(rt.Schema, &tmp); err != nil {
+					fmt.Fprintf(ext.logFile, "[zot] tool %q: schema is not valid json (%v); skipped\n", rt.Name, err)
+					continue
+				}
+			}
+			ext.tools = append(ext.tools, rt)
+			m.mu.Lock()
+			if _, exists := m.toolIndex[rt.Name]; !exists {
+				m.toolIndex[rt.Name] = ext
+			}
+			m.mu.Unlock()
+		case "ready":
+			ext.readyOnce.Do(func() { close(ext.readyCh) })
+		case "tool_result":
+			var tr extproto.ToolResultFromExt
+			if err := json.Unmarshal(line, &tr); err == nil {
+				ext.mu.Lock()
+				ch, ok := ext.pendingTool[tr.ID]
+				if ok {
+					delete(ext.pendingTool, tr.ID)
+				}
+				ext.mu.Unlock()
+				if ok {
+					select {
+					case ch <- tr:
+					default:
+					}
+				}
 			}
 		case "notify":
 			var n extproto.NotifyFromExt
@@ -376,6 +452,89 @@ type CommandInfo struct {
 	Extension   string
 	Name        string
 	Description string
+}
+
+// ToolInfo is one extension-registered tool. Used by the agent's
+// build step to materialise core.Tool wrappers.
+type ToolInfo struct {
+	Extension   string
+	Name        string
+	Description string
+	Schema      json.RawMessage
+}
+
+// Tools returns a snapshot of every (extension, tool) pair currently
+// registered. Used at agent-build time to fold extension tools into
+// the runtime tool registry.
+func (m *Manager) Tools() []ToolInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []ToolInfo
+	for _, ext := range m.ext {
+		for _, t := range ext.tools {
+			out = append(out, ToolInfo{
+				Extension:   ext.Manifest.Name,
+				Name:        t.Name,
+				Description: t.Description,
+				Schema:      t.Schema,
+			})
+		}
+	}
+	return out
+}
+
+// HasTool reports whether name is registered by any extension.
+func (m *Manager) HasTool(name string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.toolIndex[name]
+	return ok
+}
+
+// InvokeTool sends a tool_call to the owning extension and waits for
+// the matching tool_result. Used by the core.Tool wrapper that the
+// agent registers per extension-defined tool.
+func (m *Manager) InvokeTool(ctx context.Context, name string, args json.RawMessage, timeout time.Duration) (extproto.ToolResultFromExt, error) {
+	m.mu.RLock()
+	ext, ok := m.toolIndex[name]
+	m.mu.RUnlock()
+	if !ok {
+		return extproto.ToolResultFromExt{}, fmt.Errorf("no extension registered for tool %q", name)
+	}
+
+	id := newCorrelationID()
+	ch := make(chan extproto.ToolResultFromExt, 1)
+	ext.mu.Lock()
+	ext.pendingTool[id] = ch
+	ext.mu.Unlock()
+
+	frame, _ := extproto.Encode(extproto.ToolCallFromHost{
+		Type: "tool_call",
+		ID:   id,
+		Name: name,
+		Args: args,
+	})
+	if _, err := ext.stdin.Write(frame); err != nil {
+		ext.mu.Lock()
+		delete(ext.pendingTool, id)
+		ext.mu.Unlock()
+		return extproto.ToolResultFromExt{}, fmt.Errorf("write: %w", err)
+	}
+
+	select {
+	case resp := <-ch:
+		return resp, nil
+	case <-time.After(timeout):
+		ext.mu.Lock()
+		delete(ext.pendingTool, id)
+		ext.mu.Unlock()
+		return extproto.ToolResultFromExt{}, fmt.Errorf("timeout waiting for %s/%s", ext.Manifest.Name, name)
+	case <-ctx.Done():
+		ext.mu.Lock()
+		delete(ext.pendingTool, id)
+		ext.mu.Unlock()
+		return extproto.ToolResultFromExt{}, ctx.Err()
+	}
 }
 
 // HasCommand reports whether name is registered by any extension.
