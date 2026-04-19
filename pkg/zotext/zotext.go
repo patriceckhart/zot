@@ -52,6 +52,39 @@ type CommandHandler func(args string) Response
 // ToolResult describing what zot should send back to the model.
 type ToolHandler func(args json.RawMessage) ToolResult
 
+// EventHandler is called for each lifecycle event the extension
+// subscribed to via Subscribe. The handler is invoked synchronously
+// on the read goroutine; keep it quick or hand off to your own
+// worker.
+type EventHandler func(ev Event)
+
+// Event is a lifecycle notification from zot. The fields populated
+// depend on Name (the host's event_name string):
+//
+//	session_start    : (no extra fields)
+//	turn_start       : Step
+//	turn_end         : Stop, optional Error
+//	tool_call        : ToolID, ToolName, ToolArgs
+//	assistant_message: Text
+type Event struct {
+	Name string
+
+	Step  int
+	Stop  string
+	Error string
+
+	ToolID   string
+	ToolName string
+	ToolArgs json.RawMessage
+
+	Text string
+}
+
+// InterceptHandler decides whether a tool call may proceed. Return
+// (allow=true) to permit, (allow=false, reason) to refuse. The
+// reason is shown to the model as the tool's error text.
+type InterceptHandler func(toolName string, args json.RawMessage) (allow bool, reason string)
+
 // ToolResult is the extension's reply to a tool invocation. Build
 // one with TextResult, ImageResult, or directly when you need to
 // combine multiple blocks.
@@ -138,15 +171,17 @@ type Extension struct {
 	stderr  io.Writer
 	writeMu sync.Mutex
 
-	mu           sync.Mutex
-	commands     map[string]CommandHandler
-	descriptions []descTuple // ordered so register frames arrive in registration order
-	tools        map[string]ToolHandler
-	toolDefs     []toolDef // ordered so register frames arrive in registration order
+	mu            sync.Mutex
+	commands      map[string]CommandHandler
+	descriptions  []descTuple // ordered so register frames arrive in registration order
+	tools         map[string]ToolHandler
+	toolDefs      []toolDef // ordered so register frames arrive in registration order
+	eventHandlers map[string]EventHandler
+	eventNames    []string // declared subscription order
+	interceptTool InterceptHandler
+	interceptOn   bool
 
-	// Caps reported in the hello frame. The SDK enables "commands"
-	// and "tools" automatically; future capabilities (events) will
-	// live here when those phases land.
+	// Caps reported in the hello frame.
 	caps []string
 
 	// hostInfo is filled in once HelloAck arrives.
@@ -177,14 +212,15 @@ type HostInfo struct {
 // match the name field in extension.json.
 func New(name, version string) *Extension {
 	return &Extension{
-		name:     name,
-		version:  version,
-		in:       os.Stdin,
-		out:      os.Stdout,
-		stderr:   os.Stderr,
-		commands: map[string]CommandHandler{},
-		tools:    map[string]ToolHandler{},
-		caps:     []string{"commands", "tools"},
+		name:          name,
+		version:       version,
+		in:            os.Stdin,
+		out:           os.Stdout,
+		stderr:        os.Stderr,
+		commands:      map[string]CommandHandler{},
+		tools:         map[string]ToolHandler{},
+		eventHandlers: map[string]EventHandler{},
+		caps:          []string{"commands", "tools", "events"},
 	}
 }
 
@@ -227,6 +263,35 @@ func (e *Extension) Tool(name, description string, schema json.RawMessage, fn To
 	e.mu.Unlock()
 }
 
+// On subscribes to a lifecycle event. fn is called for each
+// notification; the same name can only have one handler (later
+// registrations replace earlier ones). Recognised names:
+// session_start, turn_start, turn_end, tool_call,
+// assistant_message.
+func (e *Extension) On(name string, fn EventHandler) {
+	e.mu.Lock()
+	if _, exists := e.eventHandlers[name]; !exists {
+		e.eventNames = append(e.eventNames, name)
+	}
+	e.eventHandlers[name] = fn
+	e.mu.Unlock()
+}
+
+// InterceptToolCall registers a guard that runs immediately before
+// each tool call. Returning (false, reason) refuses the call; the
+// model sees reason as the tool error text. Multiple extensions can
+// install interceptors; if any one refuses, the call is blocked.
+//
+// Use this to build permission gates: refuse `bash` calls containing
+// `rm -rf`, ask the user for confirmation on dangerous patterns,
+// audit-log every call, etc.
+func (e *Extension) InterceptToolCall(fn InterceptHandler) {
+	e.mu.Lock()
+	e.interceptTool = fn
+	e.interceptOn = true
+	e.mu.Unlock()
+}
+
 // Notify pushes an info-level status note into zot's chat without
 // requiring a slash command from the user.
 func (e *Extension) Notify(level, message string) {
@@ -254,6 +319,8 @@ func (e *Extension) Run() error {
 	e.mu.Lock()
 	descs := append([]descTuple(nil), e.descriptions...)
 	toolDefs := append([]toolDef(nil), e.toolDefs...)
+	eventNames := append([]string(nil), e.eventNames...)
+	interceptOn := e.interceptOn
 	e.mu.Unlock()
 	for _, d := range descs {
 		_ = e.send(extproto.RegisterCommandFromExt{
@@ -269,6 +336,13 @@ func (e *Extension) Run() error {
 			Description: td.description,
 			Schema:      td.schema,
 		})
+	}
+	if len(eventNames) > 0 || interceptOn {
+		sub := extproto.SubscribeFromExt{Type: "subscribe", Events: eventNames}
+		if interceptOn {
+			sub.Intercept = []string{"tool_call"}
+		}
+		_ = e.send(sub)
 	}
 	// Sentinel: tells the host that all initial registrations have
 	// been flushed and the agent registry can be built. Never block
@@ -341,6 +415,57 @@ func (e *Extension) Run() error {
 				res := fn(args)
 				e.respondTool(id, res)
 			}(tc.ID, fn, tc.Args)
+		case "event":
+			var ef extproto.EventFromHost
+			if err := json.Unmarshal(line, &ef); err != nil {
+				continue
+			}
+			e.mu.Lock()
+			handler := e.eventHandlers[ef.Event]
+			e.mu.Unlock()
+			if handler != nil {
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							e.Logf("event %s handler panicked: %v", ef.Event, r)
+						}
+					}()
+					handler(Event{
+						Name: ef.Event, Step: ef.Step, Stop: ef.Stop,
+						Error: ef.Error, ToolID: ef.ToolID, ToolName: ef.ToolName,
+						ToolArgs: ef.ToolArgs, Text: ef.Text,
+					})
+				}()
+			}
+		case "event_intercept":
+			var ei extproto.EventInterceptFromHost
+			if err := json.Unmarshal(line, &ei); err != nil {
+				continue
+			}
+			e.mu.Lock()
+			fn := e.interceptTool
+			e.mu.Unlock()
+			if fn == nil || ei.Event != "tool_call" {
+				_ = e.send(extproto.EventInterceptResponseFromExt{
+					Type: "event_intercept_response", ID: ei.ID,
+				})
+				continue
+			}
+			go func(id, name string, args json.RawMessage) {
+				defer func() {
+					if r := recover(); r != nil {
+						_ = e.send(extproto.EventInterceptResponseFromExt{
+							Type: "event_intercept_response", ID: id,
+							Block: true, Reason: fmt.Sprintf("intercept panic: %v", r),
+						})
+					}
+				}()
+				allow, reason := fn(name, args)
+				_ = e.send(extproto.EventInterceptResponseFromExt{
+					Type: "event_intercept_response", ID: id,
+					Block: !allow, Reason: reason,
+				})
+			}(ei.ID, ei.ToolName, ei.ToolArgs)
 		case "shutdown":
 			_ = e.send(extproto.ShutdownAckFromExt{Type: "shutdown_ack"})
 			return nil

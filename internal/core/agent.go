@@ -21,6 +21,19 @@ type Agent struct {
 	MaxSteps  int
 	Reasoning string
 
+	// BeforeToolExecute, if set, is called immediately before each
+	// tool runs. Returning (allowed=false, reason) short-circuits
+	// the call with an error result containing reason. Used by the
+	// extension manager's tool-call interception. Always treated as
+	// (allowed=true, "") when nil.
+	BeforeToolExecute func(call provider.ToolCallBlock) (allowed bool, reason string)
+
+	// OnEvent, if set, mirrors every AgentEvent the loop emits to
+	// this callback in addition to the per-Prompt sink. Used by the
+	// extension manager to fan events out to subscribed extensions
+	// without each caller having to compose sinks manually.
+	OnEvent func(AgentEvent)
+
 	mu       sync.Mutex
 	messages []provider.Message
 	cost     CostTracker
@@ -76,6 +89,7 @@ func (a *Agent) Prompt(ctx context.Context, text string, images []provider.Image
 	if sink == nil {
 		sink = func(AgentEvent) {}
 	}
+	sink = a.wrapSink(sink)
 	content := []provider.Content{}
 	if text != "" {
 		content = append(content, provider.TextBlock{Text: text})
@@ -99,7 +113,22 @@ func (a *Agent) Continue(ctx context.Context, sink func(AgentEvent)) error {
 	if sink == nil {
 		sink = func(AgentEvent) {}
 	}
+	sink = a.wrapSink(sink)
 	return a.runLoop(ctx, sink)
+}
+
+// wrapSink composes the per-call sink with a.OnEvent (if set) so the
+// extension manager (or any other observer) sees every AgentEvent
+// without having to thread itself through every Prompt callsite.
+func (a *Agent) wrapSink(sink func(AgentEvent)) func(AgentEvent) {
+	if a.OnEvent == nil {
+		return sink
+	}
+	obs := a.OnEvent
+	return func(ev AgentEvent) {
+		obs(ev)
+		sink(ev)
+	}
 }
 
 func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
@@ -233,6 +262,22 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, sink 
 		return ToolResult{
 			Content: []provider.Content{provider.TextBlock{Text: err.Error()}},
 			IsError: true,
+		}
+	}
+
+	// Intercept hook: an extension or other guard can refuse the
+	// call before any side effect happens. The model sees the
+	// reason as the tool error, learns from it, and (typically)
+	// proposes a different action.
+	if a.BeforeToolExecute != nil {
+		if allowed, reason := a.BeforeToolExecute(tc); !allowed {
+			if reason == "" {
+				reason = "tool call refused by extension guard"
+			}
+			return ToolResult{
+				Content: []provider.Content{provider.TextBlock{Text: reason}},
+				IsError: true,
+			}
 		}
 	}
 

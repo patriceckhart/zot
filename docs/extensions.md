@@ -6,13 +6,12 @@ its stdin/stdout. Extensions can be written in **any language** that
 can read and write JSON lines from stdio — Go, TypeScript, Python,
 Rust, shell with `jq`, anything.
 
-Two phases shipped so far:
+Three phases shipped so far:
 
 - **Phase 1**: slash commands + chat notifications.
 - **Phase 2**: tools the LLM can call.
-
-Phase 3 (lifecycle event subscriptions + tool-call interception for
-guardrail extensions) is on the roadmap below.
+- **Phase 3**: lifecycle event subscriptions + tool-call interception
+  for guardrail extensions.
 
 ## Quick start
 
@@ -186,6 +185,33 @@ message blocks; each block is `{"type":"text","text":"..."}` or
  "content":[{"type":"text","text":"Berlin: 16°C, fog"}]}
 ```
 
+#### `subscribe`
+
+Declares which lifecycle events the extension wants to observe and
+which it wants to intercept. Send once after `hello`, before `ready`.
+
+```json
+{"type":"subscribe",
+ "events":["session_start","turn_start","tool_call","turn_end","assistant_message"],
+ "intercept":["tool_call"]}
+```
+
+Recognised event names: `session_start`, `turn_start`, `turn_end`,
+`tool_call`, `assistant_message`. Only `tool_call` is interceptable
+in this version; other names listed under `intercept` are ignored.
+
+#### `event_intercept_response`
+
+Reply to an `event_intercept` from the host. `block: true` refuses
+the action; `reason` is shown to the model as the tool error text.
+Missing the response within 5s is treated as "allow" (i.e. an
+unresponsive extension never stalls the agent).
+
+```json
+{"type":"event_intercept_response","id":"...",
+ "block":true,"reason":"refused: matches danger pattern \"rm -rf\""}
+```
+
 #### `command_response` (reply to `command_invoked`)
 
 ```json
@@ -260,6 +286,33 @@ Reply with `tool_result` within the host's tool timeout (default 60s).
 Missing the timeout surfaces an error to the model and the call is
 marked as failed.
 
+#### `event`
+
+Lifecycle notification for events the extension subscribed to via
+`subscribe`. One-way — no response expected.
+
+```json
+{"type":"event","event":"turn_start","step":1}
+{"type":"event","event":"tool_call",
+ "tool_id":"...","tool_name":"read","tool_args":{"path":"foo.go"}}
+{"type":"event","event":"turn_end","stop":"end_turn"}
+```
+
+#### `event_intercept`
+
+Sent when zot wants to give the extension a chance to block a
+lifecycle event before it happens. Same payload shape as `event`.
+Reply with `event_intercept_response` within 5s; missing the deadline
+is treated as "allow".
+
+Only `event: "tool_call"` is sent in this version.
+
+```json
+{"type":"event_intercept","id":"...","event":"tool_call",
+ "tool_id":"...","tool_name":"bash",
+ "tool_args":{"command":"rm -rf /tmp/foo"}}
+```
+
 #### `shutdown`
 
 Sent during graceful zot exit (or `/reload-ext` once that lands).
@@ -323,6 +376,8 @@ See:
 - `examples/extensions/hello/` — slash commands
 - `examples/extensions/clock/` — slash commands in plain Node, no SDK
 - `examples/extensions/weather/` — LLM-callable tool
+- `examples/extensions/guard/` — event subscriptions + tool-call
+  interception (refuses dangerous bash patterns)
 
 ### TypeScript / Python
 
@@ -355,8 +410,12 @@ Phase 2 (shipped):
 - [x] `ready` sentinel for safe agent-registry build timing
 - [x] tool result attribution surfaces extension name in details
 
-Phase 3:
-- [ ] event subscriptions (`turn_start`, `turn_end`, `tool_call_*`,
-      `session_start`, etc.)
-- [ ] tool-call interception (block / modify before execution)
+Phase 3 (shipped):
+- [x] event subscriptions (`session_start`, `turn_start`, `turn_end`,
+      `tool_call`, `assistant_message`)
+- [x] tool-call interception (block before execution)
+
+Future (no firm timeline):
+- [ ] interception for additional events beyond `tool_call`
+- [ ] modify (not just block) tool args mid-flight
 - [ ] `/reload-ext` slash command (hot-reload without restarting zot)

@@ -1,0 +1,8 @@
+{
+  "name": "guard",
+  "version": "1.0.0",
+  "exec": "./guard",
+  "language": "go",
+  "description": "audits lifecycle events and refuses dangerous bash patterns",
+  "enabled": true
+}

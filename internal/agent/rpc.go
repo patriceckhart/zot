@@ -15,6 +15,7 @@ import (
 	"github.com/patriceckhart/zot/internal/agent/extensions"
 	"github.com/patriceckhart/zot/internal/agent/modes"
 	"github.com/patriceckhart/zot/internal/core"
+	"github.com/patriceckhart/zot/internal/extproto"
 	"github.com/patriceckhart/zot/internal/provider"
 )
 
@@ -58,6 +59,11 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 	r.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
 
 	ag := r.NewAgent()
+	ag.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string) {
+		return extMgr.InterceptToolCall(ctx, call.ID, call.Name, call.Arguments)
+	}
+	ag.OnEvent = func(ev core.AgentEvent) { fanoutAgentEvent(extMgr, ev) }
+	extMgr.EmitEvent(extproto.EventFromHost{Event: "session_start"})
 
 	server := &rpcServer{
 		ctx:      ctx,

@@ -73,6 +73,33 @@ type ReadyFromExt struct {
 	Type string `json:"type"` // "ready"
 }
 
+// SubscribeFromExt declares which lifecycle events the extension
+// wants to observe (one-way `event` frames) and which it wants to
+// intercept (round-trip `event_intercept` frames). Send once after
+// hello, before ready.
+//
+// Recognised event names: "session_start", "turn_start",
+// "turn_end", "tool_call", "assistant_message".
+//
+// Only "tool_call" supports interception in this version; values
+// listed in Intercept that aren't "tool_call" are ignored.
+type SubscribeFromExt struct {
+	Type      string   `json:"type"` // "subscribe"
+	Events    []string `json:"events,omitempty"`
+	Intercept []string `json:"intercept,omitempty"`
+}
+
+// EventInterceptResponseFromExt is the extension's reply to an
+// EventInterceptFromHost. block=true refuses the underlying action;
+// reason is shown to the model as the tool error message. Both
+// fields default to (false, "") meaning "allow".
+type EventInterceptResponseFromExt struct {
+	Type   string `json:"type"` // "event_intercept_response"
+	ID     string `json:"id"`
+	Block  bool   `json:"block,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
 // ToolResultFromExt is the extension's reply to a ToolCallFromHost.
 // Content[] follows the same shape as elsewhere in zot:
 //
@@ -162,6 +189,46 @@ type ToolCallFromHost struct {
 	ID   string          `json:"id"`
 	Name string          `json:"name"`
 	Args json.RawMessage `json:"args"`
+}
+
+// EventFromHost is a one-way lifecycle notification. The payload
+// fields populated depend on Event:
+//
+//	session_start    : (no extra fields)
+//	turn_start       : Step
+//	turn_end         : Stop, optional Error
+//	tool_call        : ToolID, ToolName, ToolArgs
+//	assistant_message: Text
+type EventFromHost struct {
+	Type  string `json:"type"` // "event"
+	Event string `json:"event"`
+
+	Step  int    `json:"step,omitempty"`
+	Stop  string `json:"stop,omitempty"`
+	Error string `json:"error,omitempty"`
+
+	ToolID   string          `json:"tool_id,omitempty"`
+	ToolName string          `json:"tool_name,omitempty"`
+	ToolArgs json.RawMessage `json:"tool_args,omitempty"`
+
+	Text string `json:"text,omitempty"`
+}
+
+// EventInterceptFromHost is sent when zot wants to give the
+// extension a chance to block / annotate a lifecycle event before
+// it happens. Same payload shape as EventFromHost. Reply with
+// EventInterceptResponseFromExt within the host's intercept timeout
+// (default 5s); missing the deadline is treated as "allow".
+//
+// Only Event="tool_call" is sent in this version.
+type EventInterceptFromHost struct {
+	Type  string `json:"type"` // "event_intercept"
+	ID    string `json:"id"`
+	Event string `json:"event"`
+
+	ToolID   string          `json:"tool_id,omitempty"`
+	ToolName string          `json:"tool_name,omitempty"`
+	ToolArgs json.RawMessage `json:"tool_args,omitempty"`
 }
 
 // ShutdownFromHost asks the extension to clean up and exit. Zot

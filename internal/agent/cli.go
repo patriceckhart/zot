@@ -13,6 +13,7 @@ import (
 	"github.com/patriceckhart/zot/internal/agent/modes"
 	"github.com/patriceckhart/zot/internal/auth"
 	"github.com/patriceckhart/zot/internal/core"
+	"github.com/patriceckhart/zot/internal/extproto"
 	"github.com/patriceckhart/zot/internal/provider"
 	"github.com/patriceckhart/zot/internal/skills"
 	"github.com/patriceckhart/zot/internal/tui"
@@ -84,6 +85,42 @@ func (a *extToolAdapter) NewExtensionTool(info ExtensionToolInfo) core.Tool {
 		Description: info.Description,
 		Schema:      info.Schema,
 	})
+}
+
+// fanoutAgentEvent translates a core.AgentEvent into the wire-format
+// EventFromHost and pushes it through the extension manager. Only
+// the events that have a clear extension-facing meaning are
+// forwarded; internal-only ones (text_delta, tool_progress) are
+// dropped to keep the per-extension stream sane.
+func fanoutAgentEvent(mgr *extensions.Manager, ev core.AgentEvent) {
+	if mgr == nil {
+		return
+	}
+	switch e := ev.(type) {
+	case core.EvTurnStart:
+		mgr.EmitEvent(extproto.EventFromHost{Event: "turn_start", Step: e.Step})
+	case core.EvToolCall:
+		mgr.EmitEvent(extproto.EventFromHost{
+			Event: "tool_call", ToolID: e.ID, ToolName: e.Name, ToolArgs: e.Args,
+		})
+	case core.EvAssistantMessage:
+		// Concat the visible text portions of the message; binary
+		// blocks (tool_use, etc.) are skipped because subscribers
+		// usually want a string they can grep / display.
+		var text string
+		for _, c := range e.Message.Content {
+			if tb, ok := c.(provider.TextBlock); ok {
+				text += tb.Text
+			}
+		}
+		mgr.EmitEvent(extproto.EventFromHost{Event: "assistant_message", Text: text})
+	case core.EvTurnEnd:
+		ev := extproto.EventFromHost{Event: "turn_end", Stop: string(e.Stop)}
+		if e.Err != nil {
+			ev.Error = e.Err.Error()
+		}
+		mgr.EmitEvent(ev)
+	}
 }
 
 // Run is the top-level entrypoint for the zot binary.
@@ -233,6 +270,17 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 	// Capture current args in a closure so BuildAgent can re-resolve
 	// after a successful login (picks up the newly stored credential).
+	wireAgentExt := func(a *core.Agent) *core.Agent {
+		if a == nil {
+			return a
+		}
+		a.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string) {
+			return extMgr.InterceptToolCall(ctx, call.ID, call.Name, call.Arguments)
+		}
+		a.OnEvent = func(ev core.AgentEvent) { fanoutAgentEvent(extMgr, ev) }
+		return a
+	}
+
 	buildAgent := func() (*core.Agent, string, string, error) {
 		resolved, err := Resolve(args, true)
 		if err != nil {
@@ -240,7 +288,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 		resolved.UseSandbox(sharedSandbox)
 		resolved.MergeExtensionTools(extToolAdapter)
-		return resolved.NewAgent(), resolved.Provider, resolved.Model, nil
+		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
 
 	// Rebuild agent with an explicit provider/model override.
@@ -258,13 +306,16 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 		resolved.UseSandbox(sharedSandbox)
 		resolved.MergeExtensionTools(extToolAdapter)
-		return resolved.NewAgent(), resolved.Provider, resolved.Model, nil
+		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
 
 	var ag *core.Agent
 	if r.HasCredential() {
-		ag = r.NewAgent()
+		ag = wireAgentExt(r.NewAgent())
 	}
+
+	// Fire session_start once we know the manager's running.
+	extMgr.EmitEvent(extproto.EventFromHost{Event: "session_start"})
 
 	var sess *core.Session
 	var sessBaselineMsgs int // messages already on disk when current session opened

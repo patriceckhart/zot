@@ -73,9 +73,17 @@ type Extension struct {
 	// pending command invocations waiting on a CommandResponseFromExt
 	// keyed by the id we sent in CommandInvokedFromHost.
 	// pendingTool is the same idea for tool calls.
-	mu          sync.Mutex
-	pending     map[string]chan extproto.CommandResponseFromExt
-	pendingTool map[string]chan extproto.ToolResultFromExt
+	// pendingIntercept is the same idea for event_intercept calls.
+	mu               sync.Mutex
+	pending          map[string]chan extproto.CommandResponseFromExt
+	pendingTool      map[string]chan extproto.ToolResultFromExt
+	pendingIntercept map[string]chan extproto.EventInterceptResponseFromExt
+
+	// eventSubs and interceptSubs are the sets of event names this
+	// extension subscribed to via SubscribeFromExt. Used by
+	// EmitEvent / InterceptToolCall to filter recipients.
+	eventSubs     map[string]struct{}
+	interceptSubs map[string]struct{}
 }
 
 // HostHooks is the small interface the manager calls back into the
@@ -206,11 +214,14 @@ func (m *Manager) loadOne(ctx context.Context, dir string) error {
 	}
 
 	ext := &Extension{
-		Manifest:    mf,
-		Dir:         dir,
-		readyCh:     make(chan struct{}),
-		pending:     map[string]chan extproto.CommandResponseFromExt{},
-		pendingTool: map[string]chan extproto.ToolResultFromExt{},
+		Manifest:         mf,
+		Dir:              dir,
+		readyCh:          make(chan struct{}),
+		pending:          map[string]chan extproto.CommandResponseFromExt{},
+		pendingTool:      map[string]chan extproto.ToolResultFromExt{},
+		pendingIntercept: map[string]chan extproto.EventInterceptResponseFromExt{},
+		eventSubs:        map[string]struct{}{},
+		interceptSubs:    map[string]struct{}{},
 	}
 	if err := m.spawn(ctx, ext); err != nil {
 		return err
@@ -383,6 +394,36 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 			m.mu.Unlock()
 		case "ready":
 			ext.readyOnce.Do(func() { close(ext.readyCh) })
+		case "subscribe":
+			var sub extproto.SubscribeFromExt
+			if err := json.Unmarshal(line, &sub); err == nil {
+				ext.mu.Lock()
+				for _, ev := range sub.Events {
+					ext.eventSubs[ev] = struct{}{}
+				}
+				for _, ev := range sub.Intercept {
+					if ev == "tool_call" { // only kind supported in v1
+						ext.interceptSubs[ev] = struct{}{}
+					}
+				}
+				ext.mu.Unlock()
+			}
+		case "event_intercept_response":
+			var er extproto.EventInterceptResponseFromExt
+			if err := json.Unmarshal(line, &er); err == nil {
+				ext.mu.Lock()
+				ch, ok := ext.pendingIntercept[er.ID]
+				if ok {
+					delete(ext.pendingIntercept, er.ID)
+				}
+				ext.mu.Unlock()
+				if ok {
+					select {
+					case ch <- er:
+					default:
+					}
+				}
+			}
 		case "tool_result":
 			var tr extproto.ToolResultFromExt
 			if err := json.Unmarshal(line, &tr); err == nil {
