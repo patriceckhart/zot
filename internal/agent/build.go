@@ -3,6 +3,8 @@ package agent
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/patriceckhart/zot/internal/agent/tools"
 	"github.com/patriceckhart/zot/internal/core"
@@ -199,10 +201,19 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		append_ = append(append_, skillAddendum)
 	}
 
+	// Custom system prompt resolution order:
+	//   1. --system-prompt flag (highest priority; ad-hoc per run)
+	//   2. $ZOT_HOME/SYSTEM.md (persistent user override)
+	//   3. built-in default (defaultIdentity + defaultGuidelines)
+	custom := args.SystemPrompt
+	if custom == "" {
+		custom = readUserSystemPrompt(ZotHome())
+	}
+
 	sys := BuildSystemPrompt(SystemPromptOpts{
 		CWD:    args.CWD,
 		Tools:  summaries,
-		Custom: args.SystemPrompt,
+		Custom: custom,
 		Append: append_,
 	})
 
@@ -229,9 +240,26 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		Sandbox:          sandbox,
 		SkillTool:        skillTool,
 		systemAppend:     append_,
-		systemCustom:     args.SystemPrompt,
+		systemCustom:     custom,
 		toolDescriptions: descMapFromSummaries(summaries),
 	}, nil
+}
+
+// readUserSystemPrompt looks for $ZOT_HOME/SYSTEM.md and returns its
+// trimmed contents, or "" when the file is missing / unreadable /
+// empty. Errors are intentionally swallowed: the file is optional,
+// and any failure to read it should fall back to the built-in
+// default system prompt rather than crash the run.
+func readUserSystemPrompt(zotHome string) string {
+	if zotHome == "" {
+		return ""
+	}
+	path := filepath.Join(zotHome, "SYSTEM.md")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 // descMapFromSummaries indexes the human-readable descriptions for

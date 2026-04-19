@@ -102,8 +102,11 @@ $ZOT_HOME/
 ├── auth.json           # api keys and oauth tokens (mode 0600)
 ├── sessions/           # jsonl transcripts, one dir per cwd
 ├── models-cache.json   # live /v1/models discovery cache (6h ttl)
+├── SYSTEM.md           # optional: replaces the default system prompt
 └── logs/               # app log files
 ```
+
+drop a `SYSTEM.md` in `$ZOT_HOME` to replace the built-in identity + guidelines for every run. `--system-prompt` still wins per-invocation. delete the file to revert to the default.
 
 ## usage
 
@@ -126,7 +129,7 @@ zot --help
 | `--model <id>` | pick the model (see `--list-models`) |
 | `--api-key <key>` | override api key |
 | `--base-url <url>` | override provider base url (tests / self-hosted) |
-| `--system-prompt <text>` | replace the default system prompt |
+| `--system-prompt <text>` | replace the default system prompt for this run (also overrides `$ZOT_HOME/SYSTEM.md`) |
 | `--append-system-prompt <text>` | append text to the system prompt (repeatable) |
 | `--reasoning low\|medium\|high` | enable reasoning on supported models |
 | `-c`, `--continue` | resume the latest session for this cwd |
