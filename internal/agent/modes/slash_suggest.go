@@ -316,6 +316,19 @@ func (s *slashSuggester) Render(input string, th tui.Theme, width int) []string 
 			}
 		}
 	}
+	// Compute the widest command name across the whole match list
+	// (built-ins + extension-contributed) so every row's description
+	// starts at the same x-position. A minimum keeps short lists
+	// from collapsing the descriptions into the name column.
+	nameWidth := 10
+	for _, c := range m {
+		if c.Header {
+			continue
+		}
+		if n := len(c.Name); n > nameWidth {
+			nameWidth = n
+		}
+	}
 	var lines []string
 	for i, c := range m {
 		if c.Header {
@@ -332,8 +345,8 @@ func (s *slashSuggester) Render(input string, th tui.Theme, width int) []string 
 			continue
 		}
 		name := c.Name
-		if len(name) < 10 {
-			name = name + strings.Repeat(" ", 10-len(name))
+		if len(name) < nameWidth {
+			name = name + strings.Repeat(" ", nameWidth-len(name))
 		}
 		plain := "  " + name + "  " + c.Desc
 		if i == s.cursor {
