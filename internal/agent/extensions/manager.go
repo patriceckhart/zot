@@ -79,6 +79,12 @@ type Extension struct {
 	pendingTool      map[string]chan extproto.ToolResultFromExt
 	pendingIntercept map[string]chan extproto.EventInterceptResponseFromExt
 
+	// lastFrameTime is updated by the read loop on every frame it
+	// processes. Used by the auto-ready idle watchdog so legacy
+	// extensions (no `ready` frame) don't pin the WaitForReady wait
+	// to its full grace.
+	lastFrameTime time.Time
+
 	// eventSubs and interceptSubs are the sets of event names this
 	// extension subscribed to via SubscribeFromExt. Used by
 	// EmitEvent / InterceptToolCall to filter recipients.
@@ -145,11 +151,17 @@ func New(zotHome, cwd, zotVersion, provider, model string, hooks HostHooks) *Man
 }
 
 // Discover scans the global and project extension dirs and starts
-// every extension whose manifest is enabled. Returns a slice of
+// every extension whose manifest is enabled. Spawns happen in
+// parallel so a slow runtime (e.g. `npx tsx` cold-start, ~1.5s)
+// doesn't block other extensions from starting. Returns a slice of
 // errors encountered (one per extension); a single bad extension
 // doesn't abort the rest.
 func (m *Manager) Discover(ctx context.Context) []error {
-	var errs []error
+	type loadJob struct {
+		dir string
+	}
+	var jobs []loadJob
+	seenDirs := map[string]bool{} // dedup by basename so project wins
 	for _, dir := range m.searchDirs() {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -159,11 +171,31 @@ func (m *Manager) Discover(ctx context.Context) []error {
 			if !e.IsDir() {
 				continue
 			}
-			extDir := filepath.Join(dir, e.Name())
-			if err := m.loadOne(ctx, extDir); err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", extDir, err))
+			if seenDirs[e.Name()] {
+				continue // higher-priority location already queued
 			}
+			seenDirs[e.Name()] = true
+			jobs = append(jobs, loadJob{dir: filepath.Join(dir, e.Name())})
 		}
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(jobs))
+	for _, j := range jobs {
+		wg.Add(1)
+		go func(extDir string) {
+			defer wg.Done()
+			if err := m.loadOne(ctx, extDir); err != nil {
+				errCh <- fmt.Errorf("%s: %w", extDir, err)
+			}
+		}(j.dir)
+	}
+	wg.Wait()
+	close(errCh)
+
+	var errs []error
+	for e := range errCh {
+		errs = append(errs, e)
 	}
 	return errs
 }
@@ -237,8 +269,14 @@ func (m *Manager) loadOne(ctx context.Context, dir string) error {
 	return nil
 }
 
-// WaitForReady blocks until every loaded extension has sent its
-// ReadyFromExt sentinel, or the per-extension grace period expires.
+// WaitForReady blocks until every loaded extension has signalled
+// ReadyFromExt, or the grace period expires for the slowest one.
+//
+// Waits run in parallel: total time is max(per-extension wait), not
+// sum. Without this, a single slow extension (e.g. `npx tsx` cold)
+// would gate every other extension's wait too and zot startup would
+// scale linearly with the number of slow runtimes installed.
+//
 // Call after Discover and before relying on tool registrations.
 func (m *Manager) WaitForReady(grace time.Duration) {
 	m.mu.RLock()
@@ -247,14 +285,22 @@ func (m *Manager) WaitForReady(grace time.Duration) {
 		exts = append(exts, e)
 	}
 	m.mu.RUnlock()
+
+	deadline := time.After(grace)
+	var wg sync.WaitGroup
 	for _, ext := range exts {
-		select {
-		case <-ext.readyCh:
-		case <-time.After(grace):
-			fmt.Fprintf(ext.logFile, "[zot] timed out waiting for ready frame; proceeding\n")
-			ext.readyOnce.Do(func() { close(ext.readyCh) })
-		}
+		wg.Add(1)
+		go func(ext *Extension) {
+			defer wg.Done()
+			select {
+			case <-ext.readyCh:
+			case <-deadline:
+				fmt.Fprintf(ext.logFile, "[zot] timed out waiting for ready frame; proceeding\n")
+				ext.readyOnce.Do(func() { close(ext.readyCh) })
+			}
+		}(ext)
 	}
+	wg.Wait()
 }
 
 // spawn launches the subprocess, hooks up pipes, logs stderr, and
@@ -344,7 +390,46 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 
 	// Spin up the read loop now that the handshake is done.
 	go m.readLoop(ext, scanner)
+
+	// Compatibility shim: extensions built against the phase-1 SDK
+	// don't send a ready frame. Watch the read loop's frame arrival
+	// rate; if nothing's arrived for readyIdleWindow we treat the
+	// extension as ready so WaitForReady doesn't burn the full grace
+	// on every startup. Newer extensions still trigger the explicit
+	// path on their own ready frame.
+	go m.assumeReadyAfterIdle(ext)
+
 	return nil
+}
+
+// readyIdleWindow is how long the manager waits for a frame after
+// hello before assuming an extension that doesn't send `ready` is
+// nevertheless ready. 250ms is enough for any well-behaved native
+// binary to flush its register frames; slow runtimes (npx tsx) flush
+// even faster once they've started, so this rarely affects them.
+const readyIdleWindow = 250 * time.Millisecond
+
+func (m *Manager) assumeReadyAfterIdle(ext *Extension) {
+	last := ext.lastFrameTime
+	for {
+		select {
+		case <-ext.readyCh:
+			return
+		case <-time.After(readyIdleWindow):
+		}
+		ext.mu.Lock()
+		current := ext.lastFrameTime
+		ext.mu.Unlock()
+		if current.Equal(last) {
+			// No new frame in the idle window. Treat as ready.
+			ext.readyOnce.Do(func() {
+				fmt.Fprintf(ext.logFile, "[zot] no ready frame; auto-readying after idle (legacy SDK?)\n")
+				close(ext.readyCh)
+			})
+			return
+		}
+		last = current
+	}
 }
 
 // readLoop processes every frame the extension sends after hello.
@@ -372,6 +457,9 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		ext.mu.Lock()
+		ext.lastFrameTime = time.Now()
+		ext.mu.Unlock()
 		var frame extproto.Frame
 		if err := json.Unmarshal(line, &frame); err != nil {
 			fmt.Fprintf(ext.logFile, "[zot] malformed json from extension: %v\n", err)

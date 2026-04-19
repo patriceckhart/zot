@@ -13,16 +13,16 @@ Demonstrates:
 
 ## Requirements
 
-Node 18+. The first time you use it, `npx` will quietly fetch `tsx`
-into the npm cache (~5 MB, one-shot). If you'd rather pre-install
-globally:
+Node 18+ and `tsx` on `$PATH`:
 
 ```bash
 npm install -g tsx
 ```
 
-…and change `extension.json`'s `exec` to `"tsx"` and `args` to
-`["index.ts"]` if you want.
+This is what `extension.json` invokes (`exec: "tsx"`). Without the
+global install, swap to `"exec": "npx"` + `"args": ["--yes", "tsx",
+"index.ts"]` — functional but adds ~1 second to each zot startup
+because npm checks the registry on every invocation.
 
 ## Install
 
