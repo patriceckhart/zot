@@ -31,6 +31,29 @@ func pathFromToolArgs(raw json.RawMessage) string {
 	return ""
 }
 
+// offsetFromToolArgs returns the read tool's 1-indexed `offset`
+// arg (the first line of the slice the tool was asked to return),
+// or 0 when the call didn't specify one. Used by the tui to draw
+// the line-number gutter aligned to the right starting row, even
+// though the tool's text content itself no longer carries line
+// numbers.
+func offsetFromToolArgs(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return 0
+	}
+	switch v := m["offset"].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	}
+	return 0
+}
+
 // osUserHomeDir is aliased so the test file can swap it.
 var osUserHomeDir = os.UserHomeDir
 
@@ -43,7 +66,13 @@ type View struct {
 	// toolPaths maps tool_use_id to the "path" argument of the call, if
 	// any, so tool_result rendering can pick the right syntax language.
 	// Rebuilt on each Build().
-	toolPaths       map[string]string
+	toolPaths map[string]string
+	// toolStartLines maps tool_use_id to the 1-indexed first line
+	// number of a `read` result, pulled from the call's offset arg.
+	// Used by renderNumberedFile to draw a line-number gutter over
+	// raw (unnumbered) file content the model receives. Rebuilt on
+	// each Build().
+	toolStartLines  map[string]int
 	Streaming       string // current assistant text delta
 	StreamingActive bool
 	ToolCalls       []ToolCallView // tool calls in flight or completed
@@ -186,11 +215,15 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 // cheap compared to markdown/chroma work it enables.
 func (v *View) refreshToolPaths() {
 	v.toolPaths = map[string]string{}
+	v.toolStartLines = map[string]int{}
 	for _, m := range v.Messages {
 		for _, c := range m.Content {
 			if tc, ok := c.(provider.ToolCallBlock); ok {
 				if p := pathFromToolArgs(tc.Arguments); p != "" {
 					v.toolPaths[tc.ID] = p
+				}
+				if off := offsetFromToolArgs(tc.Arguments); off >= 1 {
+					v.toolStartLines[tc.ID] = off
 				}
 			}
 		}
@@ -359,8 +392,14 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 				if v.toolPaths != nil {
 					path = v.toolPaths[tr.CallID]
 				}
+				startLine := 1
+				if v.toolStartLines != nil {
+					if s := v.toolStartLines[tr.CallID]; s > 0 {
+						startLine = s
+					}
+				}
 				lines = append(lines, v.Theme.FG256(color, title))
-				lines = append(lines, v.renderToolResultContent(tr.Content, width, color, path)...)
+				lines = append(lines, v.renderToolResultContent(tr.Content, width, color, path, startLine)...)
 			}
 		}
 	}
@@ -396,7 +435,7 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 // like a unified diff gets +/- coloring. Image blocks are rendered
 // inline when the terminal supports a protocol, else as a text
 // placeholder with dimensions.
-func (v *View) renderToolResultContent(blocks []provider.Content, width, color int, sourcePath string) []string {
+func (v *View) renderToolResultContent(blocks []provider.Content, width, color int, sourcePath string, startLine int) []string {
 	rule := v.Theme.FG256(v.Theme.Muted, strings.Repeat("─", width))
 
 	var body []string
@@ -404,7 +443,7 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width, color i
 	for _, b := range blocks {
 		switch bb := b.(type) {
 		case provider.TextBlock:
-			body = append(body, v.renderToolText(bb.Text, width, color, sourcePath)...)
+			body = append(body, v.renderToolText(bb.Text, width, color, sourcePath, startLine)...)
 		case provider.ImageBlock:
 			hasImage = true
 			body = append(body, v.renderImageBlock(bb, width)...)
@@ -442,14 +481,20 @@ func (v *View) collapseToolBody(lines []string, hasImage bool) []string {
 // text contains a unified-diff section (lines starting with "--- " /
 // "+++ " / "+" / "-"/" "), those rows are styled with add/remove
 // colors matching git diff conventions.
-func (v *View) renderToolText(text string, width, defaultColor int, sourcePath string) []string {
-	// Detect whether the text is `read`-style numbered output
-	// ("     1\t…") so we can strip the gutter, highlight the code, and
-	// re-apply the line numbers in muted color. Runs even without a
-	// source path — language is guessed from the first line, falling
-	// back to "text" (no highlighting) if nothing obvious matches.
+func (v *View) renderToolText(text string, width, defaultColor int, sourcePath string, startLine int) []string {
+	// Legacy path: transcripts saved before we dropped line numbers
+	// from the read tool still carry "     1\t…" prefixes. Detect and
+	// strip them, then fall through to the highlighter.
 	if looksLikeNumberedFile(text) {
 		return v.renderNumberedFile(text, sourcePath)
+	}
+	// Current path: text came from `read` as raw file bytes. When a
+	// source path is known (the call had a `path` arg), render with
+	// a synthetic line-number gutter starting at startLine so the
+	// on-screen view still looks like cat -n. Doesn't apply to non-
+	// file tool outputs (bash stdout, display notes, etc.).
+	if sourcePath != "" && looksLikeFileContent(text) {
+		return v.renderRawFile(text, sourcePath, startLine)
 	}
 
 	// No truncation — the full tool output is rendered into chat and
@@ -708,6 +753,73 @@ func (v *View) renderNumberedFile(text, sourcePath string) []string {
 			continue
 		}
 		out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, g)+code)
+	}
+	return out
+}
+
+// looksLikeFileContent is a cheap guard to distinguish a read-tool
+// result from bash stdout or a status message. File content usually
+// contains characters that status messages don't (code punctuation,
+// longer lines, multiple lines) and rarely starts with the "  >"-
+// or "error:"-style prefixes tools emit. False positives are OK,
+// the worst case is a line-number gutter on something that isn't
+// really code.
+func looksLikeFileContent(text string) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	lines := strings.Split(text, "\n")
+	return len(lines) >= 2
+}
+
+// renderRawFile renders file content received without embedded line
+// numbers (the current read-tool output). Draws a muted gutter like
+// "%6d \t" starting at startLine, highlights the code using the
+// source path's language, and returns the formatted lines.
+func (v *View) renderRawFile(text, sourcePath string, startLine int) []string {
+	lines := strings.Split(text, "\n")
+	// Drop the trailing empty line that Split produces when text ends
+	// in "\n" so the gutter doesn't show a phantom last number.
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	// Split code from trailing footer lines ("... [truncated ...]")
+	// so we don't number the footer.
+	codeEnd := len(lines)
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(lines[i], "...") {
+			codeEnd = i
+			continue
+		}
+		break
+	}
+	code := lines[:codeEnd]
+	footer := lines[codeEnd:]
+
+	lang := LanguageFromPath(sourcePath)
+	var highlighted []string
+	if lang != "" {
+		highlighted = HighlightCode(strings.Join(code, "\n"), lang)
+		for len(highlighted) < len(code) {
+			highlighted = append(highlighted, "")
+		}
+		if len(highlighted) > len(code) {
+			highlighted = highlighted[:len(code)]
+		}
+	} else {
+		highlighted = make([]string, len(code))
+		for i, c := range code {
+			highlighted[i] = v.Theme.FG256(v.Theme.ToolOut, c)
+		}
+	}
+
+	out := make([]string, 0, len(lines))
+	for i, c := range highlighted {
+		gutter := fmt.Sprintf("%6d\t", startLine+i)
+		out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, gutter)+c)
+	}
+	for _, f := range footer {
+		out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, f))
 	}
 	return out
 }

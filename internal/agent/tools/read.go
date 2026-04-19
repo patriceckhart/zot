@@ -126,10 +126,19 @@ func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		truncLines = true
 	}
 
-	// Render with 1-indexed line numbers, cat -n style.
+	// Raw file contents go to the model. We deliberately DON'T
+	// prepend line numbers here: they'd inflate the token count by
+	// ~15-20% on typical source files (7 bytes per line, every
+	// line, every time the file gets re-sent as context on later
+	// turns) and the model doesn't need them — edit goes through
+	// exact-match text replacement, not line ranges.
+	//
+	// The TUI renders its own gutter using the start offset stored
+	// in Details, so the on-screen view still looks like cat -n.
 	var sb strings.Builder
-	for i, line := range selected {
-		fmt.Fprintf(&sb, "%6d\t%s\n", start+i+1, line)
+	for _, line := range selected {
+		sb.WriteString(line)
+		sb.WriteByte('\n')
 	}
 	if truncLines {
 		sb.WriteString(fmt.Sprintf("... [truncated at %d lines]\n", maxReadLines))
@@ -142,6 +151,7 @@ func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		Content: []provider.Content{provider.TextBlock{Text: sb.String()}},
 		Details: map[string]any{
 			"path":            path,
+			"start_line":      start + 1, // 1-indexed; TUI draws the gutter
 			"lines_truncated": truncLines,
 			"bytes_truncated": truncBytes,
 			"total_lines":     len(lines),

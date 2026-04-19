@@ -45,11 +45,13 @@ func TestReadOffsetLimit(t *testing.T) {
 	tool := &ReadTool{CWD: dir}
 	res, _ := tool.Execute(context.Background(), mustJSON(t, map[string]any{"path": "a.txt", "offset": 2, "limit": 2}), nil)
 	got := res.Content[0].(provider.TextBlock).Text
-	if !strings.Contains(got, "2\t2") || !strings.Contains(got, "3\t3") {
-		t.Fatalf("got %q", got)
+	// Current output format is raw bytes (no embedded line numbers):
+	// the tui draws its own gutter from the `start_line` detail.
+	if got != "2\n3\n" {
+		t.Fatalf("want \"2\\n3\\n\", got %q", got)
 	}
-	if strings.Contains(got, "1\t1") || strings.Contains(got, "4\t4") {
-		t.Fatalf("leaked lines: %q", got)
+	if start, ok := res.Details.(map[string]any)["start_line"]; !ok || start != 2 {
+		t.Errorf("start_line detail want 2, got %v", start)
 	}
 }
 
