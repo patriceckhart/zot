@@ -269,6 +269,44 @@ func (m *Manager) loadOne(ctx context.Context, dir string) error {
 	return nil
 }
 
+// LoadExplicit loads each path as an ad-hoc extension. Used for
+// `zot --ext <path>` so extension authors can iterate on a working
+// copy without having to `zot ext install` after every change.
+//
+// Loaded BEFORE Discover so explicit paths win on name conflicts
+// against installed extensions. Spawns happen in parallel like the
+// regular discovery path; errors are returned per path.
+func (m *Manager) LoadExplicit(ctx context.Context, paths []string) []error {
+	if len(paths) == 0 {
+		return nil
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(paths))
+	for _, p := range paths {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			errCh <- fmt.Errorf("%s: %w", p, err)
+			continue
+		}
+		wg.Add(1)
+		go func(extDir string) {
+			defer wg.Done()
+			if err := m.loadOne(ctx, extDir); err != nil {
+				errCh <- fmt.Errorf("%s: %w", extDir, err)
+			}
+		}(abs)
+	}
+	wg.Wait()
+	close(errCh)
+
+	var errs []error
+	for e := range errCh {
+		errs = append(errs, e)
+	}
+	return errs
+}
+
 // WaitForReady blocks until every loaded extension has signalled
 // ReadyFromExt, or the grace period expires for the slowest one.
 //

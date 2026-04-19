@@ -38,6 +38,12 @@ type Args struct {
 	Tools    []string
 	MaxSteps int
 
+	// Exts is a list of directory paths the user passed via --ext.
+	// Each must contain an extension.json. Loaded for one session
+	// only; never persisted. Take precedence over installed exts of
+	// the same name.
+	Exts []string
+
 	ListModels bool
 	Help       bool
 	Version    bool
@@ -120,6 +126,15 @@ func ParseArgs(in []string) (Args, error) {
 				return a, err
 			}
 			a.AppendSystemPrompt = append(a.AppendSystemPrompt, v)
+		case "--ext", "-e":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			// Repeatable; each value is a directory containing an
+			// extension.json. Resolved to absolute later so paths like
+			// "." survive a later cwd change.
+			a.Exts = append(a.Exts, v)
 		case "--reasoning":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -219,6 +234,9 @@ flags:
   --cwd PATH                   treat PATH as the working directory
   --no-tools                   disable all tools
   --tools csv                  only enable the listed tools
+  -e, --ext PATH               load an extension from PATH for this run
+                               (repeatable; takes precedence over
+                               installed extensions of the same name)
 
   --max-steps N                agent loop iteration cap (default 50)
   --list-models                print known models and exit

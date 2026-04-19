@@ -333,6 +333,21 @@ zot ext logs <name> [-f]        cat / tail the extension's stderr
 shallow clone. Both validate that the destination contains an
 `extension.json` and roll back if not.
 
+## Loading an extension for one run
+
+For iteration on a working copy, skip the install + reload cycle
+and load straight from disk for one zot session:
+
+```
+zot --ext ./my-extension        # short form: -e ./my-extension
+zot --ext ./a -e ./b            # repeatable
+```
+
+`--ext` paths take precedence over installed extensions of the same
+name, so you can shadow an installed copy with a work-in-progress
+version without uninstalling first. Nothing is copied or persisted;
+the extension dies with zot like any other subprocess.
+
 ## SDKs
 
 Writing the wire protocol by hand is fine for one-off scripts, but

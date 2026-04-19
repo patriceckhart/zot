@@ -50,6 +50,9 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 	// emit RPC events instead of TUI lines so any consumer can react.
 	extHooks := &rpcExtHooks{}
 	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, extHooks)
+	for _, e := range extMgr.LoadExplicit(ctx, args.Exts) {
+		fmt.Fprintln(os.Stderr, "extension load:", e)
+	}
 	discoveryErrs := extMgr.Discover(ctx)
 	for _, e := range discoveryErrs {
 		fmt.Fprintln(os.Stderr, "extension load:", e)
