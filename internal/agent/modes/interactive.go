@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/patriceckhart/zot/internal/agent/extensions"
 	"github.com/patriceckhart/zot/internal/agent/tools"
 	"github.com/patriceckhart/zot/internal/auth"
 	"github.com/patriceckhart/zot/internal/core"
@@ -78,6 +79,11 @@ type InteractiveConfig struct {
 
 	OnAssistant  func(m provider.Message)
 	OnToolResult func(id string, r core.ToolResult)
+
+	// Extensions, if non-nil, lets users invoke extension-registered
+	// slash commands. Commands declared by extensions are looked up
+	// AFTER the built-in catalog so a built-in name always wins.
+	Extensions *extensions.Manager
 }
 
 // Interactive is the TUI chat loop.
@@ -146,6 +152,11 @@ type Interactive struct {
 	// banner shows the binary version for welcomeVersionDuration
 	// after this point and reverts to plain text after.
 	welcomeStart time.Time
+
+	// extNotes are one-shot styled lines pushed by extensions via
+	// Notify / Display. They live above the editor (just below the
+	// transcript) until cleared by /clear or another reset.
+	extNotes []string
 }
 
 // welcomeVersionDuration is how long the welcome banner shows the
@@ -486,6 +497,13 @@ func (i *Interactive) redraw() {
 		chat = append(chat, i.cfg.Theme.FG256(i.cfg.Theme.Tool, line), "")
 	}
 
+	// Extension notes (notify / display) live just under the
+	// transcript, above the dialog/editor band. Cleared by /clear.
+	if len(i.extNotes) > 0 {
+		chat = append(chat, i.extNotes...)
+		chat = append(chat, "")
+	}
+
 	// Dialogs (login or model picker) render between chat and the editor.
 	var dialog []string
 	switch {
@@ -503,6 +521,19 @@ func (i *Interactive) redraw() {
 
 	// Slash-command autocomplete: popup above the status line, only
 	// when the editor starts with "/" and no dialog is already open.
+	// Feed extension-registered commands into the suggester first so
+	// they show up in tab-complete + the popup alongside the built-ins.
+	if i.cfg.Extensions != nil {
+		catalog := i.cfg.Extensions.Commands()
+		extra := make([]slashCommand, 0, len(catalog))
+		for _, c := range catalog {
+			extra = append(extra, slashCommand{
+				Name: "/" + c.Name,
+				Desc: c.Description + "  (ext: " + c.Extension + ")",
+			})
+		}
+		i.suggest.SetExtra(extra)
+	}
 	var suggest []string
 	currentInput := i.ed.Value()
 	if len(dialog) == 0 && i.suggest.Active(currentInput) && !i.busy {
@@ -874,10 +905,19 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.suggest.Reset()
 
 		if looksLikeSlashCommand(text) {
+			head := text
+			rest := ""
+			if idx := strings.IndexAny(text, " \t"); idx >= 0 {
+				head = text[:idx]
+				rest = strings.TrimSpace(text[idx:])
+			}
 			if !isKnownSlashCommand(text) {
-				head := text
-				if idx := strings.IndexAny(text, " \t"); idx >= 0 {
-					head = text[:idx]
+				// Try extensions before giving up. Extensions register
+				// commands by bare name (no leading slash); strip it here.
+				extName := strings.TrimPrefix(head, "/")
+				if i.cfg.Extensions != nil && i.cfg.Extensions.HasCommand(extName) {
+					go i.invokeExtensionCommand(ctx, extName, rest)
+					return false
 				}
 				i.mu.Lock()
 				i.statusErr = "unknown command " + head + " — type /help to see the list"
@@ -892,10 +932,6 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			// race with a streaming response. Safe commands (/help,
 			// /jump, /sessions, /lock, /unlock, /exit) run immediately
 			// without disturbing the active turn.
-			head := text
-			if idx := strings.IndexAny(text, " \t"); idx >= 0 {
-				head = text[:idx]
-			}
 			if slashCancelsTurn(head) {
 				i.cancelAndWaitForIdle()
 			}
@@ -924,6 +960,103 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	return false
 }
 
+// invokeExtensionCommand fires an extension-registered slash command
+// in a background goroutine, awaits the response, and applies the
+// requested action (prompt / insert / display / noop). Errors and
+// timeouts surface as a status_err line.
+func (i *Interactive) invokeExtensionCommand(ctx context.Context, name, args string) {
+	resp, err := i.cfg.Extensions.Invoke(ctx, name, args, 30*time.Second)
+	if err != nil {
+		i.mu.Lock()
+		i.statusErr = "extension /" + name + ": " + err.Error()
+		i.statusOK = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	if resp.Error != "" {
+		i.mu.Lock()
+		i.statusErr = "extension /" + name + ": " + resp.Error
+		i.statusOK = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	switch resp.Action {
+	case "prompt":
+		if strings.TrimSpace(resp.Prompt) == "" {
+			return
+		}
+		i.startTurn(i.runCtx, resp.Prompt)
+	case "insert":
+		i.ed.Insert(resp.Insert)
+		i.invalidate()
+	case "display":
+		i.appendExtensionNote(name, resp.Display, "info")
+	case "noop", "":
+		// nothing
+	default:
+		i.mu.Lock()
+		i.statusErr = "extension /" + name + ": unknown action " + resp.Action
+		i.mu.Unlock()
+		i.invalidate()
+	}
+}
+
+// appendExtensionNote renders an extension-originated note in the
+// chat. Levels: "info" (muted), "warn" (warning), "error" (error),
+// "success" (tool/ok green).
+func (i *Interactive) appendExtensionNote(extName, msg, level string) {
+	if msg == "" {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	color := i.cfg.Theme.Muted
+	switch level {
+	case "warn":
+		color = i.cfg.Theme.Warning
+	case "error":
+		color = i.cfg.Theme.Error
+	case "success":
+		color = i.cfg.Theme.Tool
+	}
+	prefix := i.cfg.Theme.FG256(i.cfg.Theme.Accent, "["+extName+"] ")
+	for _, line := range strings.Split(msg, "\n") {
+		i.statusOK = "" // clear any stale ok
+		i.statusErr = ""
+		i.extNotes = append(i.extNotes, prefix+i.cfg.Theme.FG256(color, line))
+	}
+}
+
+// HostHooks implementation for the extension manager. The manager
+// holds an interface, not a concrete *Interactive, so these methods
+// are the only thing the manager sees.
+
+// Notify is the manager's NotifyFromExt entry point.
+func (i *Interactive) Notify(extName, level, message string) {
+	i.appendExtensionNote(extName, message, level)
+	i.invalidate()
+}
+
+// Submit feeds text through the agent loop as if the user had typed it.
+func (i *Interactive) Submit(text string) {
+	i.startTurn(i.runCtx, text)
+}
+
+// Insert places text at the cursor in the editor.
+func (i *Interactive) Insert(text string) {
+	i.ed.Insert(text)
+	i.invalidate()
+}
+
+// Display appends a styled note from extName to the chat without a
+// model call.
+func (i *Interactive) Display(extName, text string) {
+	i.appendExtensionNote(extName, text, "info")
+	i.invalidate()
+}
+
 func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	parts := strings.Fields(cmd)
 	switch parts[0] {
@@ -942,6 +1075,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.parkedTurn = 0
 		i.parkedTotal = 0
 		i.scrollOffset = 0
+		i.extNotes = nil
 		i.view.InvalidateRenderCache()
 		i.mu.Unlock()
 	case "/help":

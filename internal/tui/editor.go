@@ -311,6 +311,10 @@ func singleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
+// Insert places s into the editor at the cursor, splitting on
+// newlines so multi-line pastes preserve their structure.
+func (e *Editor) Insert(s string) { e.insert(s) }
+
 func (e *Editor) insert(s string) {
 	e.histIdx = -1
 	line := e.Lines[e.CursorR]

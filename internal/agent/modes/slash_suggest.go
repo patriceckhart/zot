@@ -46,6 +46,39 @@ var slashCatalog = []slashCommand{
 // with "/". It does not own any input state — the editor drives.
 type slashSuggester struct {
 	cursor int
+
+	// extra are commands contributed by extensions, refreshed each
+	// frame from the extension manager. Empty when no extensions
+	// have registered any.
+	extra []slashCommand
+}
+
+// SetExtra updates the extension-contributed command list. Called
+// once per render with the live snapshot from the extension manager.
+func (s *slashSuggester) SetExtra(cmds []slashCommand) { s.extra = cmds }
+
+// allCatalog returns slashCatalog plus the current extra commands
+// (extension-registered). Extra entries are only kept if they don't
+// collide with a built-in name; the built-in always wins.
+func (s *slashSuggester) allCatalog() []slashCommand {
+	if len(s.extra) == 0 {
+		return slashCatalog
+	}
+	out := make([]slashCommand, 0, len(slashCatalog)+len(s.extra))
+	out = append(out, slashCatalog...)
+	for _, c := range s.extra {
+		dup := false
+		for _, b := range slashCatalog {
+			if b.Name == c.Name {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // looksLikeSlashCommand reports whether text is an attempt at a slash
@@ -78,7 +111,9 @@ func looksLikeSlashCommand(text string) bool {
 }
 
 // isKnownSlashCommand reports whether text's head matches a registered
-// slash command name in slashCatalog.
+// slash command name in slashCatalog. Built-in only; extension
+// commands are looked up separately by the dispatcher (which
+// consults the extension manager).
 func isKnownSlashCommand(text string) bool {
 	text = strings.TrimSpace(text)
 	if text == "" || text[0] != '/' {
@@ -110,7 +145,7 @@ func (s *slashSuggester) matches(input string) []slashCommand {
 		return nil
 	}
 	var out []slashCommand
-	for _, c := range slashCatalog {
+	for _, c := range s.allCatalog() {
 		if strings.HasPrefix(c.Name, input) {
 			out = append(out, c)
 		}

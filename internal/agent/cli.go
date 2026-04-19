@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/patriceckhart/zot/internal/agent/extensions"
 	"github.com/patriceckhart/zot/internal/agent/modes"
 	"github.com/patriceckhart/zot/internal/auth"
 	"github.com/patriceckhart/zot/internal/core"
@@ -15,11 +17,50 @@ import (
 	"github.com/patriceckhart/zot/internal/tui"
 )
 
+// interactiveExtHooks is a tiny adapter that lets the extension
+// manager call back into the Interactive instance built later in
+// runInteractive. The forward-declared *modes.Interactive is filled
+// in immediately after manager construction.
+type interactiveExtHooks struct {
+	ivPtr **modes.Interactive
+}
+
+func (h *interactiveExtHooks) iv() *modes.Interactive {
+	if h == nil || h.ivPtr == nil {
+		return nil
+	}
+	return *h.ivPtr
+}
+
+func (h *interactiveExtHooks) Notify(extName, level, message string) {
+	if iv := h.iv(); iv != nil {
+		iv.Notify(extName, level, message)
+	}
+}
+func (h *interactiveExtHooks) Submit(text string) {
+	if iv := h.iv(); iv != nil {
+		iv.Submit(text)
+	}
+}
+func (h *interactiveExtHooks) Insert(text string) {
+	if iv := h.iv(); iv != nil {
+		iv.Insert(text)
+	}
+}
+func (h *interactiveExtHooks) Display(extName, text string) {
+	if iv := h.iv(); iv != nil {
+		iv.Display(extName, text)
+	}
+}
+
 // Run is the top-level entrypoint for the zot binary.
 func Run(rawArgs []string, version string) error {
 	// Subcommand router: `zot bot ...` is handled separately so the
 	// generic flag parser doesn't reject "bot" as a positional arg.
 	if handled, err := runBotCommand(rawArgs, version); handled {
+		return err
+	}
+	if handled, err := runExtCommand(rawArgs); handled {
 		return err
 	}
 	// `zot rpc` is shorthand for `zot --rpc` so third-party apps can
@@ -223,7 +264,20 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 	}()
 
-	iv := modes.NewInteractive(modes.InteractiveConfig{
+	// Forward-declare iv so the extension manager hook adapter can
+	// dereference it after construction. The manager is started after
+	// iv is built so iv (which implements extensions.HostHooks) is
+	// available as the hook target.
+	var iv *modes.Interactive
+	extHooks := &interactiveExtHooks{ivPtr: &iv}
+	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, extHooks)
+	discoveryErrs := extMgr.Discover(ctx)
+	for _, e := range discoveryErrs {
+		fmt.Fprintln(os.Stderr, "extension load:", e)
+	}
+	defer extMgr.Stop(2 * time.Second)
+
+	iv = modes.NewInteractive(modes.InteractiveConfig{
 		Terminal:       term,
 		Theme:          tui.Dark,
 		Model:          r.Model,
@@ -245,6 +299,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		BuildAgent:     buildAgent,
 		BuildAgentFor:  buildAgentFor,
 		LoadSession:    loadSession,
+		Extensions:     extMgr,
 		PersistModel: func(providerName, model string) {
 			// Update config.json so next launch uses the same pick.
 			cfg, _ := LoadConfig()
