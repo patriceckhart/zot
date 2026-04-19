@@ -46,8 +46,23 @@ var funnyWorkingLines = []string{
 	"rewriting history",
 }
 
-// spinnerFrames is a smooth braille spinner.
-var spinnerFrames = []string{"\u280b", "\u2819", "\u2839", "\u2838", "\u283c", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"}
+// spinnerFrames is the cli-spinners "dots3" preset — a 10-frame
+// single-cell braille spinner that reads as a small box of dots
+// rotating around its perimeter. Source:
+// https://github.com/sindresorhus/cli-spinners (MIT). Used at the
+// preset's recommended 80ms per step.
+var spinnerFrames = []string{
+	"⠋",
+	"⠙",
+	"⠚",
+	"⠞",
+	"⠖",
+	"⠦",
+	"⠴",
+	"⠲",
+	"⠳",
+	"⠓",
+}
 
 // newSpinner constructs a fresh spinner.
 func newSpinner() *spinner {
@@ -76,13 +91,14 @@ func (s *spinner) StartFixed(msg string) {
 }
 
 // Frame returns the current spinner glyph for the running animation.
+//
+// 80ms per step matches the dots3 preset's recommended interval.
 func (s *spinner) Frame() string {
 	if s.startedAt.IsZero() {
 		return s.frames[0]
 	}
 	elapsed := time.Since(s.startedAt)
-	// 120ms per frame matches the interactive tick rate.
-	idx := int(elapsed/(120*time.Millisecond)) % len(s.frames)
+	idx := int(elapsed/(80*time.Millisecond)) % len(s.frames)
 	return s.frames[idx]
 }
 
