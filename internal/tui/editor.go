@@ -754,11 +754,16 @@ func wrapLine(s string, width int, cont string) []string {
 		out = append(out, cur.String())
 		cur.Reset()
 		curW = 0
-		if !firstLine {
-			cur.WriteString(cont)
-			curW = contW
-		}
+		// After flushing, everything we append next is a CONTINUATION
+		// row, which must start with the cont indent so the editor's
+		// visual cursor alignment stays consistent. The old code only
+		// wrote cont when !firstLine BEFORE toggling firstLine, which
+		// meant the very first wrap never got its indent. That caused
+		// the terminal cursor to land in the wrong column after a
+		// multi-line paste.
 		firstLine = false
+		cur.WriteString(cont)
+		curW = contW
 	}
 
 	for i := 0; i < len(tokens); i++ {
