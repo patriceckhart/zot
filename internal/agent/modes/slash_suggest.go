@@ -23,7 +23,7 @@ type slashCommand struct {
 // the streaming response without trouble.
 func slashCancelsTurn(head string) bool {
 	switch head {
-	case "/clear", "/compact", "/logout", "/login", "/model":
+	case "/clear", "/compact", "/logout", "/login", "/model", "/reload-ext":
 		return true
 	}
 	return false
@@ -43,6 +43,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/compact", Desc: "summarize and replace the transcript to free up context"},
 	{Name: "/lock", Desc: "confine tools to the current directory"},
 	{Name: "/unlock", Desc: "allow tools to touch paths outside this directory"},
+	{Name: "/reload-ext", Desc: "hot-reload all extensions (re-read manifests and respawn)"},
 	{Name: "/clear", Desc: "clear the chat transcript"},
 	{Name: "/exit", Desc: "exit zot"},
 }

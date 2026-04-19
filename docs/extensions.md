@@ -212,23 +212,51 @@ which it wants to intercept. Send once after `hello`, before `ready`.
 ```json
 {"type":"subscribe",
  "events":["session_start","turn_start","tool_call","turn_end","assistant_message"],
- "intercept":["tool_call"]}
+ "intercept":["tool_call","turn_start","assistant_message"]}
 ```
 
 Recognised event names: `session_start`, `turn_start`, `turn_end`,
-`tool_call`, `assistant_message`. Only `tool_call` is interceptable
-in this version; other names listed under `intercept` are ignored.
+`tool_call`, `assistant_message`.
+
+Interceptable events:
+
+- `tool_call`: block the call (model sees `reason` as the tool
+  error) or rewrite args via `modified_args`.
+- `turn_start`: block the turn before the model is called. Useful
+  for rate-limiting and business-hour gates. `reason` is shown to
+  the user as a status line. No rewrite supported.
+- `assistant_message`: suppress the message via `block`, or rewrite
+  the user-visible text via `replace_text`. The model's original
+  text stays in the transcript so the model sees what it actually
+  said on subsequent turns.
 
 #### `event_intercept_response`
 
-Reply to an `event_intercept` from the host. `block: true` refuses
-the action; `reason` is shown to the model as the tool error text.
+Reply to an `event_intercept` from the host. All fields default to
+"allow, pass through unmodified".
+
+| field | meaning |
+|---|---|
+| `block` | `true` refuses the action. For `tool_call`, `reason` is shown to the model; for `turn_start` / `assistant_message`, `reason` is shown to the user. |
+| `reason` | refusal text (on block) or pass-through note. |
+| `modified_args` | for `tool_call`: rewritten JSON args the tool will actually see. Must be a valid JSON object. Ignored when `block` is true. |
+| `replace_text` | for `assistant_message`: replaces the user-visible text. The model's original output still lives in the transcript. Ignored when `block` is true. |
+
 Missing the response within 5s is treated as "allow" (i.e. an
-unresponsive extension never stalls the agent).
+unresponsive extension never stalls the agent). When multiple
+extensions subscribe to the same event, they're consulted serially;
+the first `block` wins and rewrites (args / text) chain: each
+subsequent interceptor sees the previous one's output.
 
 ```json
 {"type":"event_intercept_response","id":"...",
  "block":true,"reason":"refused: matches danger pattern \"rm -rf\""}
+
+{"type":"event_intercept_response","id":"...",
+ "modified_args":{"command":"echo GUARDED: ls"}}
+
+{"type":"event_intercept_response","id":"...",
+ "replace_text":"[redacted]"}
 ```
 
 #### `command_response` (reply to `command_invoked`)
@@ -319,17 +347,26 @@ Lifecycle notification for events the extension subscribed to via
 
 #### `event_intercept`
 
-Sent when zot wants to give the extension a chance to block a
-lifecycle event before it happens. Same payload shape as `event`.
-Reply with `event_intercept_response` within 5s; missing the deadline
-is treated as "allow".
+Sent when zot wants to give the extension a chance to block, modify,
+or annotate a lifecycle event before it happens. Reply with
+`event_intercept_response` within 5s; missing the deadline is
+treated as "allow".
 
-Only `event: "tool_call"` is sent in this version.
+Payload fields depend on the event:
 
 ```json
+// tool_call: includes the tool id, name, and parsed args
 {"type":"event_intercept","id":"...","event":"tool_call",
  "tool_id":"...","tool_name":"bash",
  "tool_args":{"command":"rm -rf /tmp/foo"}}
+
+// turn_start: includes the step number
+{"type":"event_intercept","id":"...","event":"turn_start",
+ "step":3}
+
+// assistant_message: includes the assembled text
+{"type":"event_intercept","id":"...","event":"assistant_message",
+ "text":"here is your api key: sk-ant-..."}
 ```
 
 #### `shutdown`
@@ -406,12 +443,53 @@ func main() {
 Build with `go build -o hello .`, drop the binary + an `extension.json`
 into `$ZOT_HOME/extensions/hello/`.
 
+The SDK has four interceptor hooks, all optional:
+
+```go
+// Refuse calls or rewrite args before they run.
+ext.InterceptToolCall(func(tool string, args json.RawMessage) (bool, string) {
+    if tool == "bash" { /* inspect args, return false, reason */ }
+    return true, ""
+})
+
+// Richer variant: returns ToolCallDecision so you can also rewrite
+// args via ModifiedArgs.
+ext.InterceptToolCallX(func(tool string, args json.RawMessage) zotext.ToolCallDecision {
+    return zotext.ToolCallDecision{
+        ModifiedArgs: json.RawMessage(`{"command":"echo GUARDED"}`),
+    }
+})
+
+// Block the next turn before the model is called.
+ext.InterceptTurnStart(func(step int) zotext.TurnStartDecision {
+    if time.Now().Hour() < 9 { return zotext.TurnStartDecision{Block: true, Reason: "outside business hours"} }
+    return zotext.TurnStartDecision{}
+})
+
+// Scrub or rewrite the assistant's final text before the user sees it.
+ext.InterceptAssistantMessage(func(text string) zotext.AssistantMessageDecision {
+    return zotext.AssistantMessageDecision{
+        ReplaceText: strings.ReplaceAll(text, "SECRET", "[redacted]"),
+    }
+})
+```
+
 See:
 - `examples/extensions/hello/` — slash commands
 - `examples/extensions/clock/` — slash commands in plain Node, no SDK
 - `examples/extensions/weather/` — LLM-callable tool
 - `examples/extensions/guard/` — event subscriptions + tool-call
   interception (refuses dangerous bash patterns)
+
+### Hot reload
+
+Type `/reload-ext` in the TUI to tear down every running extension
+subprocess, re-read the manifests from disk, and respawn the set.
+The agent's tool registry is rebuilt automatically, so freshly-
+registered extension tools become callable without restarting zot.
+Useful while developing an extension: edit, save, `/reload-ext`,
+done. Explicit `--ext` paths are remembered and reloaded alongside
+discovered extensions.
 
 ### TypeScript / Python
 
@@ -449,7 +527,15 @@ Phase 3 (shipped):
       `tool_call`, `assistant_message`)
 - [x] tool-call interception (block before execution)
 
+Phase 4 (shipped):
+- [x] interception for `turn_start` and `assistant_message` (in
+      addition to `tool_call`)
+- [x] modify tool args mid-flight via `modified_args`
+- [x] rewrite user-visible assistant text via `replace_text`
+- [x] `/reload-ext` slash command (hot-reload without restarting zot)
+
 Future (no firm timeline):
-- [ ] interception for additional events beyond `tool_call`
-- [ ] modify (not just block) tool args mid-flight
-- [ ] `/reload-ext` slash command (hot-reload without restarting zot)
+- [ ] TypeScript and Python SDK packages (currently the wire format
+      is stable enough to hand-roll, see the Python quick-start)
+- [ ] HTTP / WebSocket transport variants (today: subprocess stdio)
+- [ ] per-extension permission scopes (today: full user privileges)

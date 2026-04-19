@@ -771,15 +771,6 @@ func truncateLines(s string, n int) string {
 	return strings.Join(lines[:n], "\n") + "\n  … (" + fmt.Sprintf("%d", len(lines)-n) + " more)"
 }
 
-// StatusBar builds the single-line status shown above the editor.
-//
-// Layout:
-//
-//	[busyPrefix]  provider-model   tokens-cost   ctrl+c hint        cwd
-//	                                                       ↑ right-aligned
-//
-// cols is the terminal width; when > 0 the cwd is placed flush-right
-// with spaces. busyPrefix, if non-empty, is injected at the far left.
 // StatusBarParams groups the many bits of state the status bar needs.
 // Grew from a flat argument list once we started matching pi's format.
 type StatusBarParams struct {
@@ -811,23 +802,21 @@ type StatusBarParams struct {
 	Cols int // terminal width; drives right-alignment of cwd
 }
 
-// StatusBar builds the status shown above the editor. Returns one or
-// two lines depending on whether the (provider, model, stats, cwd)
-// payload fits the terminal width.
+// StatusBar builds the status shown above the editor. Always returns
+// two lines when a cwd is provided: the stats on the first line, the
+// cwd on its own line below, indented to match the stats column. This
+// keeps the status bar stable across terminal resizes (the cwd never
+// jumps from right-aligned-on-line-1 to flush-left-on-line-2) and
+// makes a long cwd safe at any width.
 //
 // Layout:
 //
-//	<busyPrefix>  (provider) model  stats   cwd   <- one line if it fits
+//	<busyPrefix>  (provider) model  stats   <- line 1
+//	  cwd                                   <- line 2 (2-space indent)
 //
-// or, when it doesn't:
-//
-//	<busyPrefix>  (provider) model  stats        <- line 1
-//	cwd                                          <- line 2
-//
-// The right-side gap is a fixed three spaces, not a stretched-to-fill
-// fill. The old "ctrl+c exit - /help" / "esc cancel" hint is gone
-// entirely — the slash-command popup and the queued/sliding-in chips
-// already cover the discoverability of those keybindings.
+// The old "ctrl+c exit - /help" / "esc cancel" hint is gone entirely.
+// The slash-command popup and the queued/sliding-in chips already
+// cover the discoverability of those keybindings.
 func StatusBar(p StatusBarParams) []string {
 	th := p.Theme
 
@@ -903,14 +892,10 @@ func StatusBar(p StatusBarParams) []string {
 		return []string{primary}
 	}
 
-	cwdRendered := th.FG256(th.Muted, cwd)
-	combined := primary + pad + cwdRendered
-
-	// Wrap to a second line when the combined width would overflow.
-	if p.Cols > 0 && visibleWidth(combined) > p.Cols {
-		return []string{primary, cwdRendered}
-	}
-	return []string{combined}
+	// Second line: indent with the same 2-space pad so the cwd lines
+	// up under the "(provider)" column on line 1.
+	cwdRendered := pad + th.FG256(th.Muted, cwd)
+	return []string{primary, cwdRendered}
 }
 
 // piContextUsage renders the "N%/ctxMax" fragment, returning the

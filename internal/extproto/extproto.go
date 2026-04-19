@@ -91,13 +91,27 @@ type SubscribeFromExt struct {
 
 // EventInterceptResponseFromExt is the extension's reply to an
 // EventInterceptFromHost. block=true refuses the underlying action;
-// reason is shown to the model as the tool error message. Both
-// fields default to (false, "") meaning "allow".
+// reason is shown to the model (or the user) as the refusal text.
+// All fields default to "allow, pass through unmodified".
+//
+// Optional rewrite fields, their meaning depends on the event:
+//
+//   - ModifiedArgs: for event="tool_call", replaces the args the
+//     tool will see. Must be a JSON object literal or the rewrite is
+//     dropped and a warning logged.
+//   - ReplaceText: for event="assistant_message", replaces the user-
+//     visible text. The model's original text stays in the transcript
+//     (so the model can reference what it "said"); only the rendered
+//     output to the user is swapped.
+//
+// When block=true, rewrite fields are ignored.
 type EventInterceptResponseFromExt struct {
-	Type   string `json:"type"` // "event_intercept_response"
-	ID     string `json:"id"`
-	Block  bool   `json:"block,omitempty"`
-	Reason string `json:"reason,omitempty"`
+	Type         string          `json:"type"` // "event_intercept_response"
+	ID           string          `json:"id"`
+	Block        bool            `json:"block,omitempty"`
+	Reason       string          `json:"reason,omitempty"`
+	ModifiedArgs json.RawMessage `json:"modified_args,omitempty"`
+	ReplaceText  string          `json:"replace_text,omitempty"`
 }
 
 // ToolResultFromExt is the extension's reply to a ToolCallFromHost.
@@ -215,20 +229,34 @@ type EventFromHost struct {
 }
 
 // EventInterceptFromHost is sent when zot wants to give the
-// extension a chance to block / annotate a lifecycle event before
-// it happens. Same payload shape as EventFromHost. Reply with
-// EventInterceptResponseFromExt within the host's intercept timeout
-// (default 5s); missing the deadline is treated as "allow".
+// extension a chance to block, modify, or annotate a lifecycle
+// event before it happens. Reply with EventInterceptResponseFromExt
+// within the host's intercept timeout (default 5s); missing the
+// deadline is treated as "allow".
 //
-// Only Event="tool_call" is sent in this version.
+// Supported events and their effect on block=true:
+//
+//   - tool_call:         cancel the tool; model sees reason as error.
+//     Can also modify args via ModifiedArgs.
+//   - turn_start:        cancel the turn before the model call.
+//     Reason is shown as a chat status line.
+//   - assistant_message: suppress the message. Can also rewrite
+//     the user-visible text via ReplaceText.
 type EventInterceptFromHost struct {
 	Type  string `json:"type"` // "event_intercept"
 	ID    string `json:"id"`
 	Event string `json:"event"`
 
+	// tool_call payload
 	ToolID   string          `json:"tool_id,omitempty"`
 	ToolName string          `json:"tool_name,omitempty"`
 	ToolArgs json.RawMessage `json:"tool_args,omitempty"`
+
+	// turn_start payload
+	Step int `json:"step,omitempty"`
+
+	// assistant_message payload
+	Text string `json:"text,omitempty"`
 }
 
 // ShutdownFromHost asks the extension to clean up and exit. Zot

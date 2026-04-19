@@ -195,6 +195,7 @@ Type `/` in the TUI to open the autocomplete popup. Available commands:
 | `/compact` | Summarize the transcript into one message to free up context. |
 | `/lock` | Confine tools to the current directory. |
 | `/unlock` | Allow tools to touch paths outside again. |
+| `/reload-ext` | Hot-reload all extensions (re-read manifests, respawn subprocesses, rebuild tool registry). |
 | `/clear` | Clear the chat transcript. |
 | `/exit` | Exit zot. |
 
@@ -270,7 +271,7 @@ Frames containing images are full-repainted (no differential diff) to prevent st
 
 You can keep typing while the agent is working. Pressing `enter` during a turn queues the message instead of interrupting: it shows up above the status bar as `sliding in: <text>` and is delivered as the next user turn the moment the current one finishes. Queue as many as you want; they run in order. `esc` or `ctrl+c` cancels the active turn and drops the queue so a runaway turn doesn't flood you with stale follow-ups.
 
-Slash commands also work while the agent is busy. Read-only ones (`/help`, `/jump`, `/btw`, `/sessions`, `/skills`, `/lock`, `/unlock`, `/exit`) take effect immediately. Destructive ones (`/clear`, `/compact`, `/login`, `/logout`, `/model`) cancel the active turn first and then run.
+Slash commands also work while the agent is busy. Read-only ones (`/help`, `/jump`, `/btw`, `/sessions`, `/skills`, `/lock`, `/unlock`, `/exit`) take effect immediately. Destructive ones (`/clear`, `/compact`, `/login`, `/logout`, `/model`, `/reload-ext`) cancel the active turn first and then run.
 
 ## Keys (interactive mode)
 
@@ -306,7 +307,7 @@ Slash commands also work while the agent is busy. Read-only ones (`/help`, `/jum
 
 ## Extensions
 
-zot can be extended in any language via a subprocess + JSON-RPC protocol. Extensions can register slash commands, expose tools to the model, and intercept tool calls for permission gates. None are installed by default; opt in explicitly.
+zot can be extended in any language via a subprocess + JSON-RPC protocol. Extensions can register slash commands, expose tools to the model, intercept tool calls (block or rewrite args), gate whole turns before the model is called, and rewrite the assistant's visible text before it reaches the user. None are installed by default; opt in explicitly. Hot-reload any time with `/reload-ext`.
 
 ### Install and manage
 

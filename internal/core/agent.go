@@ -23,10 +23,27 @@ type Agent struct {
 
 	// BeforeToolExecute, if set, is called immediately before each
 	// tool runs. Returning (allowed=false, reason) short-circuits
-	// the call with an error result containing reason. Used by the
-	// extension manager's tool-call interception. Always treated as
-	// (allowed=true, "") when nil.
-	BeforeToolExecute func(call provider.ToolCallBlock) (allowed bool, reason string)
+	// the call with an error result containing reason. Optionally,
+	// returning a non-nil modifiedArgs replaces the JSON args the
+	// tool will see, which lets guards redact / augment / patch the
+	// model's request without rewriting the transcript. Empty or
+	// malformed modifiedArgs is ignored.
+	BeforeToolExecute func(call provider.ToolCallBlock) (allowed bool, reason string, modifiedArgs json.RawMessage)
+
+	// BeforeTurn, if set, is called before each turn's model call.
+	// Returning (allowed=false, reason) aborts the turn; reason is
+	// surfaced as an assistant-like status line. Used for rate-
+	// limiting, business-hour gates, and deny-by-default setups.
+	BeforeTurn func(step int) (allowed bool, reason string)
+
+	// BeforeAssistantMessage, if set, is called after the model's
+	// final assistant message is assembled but before it's appended
+	// to the transcript. Returning (allowed=false) suppresses both
+	// the transcript append and the UI event. A non-empty
+	// replacement rewrites the visible text for the user while
+	// leaving the model's original text in the transcript (so the
+	// model can still see what it said in subsequent turns).
+	BeforeAssistantMessage func(text string) (allowed bool, reason, replacement string)
 
 	// OnEvent, if set, mirrors every AgentEvent the loop emits to
 	// this callback in addition to the per-Prompt sink. Used by the
@@ -57,6 +74,15 @@ func (a *Agent) Messages() []provider.Message {
 	out := make([]provider.Message, len(a.messages))
 	copy(out, a.messages)
 	return out
+}
+
+// SetTools swaps the tool registry. Used by /reload-ext to hand
+// the agent a fresh registry after extension subprocesses have been
+// respawned (and their freshly-registered tools merged in).
+func (a *Agent) SetTools(reg Registry) {
+	a.mu.Lock()
+	a.Tools = reg
+	a.mu.Unlock()
 }
 
 // SetMessages replaces the transcript (used when resuming a session).
@@ -134,6 +160,16 @@ func (a *Agent) wrapSink(sink func(AgentEvent)) func(AgentEvent) {
 func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 	for step := 1; step <= a.MaxSteps; step++ {
 		sink(EvTurnStart{Step: step})
+		if a.BeforeTurn != nil {
+			if allowed, reason := a.BeforeTurn(step); !allowed {
+				if reason == "" {
+					reason = "turn blocked by extension guard"
+				}
+				sink(EvTurnEnd{Stop: provider.StopError, Err: fmt.Errorf("%s", reason)})
+				sink(EvDone{})
+				return nil
+			}
+		}
 		stop, assistantMsg, err := a.oneTurn(ctx, sink)
 		sink(EvTurnEnd{Stop: stop, Err: err})
 		if err != nil {
@@ -208,12 +244,33 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 
 	// Append assistant message to transcript. Aborted turns (Esc / Ctrl+C)
 	// produce partial, mid-sentence content that would confuse subsequent
-	// turns if it stayed in the transcript — drop it instead.
+	// turns if it stayed in the transcript, drop it instead.
 	if len(finalMsg.Content) > 0 && stop != provider.StopAborted {
+		emit := finalMsg
+		suppress := false
+
+		// BeforeAssistantMessage hook: extensions can suppress or
+		// rewrite the visible text. The transcript keeps the
+		// model's original output so the model still sees what it
+		// said on subsequent turns.
+		if a.BeforeAssistantMessage != nil {
+			orig := extractText(finalMsg)
+			if orig != "" {
+				allowed, _, replacement := a.BeforeAssistantMessage(orig)
+				if !allowed {
+					suppress = true
+				} else if replacement != "" && replacement != orig {
+					emit = replaceText(finalMsg, replacement)
+				}
+			}
+		}
+
 		a.mu.Lock()
 		a.messages = append(a.messages, finalMsg)
 		a.mu.Unlock()
-		sink(EvAssistantMessage{Message: finalMsg})
+		if !suppress {
+			sink(EvAssistantMessage{Message: emit})
+		}
 		// Now surface tool calls as EvToolCall events so UIs can render them
 		// in order before the tool results arrive.
 		for _, c := range finalMsg.Content {
@@ -265,12 +322,17 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, sink 
 		}
 	}
 
+	args := tc.Arguments
+
 	// Intercept hook: an extension or other guard can refuse the
-	// call before any side effect happens. The model sees the
-	// reason as the tool error, learns from it, and (typically)
-	// proposes a different action.
+	// call before any side effect happens, OR rewrite the args
+	// seen by the tool. The model sees the reason as the tool
+	// error, learns from it, and (typically) proposes a different
+	// action; rewrites are invisible to the model (they apply only
+	// to the execution).
 	if a.BeforeToolExecute != nil {
-		if allowed, reason := a.BeforeToolExecute(tc); !allowed {
+		allowed, reason, modified := a.BeforeToolExecute(tc)
+		if !allowed {
 			if reason == "" {
 				reason = "tool call refused by extension guard"
 			}
@@ -279,9 +341,11 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, sink 
 				IsError: true,
 			}
 		}
+		if len(modified) > 0 && json.Valid(modified) {
+			args = modified
+		}
 	}
 
-	args := tc.Arguments
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
@@ -317,4 +381,43 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, sink 
 		res = out
 	}()
 	return res
+}
+
+// extractText concatenates all TextBlock content in a message. Used
+// by BeforeAssistantMessage so guards see a single string instead of
+// having to walk provider.Content themselves.
+func extractText(msg provider.Message) string {
+	var out string
+	for _, c := range msg.Content {
+		if tb, ok := c.(provider.TextBlock); ok {
+			if out != "" {
+				out += "\n"
+			}
+			out += tb.Text
+		}
+	}
+	return out
+}
+
+// replaceText returns a copy of msg with every TextBlock replaced by
+// a single TextBlock containing replacement. Non-text content (tool
+// calls, etc.) is preserved in order.
+func replaceText(msg provider.Message, replacement string) provider.Message {
+	out := provider.Message{Role: msg.Role}
+	out.Content = make([]provider.Content, 0, len(msg.Content))
+	replaced := false
+	for _, c := range msg.Content {
+		if _, ok := c.(provider.TextBlock); ok {
+			if !replaced {
+				out.Content = append(out.Content, provider.TextBlock{Text: replacement})
+				replaced = true
+			}
+			continue
+		}
+		out.Content = append(out.Content, c)
+	}
+	if !replaced {
+		out.Content = append(out.Content, provider.TextBlock{Text: replacement})
+	}
+	return out
 }

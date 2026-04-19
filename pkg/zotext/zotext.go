@@ -83,7 +83,64 @@ type Event struct {
 // InterceptHandler decides whether a tool call may proceed. Return
 // (allow=true) to permit, (allow=false, reason) to refuse. The
 // reason is shown to the model as the tool's error text.
+//
+// This is the original 2-value handler. For richer control (arg
+// rewrites, turn_start / assistant_message interception, etc.)
+// register via InterceptToolCallX, InterceptTurnStart, or
+// InterceptAssistantMessage.
 type InterceptHandler func(toolName string, args json.RawMessage) (allow bool, reason string)
+
+// ToolCallDecision is the richer reply an InterceptToolCallHandler
+// can return. Zero value means "allow, pass through".
+type ToolCallDecision struct {
+	// Block refuses the call. The model sees Reason as the tool's
+	// error text and typically proposes a different action.
+	Block bool
+	// Reason is the refusal text shown to the model on Block, or a
+	// logged note when passing through (optional).
+	Reason string
+	// ModifiedArgs, when non-nil and Block is false, replaces the
+	// JSON args the tool actually runs with. Lets guards redact /
+	// augment / patch the model's request without rewriting the
+	// transcript. Must encode to a JSON object.
+	ModifiedArgs json.RawMessage
+}
+
+// ToolCallHandler is the richer form of an interceptor. Use this
+// when you want to rewrite args instead of only blocking.
+type ToolCallHandler func(toolName string, args json.RawMessage) ToolCallDecision
+
+// TurnStartDecision controls whether the next model call runs. Zero
+// value means "allow".
+type TurnStartDecision struct {
+	Block  bool
+	Reason string
+}
+
+// TurnStartHandler is called before every turn's model call. Return
+// Block=true with Reason to abort the turn (shown to the user as a
+// status line). Useful for rate-limiting and business-hour gates.
+type TurnStartHandler func(step int) TurnStartDecision
+
+// AssistantMessageDecision controls the final assistant-text
+// rendering. Zero value means "allow, show as-is".
+type AssistantMessageDecision struct {
+	// Block suppresses the message from the user entirely. The
+	// transcript still records the model's original output so the
+	// model sees what it said on the next turn.
+	Block bool
+	// Reason is logged when blocking (optional).
+	Reason string
+	// ReplaceText, when non-empty and Block is false, is what the
+	// user sees. The model's original text still lives in the
+	// transcript.
+	ReplaceText string
+}
+
+// AssistantMessageHandler is called after the model's final text is
+// assembled but before it's shown. Use it to scrub secrets, expand
+// templates, enforce tone, or suppress responses entirely.
+type AssistantMessageHandler func(text string) AssistantMessageDecision
 
 // ToolResult is the extension's reply to a tool invocation. Build
 // one with TextResult, ImageResult, or directly when you need to
@@ -178,8 +235,12 @@ type Extension struct {
 	toolDefs      []toolDef // ordered so register frames arrive in registration order
 	eventHandlers map[string]EventHandler
 	eventNames    []string // declared subscription order
-	interceptTool InterceptHandler
-	interceptOn   bool
+
+	interceptTool      InterceptHandler
+	interceptToolRich  ToolCallHandler
+	interceptOn        bool
+	interceptTurn      TurnStartHandler
+	interceptAssistant AssistantMessageHandler
 
 	// Caps reported in the hello frame.
 	caps []string
@@ -285,10 +346,42 @@ func (e *Extension) On(name string, fn EventHandler) {
 // Use this to build permission gates: refuse `bash` calls containing
 // `rm -rf`, ask the user for confirmation on dangerous patterns,
 // audit-log every call, etc.
+//
+// For the richer form (arg rewrites, structured decisions) use
+// InterceptToolCallX.
 func (e *Extension) InterceptToolCall(fn InterceptHandler) {
 	e.mu.Lock()
 	e.interceptTool = fn
 	e.interceptOn = true
+	e.mu.Unlock()
+}
+
+// InterceptToolCallX is the richer variant. Return a ToolCallDecision
+// to block, allow, or rewrite args mid-flight. If both
+// InterceptToolCall and InterceptToolCallX are set, the X form wins.
+func (e *Extension) InterceptToolCallX(fn ToolCallHandler) {
+	e.mu.Lock()
+	e.interceptToolRich = fn
+	e.interceptOn = true
+	e.mu.Unlock()
+}
+
+// InterceptTurnStart registers a guard that runs before every turn's
+// model call. Return Block=true with Reason to abort the turn.
+// Useful for deny-by-default gates and usage quotas.
+func (e *Extension) InterceptTurnStart(fn TurnStartHandler) {
+	e.mu.Lock()
+	e.interceptTurn = fn
+	e.mu.Unlock()
+}
+
+// InterceptAssistantMessage registers a guard that runs after the
+// model's final text is assembled but before it's shown. Return
+// Block=true to suppress entirely, or ReplaceText to rewrite what
+// the user sees. The model's original output stays in the transcript.
+func (e *Extension) InterceptAssistantMessage(fn AssistantMessageHandler) {
+	e.mu.Lock()
+	e.interceptAssistant = fn
 	e.mu.Unlock()
 }
 
@@ -320,7 +413,9 @@ func (e *Extension) Run() error {
 	descs := append([]descTuple(nil), e.descriptions...)
 	toolDefs := append([]toolDef(nil), e.toolDefs...)
 	eventNames := append([]string(nil), e.eventNames...)
-	interceptOn := e.interceptOn
+	interceptTool := e.interceptOn
+	interceptTurn := e.interceptTurn != nil
+	interceptAsst := e.interceptAssistant != nil
 	e.mu.Unlock()
 	for _, d := range descs {
 		_ = e.send(extproto.RegisterCommandFromExt{
@@ -337,12 +432,22 @@ func (e *Extension) Run() error {
 			Schema:      td.schema,
 		})
 	}
-	if len(eventNames) > 0 || interceptOn {
-		sub := extproto.SubscribeFromExt{Type: "subscribe", Events: eventNames}
-		if interceptOn {
-			sub.Intercept = []string{"tool_call"}
-		}
-		_ = e.send(sub)
+	var intercepts []string
+	if interceptTool {
+		intercepts = append(intercepts, "tool_call")
+	}
+	if interceptTurn {
+		intercepts = append(intercepts, "turn_start")
+	}
+	if interceptAsst {
+		intercepts = append(intercepts, "assistant_message")
+	}
+	if len(eventNames) > 0 || len(intercepts) > 0 {
+		_ = e.send(extproto.SubscribeFromExt{
+			Type:      "subscribe",
+			Events:    eventNames,
+			Intercept: intercepts,
+		})
 	}
 	// Sentinel: tells the host that all initial registrations have
 	// been flushed and the agent registry can be built. Never block
@@ -442,30 +547,7 @@ func (e *Extension) Run() error {
 			if err := json.Unmarshal(line, &ei); err != nil {
 				continue
 			}
-			e.mu.Lock()
-			fn := e.interceptTool
-			e.mu.Unlock()
-			if fn == nil || ei.Event != "tool_call" {
-				_ = e.send(extproto.EventInterceptResponseFromExt{
-					Type: "event_intercept_response", ID: ei.ID,
-				})
-				continue
-			}
-			go func(id, name string, args json.RawMessage) {
-				defer func() {
-					if r := recover(); r != nil {
-						_ = e.send(extproto.EventInterceptResponseFromExt{
-							Type: "event_intercept_response", ID: id,
-							Block: true, Reason: fmt.Sprintf("intercept panic: %v", r),
-						})
-					}
-				}()
-				allow, reason := fn(name, args)
-				_ = e.send(extproto.EventInterceptResponseFromExt{
-					Type: "event_intercept_response", ID: id,
-					Block: !allow, Reason: reason,
-				})
-			}(ei.ID, ei.ToolName, ei.ToolArgs)
+			go e.dispatchIntercept(ei)
 		case "shutdown":
 			_ = e.send(extproto.ShutdownAckFromExt{Type: "shutdown_ack"})
 			return nil
@@ -522,4 +604,69 @@ func (e *Extension) send(v any) error {
 	defer e.writeMu.Unlock()
 	_, err = e.out.Write(b)
 	return err
+}
+
+// dispatchIntercept runs the per-event handler (tool_call / turn_start
+// / assistant_message) on its own goroutine, catches panics, and
+// always emits exactly one event_intercept_response. Called from the
+// Run loop.
+func (e *Extension) dispatchIntercept(ei extproto.EventInterceptFromHost) {
+	defer func() {
+		if r := recover(); r != nil {
+			_ = e.send(extproto.EventInterceptResponseFromExt{
+				Type:   "event_intercept_response",
+				ID:     ei.ID,
+				Block:  true,
+				Reason: fmt.Sprintf("intercept panic: %v", r),
+			})
+		}
+	}()
+
+	resp := extproto.EventInterceptResponseFromExt{
+		Type: "event_intercept_response",
+		ID:   ei.ID,
+	}
+
+	switch ei.Event {
+	case "tool_call":
+		e.mu.Lock()
+		rich := e.interceptToolRich
+		plain := e.interceptTool
+		e.mu.Unlock()
+		if rich != nil {
+			d := rich(ei.ToolName, ei.ToolArgs)
+			resp.Block = d.Block
+			resp.Reason = d.Reason
+			if !d.Block && len(d.ModifiedArgs) > 0 && json.Valid(d.ModifiedArgs) {
+				resp.ModifiedArgs = d.ModifiedArgs
+			}
+		} else if plain != nil {
+			allow, reason := plain(ei.ToolName, ei.ToolArgs)
+			resp.Block = !allow
+			resp.Reason = reason
+		}
+	case "turn_start":
+		e.mu.Lock()
+		fn := e.interceptTurn
+		e.mu.Unlock()
+		if fn != nil {
+			d := fn(ei.Step)
+			resp.Block = d.Block
+			resp.Reason = d.Reason
+		}
+	case "assistant_message":
+		e.mu.Lock()
+		fn := e.interceptAssistant
+		e.mu.Unlock()
+		if fn != nil {
+			d := fn(ei.Text)
+			resp.Block = d.Block
+			resp.Reason = d.Reason
+			if !d.Block && d.ReplaceText != "" && d.ReplaceText != ei.Text {
+				resp.ReplaceText = d.ReplaceText
+			}
+		}
+	}
+
+	_ = e.send(resp)
 }

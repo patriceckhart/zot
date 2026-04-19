@@ -63,10 +63,40 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 	r.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
 
 	ag := r.NewAgent()
-	ag.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string) {
-		return extMgr.InterceptToolCall(ctx, call.ID, call.Name, call.Arguments)
+	ag.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
+		r := extMgr.InterceptToolCall(ctx, call.ID, call.Name, call.Arguments)
+		if r.Block {
+			return false, r.Reason, nil
+		}
+		return true, "", r.ModifiedArgs
+	}
+	ag.BeforeTurn = func(step int) (bool, string) {
+		r := extMgr.InterceptTurnStart(ctx, step)
+		return !r.Block, r.Reason
+	}
+	ag.BeforeAssistantMessage = func(text string) (bool, string, string) {
+		r := extMgr.InterceptAssistantMessage(ctx, text)
+		if r.Block {
+			return false, r.Reason, ""
+		}
+		return true, "", r.ReplaceText
 	}
 	ag.OnEvent = func(ev core.AgentEvent) { fanoutAgentEvent(extMgr, ev) }
+
+	// /reload-ext hot-reload callback (also triggered via rpc
+	// `reload_ext` if/when added). Rebuilds the tool registry on the
+	// current agent so freshly-registered extension tools become
+	// callable without restarting the rpc process.
+	adapter := &extToolAdapter{mgr: extMgr}
+	extMgr.SetOnReload(func() {
+		resolved, err := Resolve(args, true)
+		if err != nil {
+			return
+		}
+		resolved.MergeExtensionTools(adapter)
+		ag.SetTools(resolved.ToolRegistry)
+	})
+
 	extMgr.EmitEvent(extproto.EventFromHost{Event: "session_start"})
 
 	server := &rpcServer{

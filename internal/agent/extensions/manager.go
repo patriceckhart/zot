@@ -132,6 +132,15 @@ type Manager struct {
 	// toolIndex maps an extension-defined tool name to its owning
 	// extension. Same first-come-first-served rule as commandIndex.
 	toolIndex map[string]*Extension
+
+	// explicitPaths remembers ad-hoc paths passed via --ext so
+	// Reload can respawn them alongside the discovered set.
+	explicitPaths []string
+
+	// onReload, if set, is invoked after a successful Reload. Used
+	// by the host so it can rebuild the agent's tool registry with
+	// the freshly-registered extension tools.
+	onReload func()
 }
 
 // New constructs an empty Manager. Call Discover to populate it from
@@ -283,12 +292,14 @@ func (m *Manager) LoadExplicit(ctx context.Context, paths []string) []error {
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(paths))
+	absPaths := make([]string, 0, len(paths))
 	for _, p := range paths {
 		abs, err := filepath.Abs(p)
 		if err != nil {
 			errCh <- fmt.Errorf("%s: %w", p, err)
 			continue
 		}
+		absPaths = append(absPaths, abs)
 		wg.Add(1)
 		go func(extDir string) {
 			defer wg.Done()
@@ -300,11 +311,128 @@ func (m *Manager) LoadExplicit(ctx context.Context, paths []string) []error {
 	wg.Wait()
 	close(errCh)
 
+	m.mu.Lock()
+	m.explicitPaths = append(m.explicitPaths, absPaths...)
+	m.mu.Unlock()
+
 	var errs []error
 	for e := range errCh {
 		errs = append(errs, e)
 	}
 	return errs
+}
+
+// SetOnReload registers a callback fired after a successful Reload.
+// Hosts use it to rebuild the agent's tool registry with freshly-
+// registered extension tools.
+func (m *Manager) SetOnReload(fn func()) {
+	m.mu.Lock()
+	m.onReload = fn
+	m.mu.Unlock()
+}
+
+// ReloadStats summarises the outcome of Reload.
+type ReloadStats struct {
+	Stopped int     // how many old processes were torn down
+	Loaded  int     // how many new processes reached spawn
+	Ready   int     // how many of those signalled ready in time
+	Errors  []error // non-fatal per-extension errors
+}
+
+// Reload tears down every running extension, re-reads the manifests
+// from disk, respawns everyone (including the --ext paths remembered
+// from LoadExplicit), waits up to grace for ready signals, and
+// invokes the SetOnReload callback so the host can rebuild its tool
+// registry. The manager's internal maps are cleared before the
+// new load to ensure a clean slate.
+//
+// Safe to call concurrently with normal host operations: the lock is
+// released between stop and respawn so pending InvokeTool / Invoke
+// calls on the old processes get a clean error as their stdin
+// closes.
+func (m *Manager) Reload(ctx context.Context, grace time.Duration) ReloadStats {
+	stats := ReloadStats{}
+
+	// Snapshot and remember the explicit paths before we wipe state.
+	m.mu.Lock()
+	old := m.ext
+	explicit := append([]string(nil), m.explicitPaths...)
+	stats.Stopped = len(old)
+	m.ext = map[string]*Extension{}
+	m.commandIndex = map[string]*Extension{}
+	m.toolIndex = map[string]*Extension{}
+	m.explicitPaths = nil
+	callback := m.onReload
+	m.mu.Unlock()
+
+	// Graceful stop of the old set (reuses Stop's shutdown logic,
+	// but Stop re-reads m.ext which is now empty, so we replicate
+	// the small shutdown loop here on the snapshot).
+	for _, ext := range old {
+		if frame, err := extproto.Encode(extproto.ShutdownFromHost{Type: "shutdown"}); err == nil {
+			_, _ = ext.stdin.Write(frame)
+		}
+		_ = ext.stdin.Close()
+	}
+	deadline := time.Now().Add(grace)
+	for _, ext := range old {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			remaining = 100 * time.Millisecond
+		}
+		done := make(chan struct{})
+		go func(e *Extension) { _ = e.cmd.Wait(); close(done) }(ext)
+		select {
+		case <-done:
+		case <-time.After(remaining):
+			_ = ext.cmd.Process.Signal(syscall.SIGTERM)
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				_ = ext.cmd.Process.Kill()
+				<-done
+			}
+		}
+		if ext.logFile != nil {
+			_ = ext.logFile.Close()
+		}
+	}
+
+	// Fresh load. Explicit paths first (they still win on conflict).
+	if errs := m.LoadExplicit(ctx, explicit); len(errs) > 0 {
+		stats.Errors = append(stats.Errors, errs...)
+	}
+	if errs := m.Discover(ctx); len(errs) > 0 {
+		stats.Errors = append(stats.Errors, errs...)
+	}
+
+	m.mu.RLock()
+	stats.Loaded = len(m.ext)
+	m.mu.RUnlock()
+
+	// Wait for ready frames. Use the same 3s grace zot uses at
+	// startup so the reload feels no slower than a cold boot.
+	readyDeadline := time.Now().Add(grace)
+	if time.Until(readyDeadline) < 3*time.Second {
+		readyDeadline = time.Now().Add(3 * time.Second)
+	}
+	m.WaitForReady(time.Until(readyDeadline))
+
+	m.mu.RLock()
+	for _, ext := range m.ext {
+		select {
+		case <-ext.readyCh:
+			stats.Ready++
+		default:
+		}
+	}
+	m.mu.RUnlock()
+
+	if callback != nil {
+		callback()
+	}
+
+	return stats
 }
 
 // WaitForReady blocks until every loaded extension has signalled
@@ -551,7 +679,8 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 					ext.eventSubs[ev] = struct{}{}
 				}
 				for _, ev := range sub.Intercept {
-					if ev == "tool_call" { // only kind supported in v1
+					switch ev {
+					case "tool_call", "turn_start", "assistant_message":
 						ext.interceptSubs[ev] = struct{}{}
 					}
 				}

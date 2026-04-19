@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -288,8 +289,23 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if a == nil {
 			return a
 		}
-		a.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string) {
-			return extMgr.InterceptToolCall(ctx, call.ID, call.Name, call.Arguments)
+		a.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
+			r := extMgr.InterceptToolCall(ctx, call.ID, call.Name, call.Arguments)
+			if r.Block {
+				return false, r.Reason, nil
+			}
+			return true, "", r.ModifiedArgs
+		}
+		a.BeforeTurn = func(step int) (bool, string) {
+			r := extMgr.InterceptTurnStart(ctx, step)
+			return !r.Block, r.Reason
+		}
+		a.BeforeAssistantMessage = func(text string) (bool, string, string) {
+			r := extMgr.InterceptAssistantMessage(ctx, text)
+			if r.Block {
+				return false, r.Reason, ""
+			}
+			return true, "", r.ReplaceText
 		}
 		a.OnEvent = func(ev core.AgentEvent) { fanoutAgentEvent(extMgr, ev) }
 		return a
@@ -327,6 +343,26 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	if r.HasCredential() {
 		ag = wireAgentExt(r.NewAgent())
 	}
+
+	// /reload-ext callback: after the manager has respawned every
+	// extension, re-resolve the tool registry (built-ins + freshly-
+	// registered extension tools) and swap it onto the current
+	// agent in-place. The current agent may have been replaced by a
+	// /model swap since spawn, so re-read the live `ag` on each
+	// invocation.
+	extMgr.SetOnReload(func() {
+		current := ag
+		if current == nil {
+			return
+		}
+		resolved, err := Resolve(args, true)
+		if err != nil {
+			return
+		}
+		resolved.UseSandbox(sharedSandbox)
+		resolved.MergeExtensionTools(extToolAdapter)
+		current.SetTools(resolved.ToolRegistry)
+	})
 
 	// Fire session_start once we know the manager's running.
 	extMgr.EmitEvent(extproto.EventFromHost{Event: "session_start"})
