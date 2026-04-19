@@ -384,6 +384,34 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 	}()
 
+	// Changelog: when the running version differs from the last
+	// version whose release notes the user dismissed, fetch the
+	// release body from GitHub and have the TUI show it once. On
+	// first-ever launch (no prior LastChangelogShown), seed the
+	// stored version silently — don't dump release notes at someone
+	// who just installed.
+	changelogCh := make(chan modes.ChangelogPayload, 1)
+	go func() {
+		defer close(changelogCh)
+		cfg, _ := LoadConfig()
+		if cfg.LastChangelogShown == "" {
+			SeedChangelogVersion(version)
+			return
+		}
+		if !ShouldShowChangelog(version, cfg) {
+			return
+		}
+		info := <-FetchChangelogAsync(version)
+		if info.Body == "" {
+			return
+		}
+		changelogCh <- modes.ChangelogPayload{
+			Version: info.Version,
+			Body:    info.Body,
+			URL:     info.URL,
+		}
+	}()
+
 	iv = modes.NewInteractive(modes.InteractiveConfig{
 		Terminal:       term,
 		Theme:          tui.Dark,
@@ -407,6 +435,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		BuildAgentFor:  buildAgentFor,
 		LoadSession:    loadSession,
 		Extensions:     extMgr,
+		ChangelogChan:  changelogCh,
+		OnChangelogDismiss: func() {
+			_ = MarkChangelogShown(version)
+		},
 		SkillSnapshot: func() []*skills.Skill {
 			if args.NoSkill {
 				// --no-skill: nothing for the picker to show.

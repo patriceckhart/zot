@@ -90,6 +90,27 @@ type InteractiveConfig struct {
 	// discovered SKILL.md files. Re-invoked each time /skills opens
 	// so the picker reflects edits made during the session.
 	SkillSnapshot func() []*skills.Skill
+
+	// ChangelogChan, if non-nil, delivers release-notes for the
+	// current binary version once at startup. Interactive opens a
+	// dismissible overlay when the channel produces a non-empty
+	// body. Receiver fires at most once.
+	ChangelogChan <-chan ChangelogPayload
+
+	// OnChangelogDismiss, if non-nil, is called once the user
+	// closes the changelog overlay. The cli wires this to a
+	// MarkChangelogShown call so the same version doesn't show
+	// again on the next launch.
+	OnChangelogDismiss func()
+}
+
+// ChangelogPayload mirrors agent.ChangelogInfo without the import
+// cycle. The cli builds one from the http response, the tui opens
+// the overlay when one arrives.
+type ChangelogPayload struct {
+	Version string
+	Body    string
+	URL     string
 }
 
 // Interactive is the TUI chat loop.
@@ -134,14 +155,15 @@ type Interactive struct {
 	// while the check hasn't completed or nothing is available.
 	updateInfo UpdateInfo
 
-	dialog        *loginDialog
-	modelDialog   *modelDialog
-	sessionDialog *sessionDialog
-	jumpDialog    *jumpDialog
-	btwDialog     *btwDialog
-	skillsDialog  *skillsDialog
-	suggest       *slashSuggester
-	spin          *spinner
+	dialog          *loginDialog
+	modelDialog     *modelDialog
+	sessionDialog   *sessionDialog
+	jumpDialog      *jumpDialog
+	btwDialog       *btwDialog
+	skillsDialog    *skillsDialog
+	changelogDialog *changelogDialog
+	suggest         *slashSuggester
+	spin            *spinner
 
 	// parkedTurn is the 1-based turn number the viewport is currently
 	// scrolled to by /jump. 0 = not parked, showing the tail as usual.
@@ -179,18 +201,19 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 			Theme:      cfg.Theme,
 			ImageProto: tui.DetectImageProtocol(),
 		},
-		ed:            tui.NewEditor(cfg.Theme.FG256(cfg.Theme.Accent, "▌ ")),
-		rend:          tui.NewRenderer(cfg.Terminal),
-		toolCalls:     map[string]*tui.ToolCallView{},
-		dirty:         make(chan struct{}, 8),
-		dialog:        newLoginDialog(),
-		modelDialog:   newModelDialog(),
-		sessionDialog: newSessionDialog(),
-		jumpDialog:    newJumpDialog(),
-		btwDialog:     newBtwDialog(),
-		skillsDialog:  newSkillsDialog(),
-		suggest:       newSlashSuggester(),
-		spin:          newSpinner(),
+		ed:              tui.NewEditor(cfg.Theme.FG256(cfg.Theme.Accent, "▌ ")),
+		rend:            tui.NewRenderer(cfg.Terminal),
+		toolCalls:       map[string]*tui.ToolCallView{},
+		dirty:           make(chan struct{}, 8),
+		dialog:          newLoginDialog(),
+		modelDialog:     newModelDialog(),
+		sessionDialog:   newSessionDialog(),
+		jumpDialog:      newJumpDialog(),
+		btwDialog:       newBtwDialog(),
+		skillsDialog:    newSkillsDialog(),
+		changelogDialog: newChangelogDialog(),
+		suggest:         newSlashSuggester(),
+		spin:            newSpinner(),
 	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
@@ -339,7 +362,8 @@ func (i *Interactive) Run(ctx context.Context) error {
 
 	i.invalidate()
 
-	updates := i.cfg.UpdateInfoChan // nil-safe; nil channel blocks forever in select
+	updates := i.cfg.UpdateInfoChan  // nil-safe; nil channel blocks forever in select
+	changelog := i.cfg.ChangelogChan // single-shot, see case below
 
 	for {
 		select {
@@ -361,6 +385,12 @@ func (i *Interactive) Run(ctx context.Context) error {
 				i.invalidate()
 			}
 			updates = nil // single-shot; subsequent iterations skip this case
+		case cl, ok := <-changelog:
+			if ok && cl.Body != "" {
+				i.changelogDialog.Open(cl.Version, cl.URL, cl.Body)
+				i.invalidate()
+			}
+			changelog = nil // single-shot
 		case <-i.dirty:
 			requestRedraw()
 		case <-tick.C:
@@ -371,7 +401,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// and the AfterFunc-driven invalidate got dropped on a
 			// full channel.
 			drainPending()
-			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() {
+			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() || i.changelogDialog.Active() {
 				requestRedraw() // keep the spinner / dialog animation moving
 			}
 		}
@@ -527,6 +557,8 @@ func (i *Interactive) redraw() {
 		dialog = i.btwDialog.Render(i.cfg.Theme, cols)
 	case i.skillsDialog.Active():
 		dialog = i.skillsDialog.Render(i.cfg.Theme, cols)
+	case i.changelogDialog.Active():
+		dialog = i.changelogDialog.Render(i.cfg.Theme, cols)
 	}
 
 	// Slash-command autocomplete: popup above the status line, only
@@ -791,6 +823,17 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return false
 		}
 		i.skillsDialog.HandleKey(k)
+		i.invalidate()
+		return false
+	}
+	if i.changelogDialog.Active() {
+		if closed := i.changelogDialog.HandleKey(k); closed {
+			// User dismissed; let the parent persist the
+			// LastChangelogShown marker via the close callback.
+			if i.cfg.OnChangelogDismiss != nil {
+				i.cfg.OnChangelogDismiss()
+			}
+		}
 		i.invalidate()
 		return false
 	}

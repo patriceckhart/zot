@@ -108,6 +108,10 @@ $ZOT_HOME/
 
 drop a `SYSTEM.md` in `$ZOT_HOME` to replace the built-in identity + guidelines for every run. `--system-prompt` still wins per-invocation. delete the file to revert to the default.
 
+## changelog on update
+
+the first time you launch a newer zot binary, the tui shows the github release notes once in a dismissible overlay. press any key to close; the version is recorded in `config.json`'s `last_changelog_shown` so the same release notes never reappear. fresh installs don't see a changelog (no upgrade has happened yet). the fetch is best-effort: a network failure or a missing release page silently skips, with another attempt on the next launch.
+
 ## usage
 
 ```bash

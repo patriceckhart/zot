@@ -20,6 +20,13 @@ type Config struct {
 	Model     string `json:"model"`
 	Reasoning string `json:"reasoning"`
 	Theme     string `json:"theme"`
+
+	// LastChangelogShown is the version whose release-notes
+	// dialog the user has already seen. When the running binary's
+	// version differs, the next interactive run shows the
+	// changelog (fetched from the GitHub release page) once and
+	// updates this field. Empty means "never shown".
+	LastChangelogShown string `json:"last_changelog_shown,omitempty"`
 }
 
 // ZotHome returns $ZOT_HOME or the OS-default data dir.
