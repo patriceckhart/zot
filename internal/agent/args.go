@@ -49,6 +49,13 @@ type Args struct {
 	// can run "with only this one extension" via --no-ext --ext PATH.
 	NoExt bool
 
+	// NoSkill disables ALL skill discovery for this run, including
+	// the built-in skills compiled into the binary. The system
+	// prompt loses its "Available skills" manifest and the `skill`
+	// tool isn't registered. Useful for running zot without any
+	// extra context biasing the model.
+	NoSkill bool
+
 	ListModels bool
 	Help       bool
 	Version    bool
@@ -142,6 +149,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.Exts = append(a.Exts, v)
 		case "--no-ext", "--no-extensions":
 			a.NoExt = true
+		case "--no-skill", "--no-skills":
+			a.NoSkill = true
 		case "--reasoning":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -247,6 +256,9 @@ flags:
   --no-ext                     skip extension discovery for this run
                                (--ext PATH still works on top, so
                                --no-ext --ext ./x runs only x)
+  --no-skill                   skip skill discovery for this run,
+                               including built-in skills (no skill
+                               tool, no Available skills manifest)
 
   --max-steps N                agent loop iteration cap (default 50)
   --list-models                print known models and exit

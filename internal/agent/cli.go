@@ -408,6 +408,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		LoadSession:    loadSession,
 		Extensions:     extMgr,
 		SkillSnapshot: func() []*skills.Skill {
+			if args.NoSkill {
+				// --no-skill: nothing for the picker to show.
+				return nil
+			}
 			// Re-discover so the picker reflects edits made during
 			// the session. Cheap; SKILL.md files are small. Filter
 			// out built-in skills — they're hidden from user-facing

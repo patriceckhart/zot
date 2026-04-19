@@ -179,18 +179,27 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	sandbox := tools.NewSandbox(args.CWD)
 	reg := buildToolRegistry(args, args.CWD, sandbox)
 
-	// Skill discovery: scan project + global locations and, if any
-	// SKILL.md files were found, register the on-demand `skill`
-	// loader tool plus a system-prompt manifest so the model knows
-	// what's available.
-	homeDir, _ := os.UserHomeDir()
-	discovered, _ := skills.Discover(ZotHome(), args.CWD, homeDir)
-	var skillTool *skills.Tool
-	var skillAddendum string
-	if len(discovered) > 0 {
-		skillTool = skills.NewTool(discovered)
-		reg[skillTool.Name()] = skillTool
-		skillAddendum = skills.SystemPromptAddendum(discovered)
+	// Skill discovery: scan project + global locations + built-in
+	// skills shipped with the binary. If any are found, register
+	// the on-demand `skill` loader tool plus a system-prompt
+	// manifest so the model knows what's available.
+	//
+	// --no-skill bypasses the entire mechanism: no manifest in the
+	// system prompt, no `skill` tool in the registry. Useful for a
+	// clean-room run with zero extra context biasing the model.
+	var (
+		discovered    []*skills.Skill
+		skillTool     *skills.Tool
+		skillAddendum string
+	)
+	if !args.NoSkill {
+		homeDir, _ := os.UserHomeDir()
+		discovered, _ = skills.Discover(ZotHome(), args.CWD, homeDir)
+		if len(discovered) > 0 {
+			skillTool = skills.NewTool(discovered)
+			reg[skillTool.Name()] = skillTool
+			skillAddendum = skills.SystemPromptAddendum(discovered)
+		}
 	}
 	_ = skillTool
 
