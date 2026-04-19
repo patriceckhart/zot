@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -186,14 +187,24 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 	// Anthropic rejects them (429 rate_limit_error with zero tokens used).
 	//
 	// Cache budget: anthropic caps cache_control to 4 breakpoints per
-	// request. We spend them on (system prompt) + (tools tail) + (last
-	// two user messages). The claude-code identity line stays uncached
-	// because it's a few tokens and gets folded into the larger prefix
-	// implicitly anyway.
+	// request. We spend them on:
+	//   1. claude-code identity (OAuth only; stable forever)
+	//   2. user system prompt   (changes per-session at most)
+	//   3. last tool definition (tools change rarely)
+	//   4. last message block   (advances every turn)
+	//
+	// The identity line gets its OWN cache_control so the prefix
+	// [identity] is cacheable independently of the user system
+	// prompt. Without that, the cache prefix starts after block 2
+	// and any drift in the user prompt (e.g. the Current date
+	// line flipping at midnight) invalidates everything, including
+	// the 17 identity tokens we have to re-send every request
+	// forever.
 	if c.oauthTok != "" {
 		out.System = []anthSystemBlock{{
-			Type: "text",
-			Text: claudeCodeIdentity,
+			Type:         "text",
+			Text:         claudeCodeIdentity,
+			CacheControl: &anthCacheCtrl{Type: "ephemeral"},
 		}}
 		if req.System != "" {
 			out.System = append(out.System, anthSystemBlock{
@@ -237,8 +248,20 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 		out.Tools[n-1].CacheControl = &anthCacheCtrl{Type: "ephemeral"}
 	}
 
-	// Group messages: consecutive user/tool roles into one "user" message.
-	// Anthropic only has roles "user" and "assistant"; tool_result blocks live in user messages.
+	// Convert messages. Anthropic's wire format has only "user" and
+	// "assistant" roles; tool_result blocks live inside user messages.
+	//
+	// CRITICAL: tool_result blocks go into their OWN new user
+	// message, they are NOT merged into the preceding user message.
+	// Merging would mutate the prior user message's content array
+	// between turn N and turn N+1: turn N caches the prefix ending at
+	// [user: "read sample.ts"], turn N+1 sends
+	// [user: "read sample.ts" + tool_result=...] which is a
+	// different block sequence, busting the cache prefix match.
+	// Anthropic's API happily accepts consecutive user messages, and
+	// emitting them separately keeps each message bit-stable across
+	// turns, so the cache prefix matches for the entire history up
+	// to the newest block.
 	for _, msg := range req.Messages {
 		renameTools := c.oauthTok != ""
 		switch msg.Role {
@@ -248,13 +271,10 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 				Content: convertAnthContent(msg.Content, renameTools),
 			})
 		case RoleTool:
-			// Attach tool_result blocks to a user message; merge with prior user msg if last.
-			blocks := convertAnthContent(msg.Content, renameTools)
-			if n := len(out.Messages); n > 0 && out.Messages[n-1].Role == "user" {
-				out.Messages[n-1].Content = append(out.Messages[n-1].Content, blocks...)
-			} else {
-				out.Messages = append(out.Messages, anthMessage{Role: "user", Content: blocks})
-			}
+			out.Messages = append(out.Messages, anthMessage{
+				Role:    "user",
+				Content: convertAnthContent(msg.Content, renameTools),
+			})
 		case RoleAssistant:
 			out.Messages = append(out.Messages, anthMessage{
 				Role:    "assistant",
@@ -263,32 +283,23 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 		}
 	}
 
-	// Mark the last two user messages with cache_control so anthropic
-	// caches the running conversation prefix. Combined with the system
-	// + tools breakpoints above this is the recommended layout for
-	// multi-turn caching: turn N writes a cache that turn N+1 reads,
-	// dropping per-turn input tokens from "system + history" down to
-	// just the new user message. Anthropic allows up to 4 breakpoints
-	// per request; we use system + tools + 2 conversation = 4.
-	tagUserCache(out.Messages)
+	// Tag the LAST user message with cache_control. Spends the 4th
+	// breakpoint. For prefixes under ~1024 tokens (Anthropic's
+	// minimum cacheable block size for Opus), no cache is written.
+	tagLastUserCache(out.Messages)
 
 	return out, nil
 }
 
-// tagUserCache attaches a cache_control marker to the last block of
-// the most recent (and second-most-recent, if any) user message in
-// msgs. The marker tells the api to checkpoint the prefix at that
-// point so subsequent requests can replay everything up to and
-// including that block as a cache hit.
-func tagUserCache(msgs []anthMessage) {
-	indexes := make([]int, 0, 2)
-	for i := len(msgs) - 1; i >= 0 && len(indexes) < 2; i-- {
+// tagLastUserCache marks the last block of the most recent user
+// message. One marker; combined with identity + systemPrompt +
+// last-tool, spends Anthropic's 4-breakpoint budget.
+func tagLastUserCache(msgs []anthMessage) {
+	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "user" {
-			indexes = append(indexes, i)
+			markLastBlockEphemeral(msgs[i].Content)
+			return
 		}
-	}
-	for _, idx := range indexes {
-		markLastBlockEphemeral(msgs[idx].Content)
 	}
 }
 
@@ -427,6 +438,18 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) (<-chan Event
 		return nil, err
 	}
 
+	// Optional debug dump: when $ZOT_DEBUG_ANTHROPIC is a file path
+	// we append every outgoing request body to it, one JSON object
+	// per line. Useful for diffing turn N vs turn N+1 to understand
+	// why the cache prefix isn't matching.
+	if dump := os.Getenv("ZOT_DEBUG_ANTHROPIC"); dump != "" {
+		if f, derr := os.OpenFile(dump, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); derr == nil {
+			_, _ = f.Write(body)
+			_, _ = f.Write([]byte{'\n'})
+			_ = f.Close()
+		}
+	}
+
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -441,7 +464,7 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) (<-chan Event
 		httpReq.Header.Set("authorization", "Bearer "+c.oauthTok)
 		httpReq.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14")
 		httpReq.Header.Set("anthropic-dangerous-direct-browser-access", "true")
-		httpReq.Header.Set("user-agent", "claude-cli/"+claudeCodeVersion+" (external, cli)")
+		httpReq.Header.Set("user-agent", "claude-cli/"+claudeCodeVersion)
 		httpReq.Header.Set("x-app", "cli")
 		// Remove x-api-key entirely by NOT setting it.
 	} else {
@@ -629,10 +652,14 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 					} `json:"message"`
 				}
 				_ = json.Unmarshal([]byte(ev.Data), &m)
-				usage.InputTokens += m.Message.Usage.InputTokens
-				usage.OutputTokens += m.Message.Usage.OutputTokens
-				usage.CacheReadTokens += m.Message.Usage.CacheReadInputTokens
-				usage.CacheWriteTokens += m.Message.Usage.CacheCreationInputTokens
+				// Anthropic sends cumulative values on message_start and
+				// again on message_delta (refreshed), so assign, don't
+				// accumulate. Accumulating doubles cache_creation_input
+				// which can be 50-70% of cost.
+				usage.InputTokens = m.Message.Usage.InputTokens
+				usage.OutputTokens = m.Message.Usage.OutputTokens
+				usage.CacheReadTokens = m.Message.Usage.CacheReadInputTokens
+				usage.CacheWriteTokens = m.Message.Usage.CacheCreationInputTokens
 			case "message_delta":
 				var m struct {
 					Delta struct {
@@ -646,10 +673,21 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 					} `json:"usage"`
 				}
 				_ = json.Unmarshal([]byte(ev.Data), &m)
-				usage.InputTokens += m.Usage.InputTokens
-				usage.OutputTokens += m.Usage.OutputTokens
-				usage.CacheReadTokens += m.Usage.CacheReadInputTokens
-				usage.CacheWriteTokens += m.Usage.CacheCreationInputTokens
+				// Refresh usage from the latest cumulative totals
+				// Anthropic provides. Only apply non-zero fields in case
+				// a given delta only carries output tokens.
+				if m.Usage.InputTokens > 0 {
+					usage.InputTokens = m.Usage.InputTokens
+				}
+				if m.Usage.OutputTokens > 0 {
+					usage.OutputTokens = m.Usage.OutputTokens
+				}
+				if m.Usage.CacheReadInputTokens > 0 {
+					usage.CacheReadTokens = m.Usage.CacheReadInputTokens
+				}
+				if m.Usage.CacheCreationInputTokens > 0 {
+					usage.CacheWriteTokens = m.Usage.CacheCreationInputTokens
+				}
 				switch m.Delta.StopReason {
 				case "end_turn", "stop_sequence":
 					stop = StopEnd

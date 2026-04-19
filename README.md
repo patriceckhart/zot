@@ -2,7 +2,7 @@
 
 # zot
 
-yet another coding agent harness, lightweight and written (vibe-slopped) in go.
+Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 
 - one static binary.
 - two providers atm (anthropic, openai/codex).

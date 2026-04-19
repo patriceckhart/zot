@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/patriceckhart/zot/internal/provider"
 )
@@ -47,9 +48,20 @@ func NewRegistry(tools ...Tool) Registry {
 }
 
 // Specs returns the tool definitions to advertise to the LLM.
+// Sorted by tool name so the order is stable across requests. This
+// is load-bearing for provider-side prompt caching: providers
+// prefix-match tool definitions, and Go's map iteration order is
+// randomized per call, which would otherwise bust the cache every
+// single turn.
 func (r Registry) Specs() []provider.Tool {
+	names := make([]string, 0, len(r))
+	for name := range r {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	out := make([]provider.Tool, 0, len(r))
-	for _, t := range r {
+	for _, name := range names {
+		t := r[name]
 		out = append(out, provider.Tool{
 			Name:        t.Name(),
 			Description: t.Description(),

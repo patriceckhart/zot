@@ -157,7 +157,9 @@ var Catalog = []Model{
 	// ---- Speculative: Anthropic ----
 	{
 		Provider: "anthropic", ID: "claude-opus-4-5", DisplayName: "Claude Opus 4.5",
-		ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true,
+		// 200k ctx / 64k maxOutput per Anthropic's published sizing
+		// for the opus-4-5 family; the 1M context is a 4.6+ thing.
+		ContextWindow: 200000, MaxOutput: 64000, Reasoning: true,
 		PriceInput: 5.00, PriceOutput: 25.00, PriceCacheRead: 0.50, PriceCacheWrite: 6.25,
 		Speculative: true,
 	},
@@ -181,33 +183,46 @@ var Catalog = []Model{
 	},
 
 	// ---- Speculative: OpenAI ----
+	// Context windows on the OpenAI gpt-5.x family differ by route:
+	// the direct API advertises 400k, the ChatGPT Codex OAuth backend
+	// caps at 272k. zot serves both auth modes from one catalog row
+	// per id, so we pin to the smaller number to keep the context-usage
+	// meter honest under subscription auth. Users on the direct API
+	// simply see a conservative headroom estimate.
 	{
 		Provider: "openai", ID: "gpt-5.1", DisplayName: "GPT-5.1",
-		ContextWindow: 400000, MaxOutput: 128000, Reasoning: true,
+		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
 		PriceInput: 1.25, PriceOutput: 10.00, PriceCacheRead: 0.125,
 		Speculative: true,
 	},
 	{
 		Provider: "openai", ID: "gpt-5.2", DisplayName: "GPT-5.2",
-		ContextWindow: 400000, MaxOutput: 128000, Reasoning: true,
+		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
 		PriceInput: 1.75, PriceOutput: 14.00, PriceCacheRead: 0.175,
 		Speculative: true,
 	},
 	{
 		Provider: "openai", ID: "gpt-5.3", DisplayName: "GPT-5.3",
-		ContextWindow: 400000, MaxOutput: 128000, Reasoning: true,
+		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
 		PriceInput: 1.75, PriceOutput: 14.00, PriceCacheRead: 0.175,
 		Speculative: true,
 	},
 	{
 		Provider: "openai", ID: "gpt-5.4", DisplayName: "GPT-5.4",
-		ContextWindow: 400000, MaxOutput: 128000, Reasoning: true,
+		// ContextWindow: 272k across every route we support (OpenAI
+		// direct API and the ChatGPT Codex OAuth backend).
+		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
 		PriceInput: 2.50, PriceOutput: 15.00, PriceCacheRead: 0.25,
 		Speculative: true,
 	},
 	{
 		Provider: "openai", ID: "gpt-5.4-mini", DisplayName: "GPT-5.4 mini",
-		ContextWindow: 400000, MaxOutput: 128000, Reasoning: true,
+		// ContextWindow: 400k on the OpenAI direct API, 272k on the
+		// ChatGPT Codex OAuth backend. We pin to the smaller Codex
+		// cap so the context-usage meter is honest under subscription
+		// auth; direct-API users simply see a conservative headroom
+		// estimate rather than an inflated one.
+		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
 		PriceInput: 0.75, PriceOutput: 4.50, PriceCacheRead: 0.075,
 		Speculative: true,
 	},
