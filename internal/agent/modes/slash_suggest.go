@@ -317,6 +317,11 @@ func (s *slashSuggester) Render(input string, th tui.Theme, width int) []string 
 	var lines []string
 	for i, c := range m {
 		if c.Header {
+			// Breathing room before group dividers — a blank row
+			// makes the boundary read at a glance, and the popup
+			// only ever has at most one or two groups so the cost
+			// is negligible.
+			lines = append(lines, "")
 			rule := strings.Repeat("─", width)
 			label := "── " + c.Name + " "
 			if len(label) < width {
