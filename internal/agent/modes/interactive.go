@@ -126,6 +126,7 @@ type Interactive struct {
 	modelDialog   *modelDialog
 	sessionDialog *sessionDialog
 	jumpDialog    *jumpDialog
+	btwDialog     *btwDialog
 	suggest       *slashSuggester
 	spin          *spinner
 
@@ -168,6 +169,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		modelDialog:   newModelDialog(),
 		sessionDialog: newSessionDialog(),
 		jumpDialog:    newJumpDialog(),
+		btwDialog:     newBtwDialog(),
 		suggest:       newSlashSuggester(),
 		spin:          newSpinner(),
 	}
@@ -350,7 +352,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// and the AfterFunc-driven invalidate got dropped on a
 			// full channel.
 			drainPending()
-			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() {
+			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() {
 				requestRedraw() // keep the spinner / dialog animation moving
 			}
 		}
@@ -495,6 +497,8 @@ func (i *Interactive) redraw() {
 		dialog = i.sessionDialog.Render(i.cfg.Theme, cols)
 	case i.jumpDialog.Active():
 		dialog = i.jumpDialog.Render(i.cfg.Theme, cols)
+	case i.btwDialog.Active():
+		dialog = i.btwDialog.Render(i.cfg.Theme, cols)
 	}
 
 	// Slash-command autocomplete: popup above the status line, only
@@ -720,6 +724,15 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if act.Select {
 			i.applyJumpSelection(act.MessageIdx, act.TurnNo)
 		}
+		return false
+	}
+	if i.btwDialog.Active() {
+		if k.Kind == tui.KeyCtrlC {
+			i.btwDialog.Close()
+			i.invalidate()
+			return false
+		}
+		i.btwDialog.HandleKey(k, i.invalidate)
 		return false
 	}
 
@@ -959,6 +972,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.sessionDialog.Open(i.cfg.ZotHome, i.cfg.CWD)
 	case "/jump":
 		i.openJumpDialog(parts[1:])
+	case "/btw":
+		i.openBtwDialog(parts[1:])
 	case "/compact":
 		i.runCompact(ctx, false)
 	case "/lock":
@@ -1108,6 +1123,22 @@ func (i *Interactive) cancelAndWaitForIdle() {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// openBtwDialog opens the side-chat overlay with a frozen snapshot
+// of the current main session. The optional argument is auto-
+// submitted as the first question, so '/btw does X work?' fires the
+// model call immediately instead of just opening an empty dialog.
+func (i *Interactive) openBtwDialog(args []string) {
+	if i.agent == nil {
+		i.mu.Lock()
+		i.statusErr = "not logged in. type /login first."
+		i.mu.Unlock()
+		return
+	}
+	seed := strings.TrimSpace(strings.Join(args, " "))
+	i.btwDialog.Open(i.cfg.Theme, i.agent, i.agent.System, i.cfg.Model, seed)
+	i.invalidate()
 }
 
 // openJumpDialog builds a /jump picker from the current transcript.

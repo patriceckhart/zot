@@ -174,6 +174,7 @@ type `/` in the tui to open the autocomplete popup. available commands:
 | `/model` | pick a model from a list (or `/model <id>` to set directly) |
 | `/sessions` | resume a previous session for this directory |
 | `/jump` | scroll the chat to a previous turn (or `/jump <text>` to filter) |
+| `/btw` | side-chat with full context that doesn't add to the main thread |
 | `/compact` | summarize the transcript into one message to free up context |
 | `/lock` | confine tools to the current directory |
 | `/unlock` | allow tools to touch paths outside again |
@@ -189,6 +190,19 @@ shows previous sessions for the current working directory, newest first, with ti
 opens a turn picker for the current session — one row per user prompt, each showing the turn number, how many tools that turn invoked, and the first line of the prompt. `↑/↓` to pick, `enter` to jump, `esc` to cancel. any printable rune while the picker is open extends a filter; backspace narrows it back. `/jump <text>` pre-applies the filter; if exactly one turn matches, zot jumps straight there without showing the picker.
 
 jumping is non-destructive — the transcript is untouched, the viewport just scrolls so the chosen turn is at the top. a muted line at the top of the chat reads `↑ viewing turn N of M · pgdn to catch up`; scroll back to the bottom with `pgdn` (or keep scrolling with the arrow keys) and the indicator goes away.
+
+### `/btw`
+
+opens a side-chat overlay with the full main session as frozen context, so you can ask quick clarifying questions ("does asyncio.gather() catch exceptions?", "btw the bundle budget is 10MB", "what's the default fetch timeout?") without bloating the main thread.
+
+each question fires a one-off model call against `system + main transcript + side-chat history so far`. responses render in the overlay and stay there. when you press `esc` to close, **nothing** has been added to the main session and subsequent main-thread turns don't re-read any of the side-chat exchanges — keeping the running context window lean.
+
+```
+/btw                              # open the overlay, type questions interactively
+/btw does PUT replace the whole resource?
+```
+
+inside the overlay: `enter` sends, `esc` cancels an in-flight call (or closes the overlay if idle), `ctrl+c` closes immediately. side-chat exchanges never touch the transcript and aren't persisted to the session file.
 
 ### `/compact`
 
@@ -233,7 +247,7 @@ frames containing images are full-repainted (no differential diff) to prevent st
 
 you can keep typing while the agent is working. pressing enter during a turn queues the message instead of interrupting: it shows up above the status bar as `▸ sliding in: <text>` and is delivered as the next user turn the moment the current one finishes. queue as many as you want; they run in order. esc / ctrl+c cancels the active turn and drops the queue so a runaway turn doesn't flood you with stale follow-ups.
 
-slash commands also work while the agent is busy. read-only ones (`/help`, `/jump`, `/sessions`, `/lock`, `/unlock`, `/exit`) take effect immediately. destructive ones (`/clear`, `/compact`, `/login`, `/logout`, `/model`) cancel the active turn first and then run.
+slash commands also work while the agent is busy. read-only ones (`/help`, `/jump`, `/btw`, `/sessions`, `/lock`, `/unlock`, `/exit`) take effect immediately. destructive ones (`/clear`, `/compact`, `/login`, `/logout`, `/model`) cancel the active turn first and then run.
 
 ## keys (interactive mode)
 

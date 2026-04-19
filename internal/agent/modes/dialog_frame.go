@@ -3,6 +3,8 @@ package modes
 import (
 	"strings"
 
+	"github.com/mattn/go-runewidth"
+
 	"github.com/patriceckhart/zot/internal/tui"
 )
 
@@ -16,7 +18,7 @@ func frameHeader(th tui.Theme, title string, width int) string {
 	if width <= 0 {
 		return th.FG256(th.Muted, label)
 	}
-	padLen := width - len(label)
+	padLen := width - runewidth.StringWidth(label)
 	if padLen < 0 {
 		padLen = 0
 	}
@@ -39,7 +41,7 @@ func frameHeaderColor(th tui.Theme, title string, width, color int) string {
 	if width <= 0 {
 		return th.FG256(color, label)
 	}
-	padLen := width - len(label)
+	padLen := width - runewidth.StringWidth(label)
 	if padLen < 0 {
 		padLen = 0
 	}

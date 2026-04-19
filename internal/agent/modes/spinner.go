@@ -22,7 +22,9 @@ type spinner struct {
 }
 
 // funnyWorkingLines is the rotating text. Kept deliberately short so it
-// fits next to the token counter on narrow terminals.
+// fits next to the token counter on narrow terminals. A handful of
+// craftsman-style aphorisms are folded in among the irreverent lines
+// for a bit of contrast — the rotation never feels too uniform.
 var funnyWorkingLines = []string{
 	"thinking",
 	"reticulating splines",
@@ -44,6 +46,11 @@ var funnyWorkingLines = []string{
 	"arguing with a stack trace",
 	"googling the answer (not really)",
 	"rewriting history",
+	"every draft is a stone in the work",
+	"bringing order to the unhewn",
+	"finding the load-bearing measure",
+	"where clarity grows, work grows lighter",
+	"every correction serves the work",
 }
 
 // spinnerFrames is the cli-spinners "dots3" preset — a 10-frame
