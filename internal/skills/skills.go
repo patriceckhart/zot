@@ -83,19 +83,46 @@ func VisibleSkills(in []*Skill) []*Skill {
 	return out
 }
 
-// Discover walks every supported location, parses each SKILL.md, and
-// returns the merged skill set. First-match-wins per name; the order
-// matches the priority list in the package doc. Errors per skill are
-// returned alongside the partial result so a single broken file
-// doesn't suppress the rest.
+// Discover returns the merged skill set. By default this is just
+// the built-in skills compiled into the zot binary; user-installed
+// SKILL.md files are NOT loaded unless includeUser is true. Users
+// opt in via the `--with-skills` flag.
 //
-// Built-in skills (compiled into the zot binary) are added LAST so
-// any user-installed skill with the same name shadows the built-in.
-// That lets users customise the help text by dropping their own
-// SKILL.md with the same name into $ZOT_HOME/skills/<name>/.
-func Discover(zotHome, cwd, userHome string) ([]*Skill, []error) {
+// First-match-wins per name; the order matches the priority list
+// in the package doc (project-local before global before claude-
+// compat before agents-compat, all before built-ins). That means a
+// user-installed skill with the same name as a built-in shadows
+// the built-in once includeUser is true.
+//
+// Errors per skill are returned alongside the partial result so a
+// single broken file doesn't suppress the rest.
+func Discover(zotHome, cwd, userHome string, includeUser bool) ([]*Skill, []error) {
 	var errs []error
 	seen := map[string]*Skill{}
+	if includeUser {
+		errs = append(errs, scanUserSkills(zotHome, cwd, userHome, seen)...)
+	}
+	// Built-ins fill in any name the user didn't already provide
+	// (or every name, when includeUser is false).
+	for _, s := range loadBuiltins() {
+		if _, dup := seen[s.Name]; dup {
+			continue
+		}
+		seen[s.Name] = s
+	}
+	out := make([]*Skill, 0, len(seen))
+	for _, s := range seen {
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, errs
+}
+
+// scanUserSkills walks the user-skill search dirs and populates
+// `seen` with first-match-wins per name. Split out so Discover's
+// includeUser=false path doesn't have to skip over a giant block.
+func scanUserSkills(zotHome, cwd, userHome string, seen map[string]*Skill) []error {
+	var errs []error
 	for _, loc := range searchDirs(zotHome, cwd, userHome) {
 		entries, err := os.ReadDir(loc.dir)
 		if err != nil {
@@ -122,20 +149,7 @@ func Discover(zotHome, cwd, userHome string) ([]*Skill, []error) {
 			seen[s.Name] = s
 		}
 	}
-	// Built-ins fill in any name the user didn't already provide.
-	for _, s := range loadBuiltins() {
-		if _, dup := seen[s.Name]; dup {
-			continue
-		}
-		seen[s.Name] = s
-	}
-
-	out := make([]*Skill, 0, len(seen))
-	for _, s := range seen {
-		out = append(out, s)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, errs
+	return errs
 }
 
 // SystemPromptAddendum returns the text to append to the system

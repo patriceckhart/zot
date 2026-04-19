@@ -63,7 +63,7 @@ func TestDiscoverProjectAndGlobalPriorityAndDedup(t *testing.T) {
 	// Unique skill in global only.
 	mk(filepath.Join(zotHome, "skills"), "global-only", "from global")
 
-	skills, errs := Discover(zotHome, cwd, "")
+	skills, errs := Discover(zotHome, cwd, "", true /* includeUser */)
 	if len(errs) > 0 {
 		t.Fatalf("errs: %v", errs)
 	}

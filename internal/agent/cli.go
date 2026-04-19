@@ -417,9 +417,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			// out built-in skills — they're hidden from user-facing
 			// surfaces because they're implementation detail; the
 			// model still sees them through the system-prompt
-			// manifest and the skill tool.
+			// manifest and the skill tool. User skills only appear
+			// when --with-skills is set; without it the picker shows
+			// nothing but the model still has the built-ins.
 			userHome, _ := os.UserHomeDir()
-			list, _ := skills.Discover(ZotHome(), r.CWD, userHome)
+			list, _ := skills.Discover(ZotHome(), r.CWD, userHome, args.WithSkills)
 			return skills.VisibleSkills(list)
 		},
 		PersistModel: func(providerName, model string) {

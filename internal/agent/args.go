@@ -56,6 +56,14 @@ type Args struct {
 	// extra context biasing the model.
 	NoSkill bool
 
+	// WithSkills opts into loading user-installed skills from
+	// $ZOT_HOME/skills/, .zot/skills/, .claude/skills/, and
+	// .agents/skills/. Without this flag only the built-in skills
+	// shipped with the zot binary are available, so a fresh install
+	// has a deterministic skill set regardless of what's lying
+	// around in the user's home directory.
+	WithSkills bool
+
 	ListModels bool
 	Help       bool
 	Version    bool
@@ -151,6 +159,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.NoExt = true
 		case "--no-skill", "--no-skills":
 			a.NoSkill = true
+		case "--with-skills", "--with-skill":
+			a.WithSkills = true
 		case "--reasoning":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -259,6 +269,10 @@ flags:
   --no-skill                   skip skill discovery for this run,
                                including built-in skills (no skill
                                tool, no Available skills manifest)
+  --with-skills                load user-installed skills from
+                               $ZOT_HOME/skills/ + .zot/skills/ +
+                               .claude/skills/ + .agents/skills/.
+                               default: only built-in skills load
 
   --max-steps N                agent loop iteration cap (default 50)
   --list-models                print known models and exit

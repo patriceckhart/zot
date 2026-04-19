@@ -194,7 +194,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	)
 	if !args.NoSkill {
 		homeDir, _ := os.UserHomeDir()
-		discovered, _ = skills.Discover(ZotHome(), args.CWD, homeDir)
+		discovered, _ = skills.Discover(ZotHome(), args.CWD, homeDir, args.WithSkills)
 		if len(discovered) > 0 {
 			skillTool = skills.NewTool(discovered)
 			reg[skillTool.Name()] = skillTool
