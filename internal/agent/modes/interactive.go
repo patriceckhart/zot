@@ -148,9 +148,9 @@ type Interactive struct {
 }
 
 // welcomeVersionDuration is how long the welcome banner shows the
-// version suffix before reverting to the plain headline. 1 second
-// is enough to read at a glance and keeps the splash short.
-const welcomeVersionDuration = 1 * time.Second
+// version suffix before reverting to the plain headline. 1.5s is
+// enough to read at a glance and keeps the splash short.
+const welcomeVersionDuration = 1500 * time.Millisecond
 
 // NewInteractive constructs an Interactive from cfg.
 func NewInteractive(cfg InteractiveConfig) *Interactive {
@@ -744,7 +744,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.suggest.Reset()
 			i.mu.Lock()
 			i.queued = nil
-			i.statusOK = "input cleared — ctrl+c again to exit"
+			i.statusOK = "input cleared"
 			i.statusErr = ""
 			i.mu.Unlock()
 			i.armCtrlCExit()
