@@ -265,6 +265,10 @@ func openOrCreateSession(args Args, r Resolved, ag *core.Agent, version string) 
 	if args.NoSess {
 		return nil, nil
 	}
+	// Sweep meta-only files left over from older zot versions (and from
+	// any session that crashed before its first AppendMessage). Cheap;
+	// reads the first few bytes of each file in the cwd's session dir.
+	core.PruneEmptySessions(ZotHome(), args.CWD)
 	var (
 		s    *core.Session
 		msgs []provider.Message

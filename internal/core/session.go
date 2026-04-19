@@ -23,6 +23,18 @@ type Session struct {
 	Meta   SessionMeta
 	writer *os.File
 	buf    *bufio.Writer
+
+	// freshFile is true when the file was created by NewSession (this
+	// process owns it) and false when OpenSession reopened an existing
+	// transcript. Used by Close() to delete the file if the run never
+	// appended any messages — prevents a flood of empty session files
+	// from sessions the user opens then exits without prompting.
+	freshFile bool
+
+	// messagesAppended counts AppendMessage calls. Combined with
+	// freshFile it tells Close() whether the session left any content
+	// worth keeping.
+	messagesAppended int
 }
 
 // SessionMeta is written as the first line of every session file.
@@ -72,11 +84,12 @@ func NewSession(root, cwd, providerName, model, version string) (*Session, error
 		return nil, err
 	}
 	s := &Session{
-		ID:     id,
-		Path:   p,
-		Meta:   SessionMeta{ID: id, CWD: cwd, Provider: providerName, Model: model, Started: time.Now().UTC(), Version: version},
-		writer: f,
-		buf:    bufio.NewWriter(f),
+		ID:        id,
+		Path:      p,
+		Meta:      SessionMeta{ID: id, CWD: cwd, Provider: providerName, Model: model, Started: time.Now().UTC(), Version: version},
+		writer:    f,
+		buf:       bufio.NewWriter(f),
+		freshFile: true,
 	}
 	if err := s.writeLine(sessionLine{Type: "meta", Meta: &s.Meta}); err != nil {
 		f.Close()
@@ -223,6 +236,51 @@ func firstUserText(line []byte) string {
 	return ""
 }
 
+// PruneEmptySessions deletes session files in cwd's session directory
+// that contain only a meta line (no messages were ever appended).
+// Cleans up the backlog of empty stubs created by old zot versions
+// that wrote a meta line at NewSession time and never followed up.
+// Errors are swallowed; the caller treats this as best-effort.
+func PruneEmptySessions(root, cwd string) {
+	dir := SessionsDir(root, cwd)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		if sessionHasNoMessages(p) {
+			_ = os.Remove(p)
+		}
+	}
+}
+
+// sessionHasNoMessages returns true when the file at path contains
+// no lines of type "message". Meta-only / usage-only files count as
+// empty. Used by PruneEmptySessions and the Describe path.
+func sessionHasNoMessages(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
+	for sc.Scan() {
+		var head sessionLineHead
+		if err := json.Unmarshal(sc.Bytes(), &head); err != nil {
+			continue
+		}
+		if head.Type == "message" {
+			return false
+		}
+	}
+	return true
+}
+
 // ListSessions returns session file paths for cwd, newest first.
 func ListSessions(root, cwd string) []string {
 	dir := SessionsDir(root, cwd)
@@ -245,7 +303,11 @@ func (s *Session) AppendMessage(m provider.Message) error {
 	if s == nil {
 		return nil
 	}
-	return s.writeLine(sessionLine{Type: "message", Message: &m})
+	if err := s.writeLine(sessionLine{Type: "message", Message: &m}); err != nil {
+		return err
+	}
+	s.messagesAppended++
+	return nil
 }
 
 // UpdateModel records a provider/model switch in the session file.
@@ -268,16 +330,27 @@ func (s *Session) AppendUsage(u, cum provider.Usage) error {
 	return s.writeLine(sessionLine{Type: "usage", Usage: &u, Cumulative: &cum})
 }
 
-// Close flushes and closes the session file.
+// Close flushes and closes the session file. If the session was
+// freshly created in this process and never had any messages
+// appended (the user opened zot, looked around, and exited without
+// prompting), the file is deleted on close so the sessions list
+// doesn't fill up with empty meta-only stubs.
 func (s *Session) Close() error {
 	if s == nil {
 		return nil
 	}
-	if err := s.buf.Flush(); err != nil {
-		s.writer.Close()
-		return err
+	flushErr := s.buf.Flush()
+	closeErr := s.writer.Close()
+	if s.freshFile && s.messagesAppended == 0 {
+		// Best-effort cleanup. We deliberately don't propagate the
+		// remove error: if it fails (file already gone, perms changed)
+		// the worst case is one stale empty file in the listing.
+		_ = os.Remove(s.Path)
 	}
-	return s.writer.Close()
+	if flushErr != nil {
+		return flushErr
+	}
+	return closeErr
 }
 
 func (s *Session) writeLine(row sessionLine) error {
