@@ -44,6 +44,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/lock", Desc: "confine tools to the current directory"},
 	{Name: "/unlock", Desc: "allow tools to touch paths outside this directory"},
 	{Name: "/reload-ext", Desc: "hot-reload all extensions (re-read manifests and respawn)"},
+	{Name: "/yolo", Desc: "turn off --no-yolo confirmation for the rest of this session"},
 	{Name: "/clear", Desc: "clear the chat transcript"},
 	{Name: "/exit", Desc: "exit zot"},
 }

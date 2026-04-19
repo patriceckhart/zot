@@ -189,6 +189,7 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 		return err
 	}
 	ag := r.NewAgent()
+	wireNoYoloAutoRefuse(ag, args)
 	sess, _ := openOrCreateSession(args, r, ag, version)
 	defer sess.Close()
 
@@ -207,12 +208,36 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 	return err
 }
 
+// wireNoYoloAutoRefuse installs a BeforeToolExecute hook that
+// refuses every tool call when --no-yolo is active but there's no
+// interactive UI to prompt (print / json / rpc modes). The reason
+// is written in a way the model can learn from so it proposes a
+// different action rather than looping on the same tool.
+func wireNoYoloAutoRefuse(ag *core.Agent, args Args) {
+	if !args.NoYolo || ag == nil {
+		return
+	}
+	gate := core.NewConfirmGate(nil) // nil inner = auto-refuse
+	prev := ag.BeforeToolExecute
+	ag.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
+		ok, reason, _ := gate.Check(call.Name, core.BuildPreview(call.Arguments, 120))
+		if !ok {
+			return false, reason, nil
+		}
+		if prev != nil {
+			return prev(call)
+		}
+		return true, "", nil
+	}
+}
+
 func runJSONMode(ctx context.Context, args Args, version string) error {
 	r, err := Resolve(args, true)
 	if err != nil {
 		return err
 	}
 	ag := r.NewAgent()
+	wireNoYoloAutoRefuse(ag, args)
 	sess, _ := openOrCreateSession(args, r, ag, version)
 	defer sess.Close()
 
@@ -283,6 +308,16 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	extToolAdapter := &extToolAdapter{mgr: extMgr}
 	r.MergeExtensionTools(extToolAdapter)
 
+	// Confirmation gate: when --no-yolo is on, the agent must ask
+	// the user before every tool call. In interactive mode the TUI
+	// provides the Confirmer; in print/json/rpc modes there's no
+	// way to prompt, so the gate is constructed with a nil inner
+	// which auto-refuses every call with a helpful reason.
+	var confirmGate *core.ConfirmGate
+	if args.NoYolo {
+		confirmGate = core.NewConfirmGate(nil) // set below for interactive
+	}
+
 	// Capture current args in a closure so BuildAgent can re-resolve
 	// after a successful login (picks up the newly stored credential).
 	wireAgentExt := func(a *core.Agent) *core.Agent {
@@ -290,6 +325,14 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return a
 		}
 		a.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
+			// Confirm gate runs FIRST: if the user refused, we don't
+			// waste extension-intercept time or let guards see the call.
+			if confirmGate != nil {
+				ok, reason, _ := confirmGate.Check(call.Name, core.BuildPreview(call.Arguments, 120))
+				if !ok {
+					return false, reason, nil
+				}
+			}
 			r := extMgr.InterceptToolCall(ctx, call.ID, call.Name, call.Arguments)
 			if r.Block {
 				return false, r.Reason, nil
@@ -492,6 +535,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			list, _ := skills.Discover(ZotHome(), r.CWD, userHome, args.WithSkills)
 			return skills.VisibleSkills(list)
 		},
+		NoYolo:      args.NoYolo,
+		ConfirmGate: confirmGate,
 		PersistModel: func(providerName, model string) {
 			// Update config.json so next launch uses the same pick.
 			cfg, _ := LoadConfig()
@@ -504,6 +549,14 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			}
 		},
 	})
+
+	// Bind the interactive TUI as the Confirmer. We deferred this
+	// until now because the gate is constructed before the TUI
+	// (the BeforeToolExecute closure captures it). SetConfirmer
+	// is mutex-guarded on the gate so this is safe.
+	if confirmGate != nil {
+		confirmGate.SetConfirmer(iv)
+	}
 
 	runErr := iv.Run(ctx)
 

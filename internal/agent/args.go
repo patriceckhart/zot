@@ -64,6 +64,16 @@ type Args struct {
 	// around in the user's home directory.
 	WithSkills bool
 
+	// NoYolo turns on per-tool confirmation. Before each tool
+	// invocation the TUI prompts the user with the tool name + args
+	// and waits for an explicit yes/no. The user can also pick
+	// "always for this tool this session" or "always for anything
+	// this session" to stop being prompted again. Defaults off
+	// (yolo mode): tools run without asking. In -p / --json / rpc
+	// modes there's no interactive TUI, so --no-yolo auto-refuses
+	// every tool call with a reason the model can learn from.
+	NoYolo bool
+
 	ListModels bool
 	Help       bool
 	Version    bool
@@ -161,6 +171,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.NoSkill = true
 		case "--with-skills", "--with-skill":
 			a.WithSkills = true
+		case "--no-yolo":
+			a.NoYolo = true
 		case "--reasoning":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -273,6 +285,10 @@ flags:
                                $ZOT_HOME/skills/ + .zot/skills/ +
                                .claude/skills/ + .agents/skills/.
                                default: only built-in skills load
+
+  --no-yolo                    ask before running every tool call
+                               (interactive mode only; in -p / --json
+                               / rpc this refuses every tool call)
 
   --max-steps N                agent loop iteration cap (default 50)
   --list-models                print known models and exit

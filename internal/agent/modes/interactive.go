@@ -102,6 +102,19 @@ type InteractiveConfig struct {
 	// MarkChangelogShown call so the same version doesn't show
 	// again on the next launch.
 	OnChangelogDismiss func()
+
+	// NoYolo is true when --no-yolo was passed. Interactive opens
+	// a confirmation dialog before every tool call and blocks the
+	// tool until the user picks yes / always-this-tool /
+	// always-all / no. When false (default), tools run freely.
+	NoYolo bool
+
+	// ConfirmGate is the session-scoped gate wrapping this
+	// interactive's Confirmer. When non-nil, /yolo can call
+	// AllowAll() on it to disable confirmation for the rest of the
+	// session. When nil (yolo mode), /yolo reports that there's
+	// nothing to disable.
+	ConfirmGate *core.ConfirmGate
 }
 
 // ChangelogPayload mirrors agent.ChangelogInfo without the import
@@ -162,6 +175,7 @@ type Interactive struct {
 	btwDialog       *btwDialog
 	skillsDialog    *skillsDialog
 	changelogDialog *changelogDialog
+	confirmDialog   *confirmDialog
 	suggest         *slashSuggester
 	spin            *spinner
 
@@ -212,6 +226,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		btwDialog:       newBtwDialog(),
 		skillsDialog:    newSkillsDialog(),
 		changelogDialog: newChangelogDialog(),
+		confirmDialog:   newConfirmDialog(),
 		suggest:         newSlashSuggester(),
 		spin:            newSpinner(),
 	}
@@ -401,7 +416,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// and the AfterFunc-driven invalidate got dropped on a
 			// full channel.
 			drainPending()
-			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() || i.changelogDialog.Active() {
+			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() || i.changelogDialog.Active() || i.confirmDialog.Active() {
 				requestRedraw() // keep the spinner / dialog animation moving
 			}
 		}
@@ -559,6 +574,8 @@ func (i *Interactive) redraw() {
 		dialog = i.skillsDialog.Render(i.cfg.Theme, cols)
 	case i.changelogDialog.Active():
 		dialog = i.changelogDialog.Render(i.cfg.Theme, cols)
+	case i.confirmDialog.Active():
+		dialog = i.confirmDialog.Render(i.cfg.Theme, cols)
 	}
 
 	// Slash-command autocomplete: popup above the status line, only
@@ -757,6 +774,15 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	}
 
 	// Dialogs consume keys while open (except ctrl+c, which always closes them).
+
+	// Confirm dialog has highest priority: the agent goroutine is
+	// blocked waiting for an answer, so we must not let keys leak
+	// anywhere else while it's up.
+	if i.confirmDialog.Active() {
+		i.confirmDialog.HandleKey(k)
+		i.invalidate()
+		return false
+	}
 	if i.dialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.dialog.Close()
@@ -879,6 +905,10 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// editor can clear itself.
 		if i.busy && i.cancelTurn != nil {
 			i.cancelTurn()
+			// If a confirm dialog is pending, refuse it so the agent
+			// goroutine unblocks and the context cancellation can
+			// actually take effect.
+			i.confirmDialog.CancelAll("turn cancelled")
 			return false
 		}
 	case tui.KeyCtrlD:
@@ -1209,6 +1239,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.mu.Unlock()
 	case "/reload-ext":
 		i.runReloadExt(ctx)
+	case "/yolo":
+		i.runYoloOn()
 	default:
 		// Last-resort fallback: try the extension manager. Built-in
 		// cases above always win; this branch only fires for slash
@@ -1977,4 +2009,48 @@ func (i *Interactive) runReloadExt(ctx context.Context) {
 		i.mu.Unlock()
 		i.invalidate()
 	}()
+}
+
+// Confirm implements core.Confirmer. The agent goroutine calls
+// this synchronously before every tool invocation when --no-yolo is
+// active. We push the request onto the confirmDialog queue, trigger
+// a redraw, and block the caller until the user answers.
+//
+// If the session is cancelled or the TUI exits mid-prompt, any
+// pending request is refused via CancelAll so the agent doesn't
+// deadlock.
+func (i *Interactive) Confirm(toolName string, preview string) core.ConfirmDecision {
+	resp := make(chan core.ConfirmDecision, 1)
+	i.confirmDialog.Enqueue(&confirmRequest{
+		toolName: toolName,
+		preview:  preview,
+		resp:     resp,
+	})
+	i.invalidate()
+	return <-resp
+}
+
+// runYoloOn disables --no-yolo for the rest of the session. Tool
+// calls run without prompting after this; there's intentionally no
+// way to re-enable gating mid-session, if the user wants that back
+// they can exit and restart with --no-yolo.
+func (i *Interactive) runYoloOn() {
+	if i.cfg.ConfirmGate == nil {
+		i.mu.Lock()
+		i.statusOK = "yolo mode is already on (no --no-yolo in this session)"
+		i.statusErr = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.cfg.ConfirmGate.AllowAll()
+	// Also auto-allow any currently pending confirmation so the
+	// agent doesn't deadlock if /yolo is typed while a prompt is
+	// open.
+	i.confirmDialog.AllowAllPending()
+	i.mu.Lock()
+	i.statusOK = "yolo engaged: no more tool-call confirmations this session"
+	i.statusErr = ""
+	i.mu.Unlock()
+	i.invalidate()
 }
