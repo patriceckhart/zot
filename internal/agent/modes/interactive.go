@@ -176,6 +176,7 @@ type Interactive struct {
 	skillsDialog    *skillsDialog
 	changelogDialog *changelogDialog
 	confirmDialog   *confirmDialog
+	logoutDialog    *logoutDialog
 	suggest         *slashSuggester
 	spin            *spinner
 
@@ -227,6 +228,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		skillsDialog:    newSkillsDialog(),
 		changelogDialog: newChangelogDialog(),
 		confirmDialog:   newConfirmDialog(),
+		logoutDialog:    newLogoutDialog(),
 		suggest:         newSlashSuggester(),
 		spin:            newSpinner(),
 	}
@@ -416,7 +418,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// and the AfterFunc-driven invalidate got dropped on a
 			// full channel.
 			drainPending()
-			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() || i.changelogDialog.Active() || i.confirmDialog.Active() {
+			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() || i.changelogDialog.Active() || i.confirmDialog.Active() || i.logoutDialog.Active() {
 				requestRedraw() // keep the spinner / dialog animation moving
 			}
 		}
@@ -576,6 +578,8 @@ func (i *Interactive) redraw() {
 		dialog = i.changelogDialog.Render(i.cfg.Theme, cols)
 	case i.confirmDialog.Active():
 		dialog = i.confirmDialog.Render(i.cfg.Theme, cols)
+	case i.logoutDialog.Active():
+		dialog = i.logoutDialog.Render(i.cfg.Theme, cols)
 	}
 
 	// Slash-command autocomplete: popup above the status line, only
@@ -820,6 +824,19 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if act.Select {
 			i.applySessionSelection(act.Path)
 		}
+		return false
+	}
+	if i.logoutDialog.Active() {
+		if k.Kind == tui.KeyCtrlC {
+			i.logoutDialog.Close()
+			i.invalidate()
+			return false
+		}
+		act := i.logoutDialog.HandleKey(k)
+		if act.Select {
+			i.doLogout(act.Target)
+		}
+		i.invalidate()
 		return false
 	}
 	if i.jumpDialog.Active() {
@@ -1192,11 +1209,15 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/login":
 		i.dialog.Open()
 	case "/logout":
-		target := "all"
 		if len(parts) >= 2 {
-			target = parts[1]
+			// Explicit target: /logout anthropic | openai | all
+			i.doLogout(parts[1])
+			break
 		}
-		i.doLogout(target)
+		// No arg: open the picker over whichever providers are
+		// currently logged in. If nothing's logged in, bail with a
+		// status line.
+		i.openLogoutDialog()
 	case "/model":
 		if len(parts) >= 2 {
 			i.applyModelSelection("", parts[1])
@@ -1261,6 +1282,62 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.mu.Unlock()
 	}
 	return false
+}
+
+// openLogoutDialog shows the provider picker for `/logout` with no
+// argument. Only providers the user is currently logged into are
+// listed, plus an "all" entry when more than one is present. If
+// nothing's logged in, writes a status line instead of opening an
+// empty dialog.
+func (i *Interactive) openLogoutDialog() {
+	if i.cfg.AuthManager == nil {
+		i.mu.Lock()
+		i.statusErr = "no auth manager configured"
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	store := i.cfg.AuthManager.Store()
+	if store == nil {
+		i.mu.Lock()
+		i.statusErr = "auth store is not available"
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	creds, err := store.Load()
+	if err != nil {
+		i.mu.Lock()
+		i.statusErr = "read auth store: " + err.Error()
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+
+	var items []logoutItem
+	for _, p := range []string{"anthropic", "openai"} {
+		if creds.Has(p) {
+			items = append(items, logoutItem{
+				label:  p,
+				target: p,
+				method: creds.Method(p),
+			})
+		}
+	}
+	if len(items) == 0 {
+		i.mu.Lock()
+		i.statusOK = "no credentials stored; already logged out"
+		i.statusErr = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	if len(items) > 1 {
+		items = append(items, logoutItem{label: "all", target: "all"})
+	}
+
+	i.logoutDialog.Open(items)
+	i.invalidate()
 }
 
 // doLogout clears credentials for the given provider (or all providers)

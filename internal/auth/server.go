@@ -221,15 +221,15 @@ func Redirect(w http.ResponseWriter, r *http.Request, u *url.URL) {
 
 var tpl = template.Must(template.New("index").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot login</title>` + monoStyle + `</head><body>
 ` + logoTag + `
-<h1>zot login</h1>
+<h1><span class="zot">zot</span> login</h1>
 <hr class="rule">
-<p>paste an api key for anthropic or openai. zot probes the provider once, then saves the key to <span class="mono">~/Library/Application Support/zot/auth.json</span>.</p>
+<p>paste an api key for anthropic or openai. <span class="zot">zot</span> probes the provider once, then saves the key to <span class="mono">~/Library/Application Support/zot/auth.json</span>.</p>
 <p>
   <a href="/apikey?provider=anthropic">anthropic api key →</a><br>
   <a href="/apikey?provider=openai">openai api key →</a>
 </p>
 <hr class="rule">
-<p class="muted">for a subscription login (claude pro/max · chatgpt plus/pro), close this tab and run /login inside zot.</p>
+<p class="muted">for a subscription login (claude pro/max - chatgpt plus/pro), close this tab and run /login inside <span class="zot">zot</span>.</p>
 </body></html>`))
 
 func init() {
@@ -238,9 +238,9 @@ func init() {
   label { font-size: 0.875rem; }
 </style></head><body>
 ` + logoTag + `
-<h1>zot login · {{.Provider}} api key</h1>
+<h1><span class="zot">zot</span> login - {{.Provider}} api key</h1>
 <hr class="rule">
-<p>paste your {{.Provider}} api key. zot will probe the provider with it once, then save it if the key is accepted.</p>
+<p>paste your {{.Provider}} api key. <span class="zot">zot</span> will probe the provider with it once, then save it if the key is accepted.</p>
 <form method="POST" action="/apikey">
   <input type="hidden" name="provider" value="{{.Provider}}" />
   <label for="api_key">api key</label>
@@ -249,19 +249,19 @@ func init() {
 </form>
 </body></html>`))
 
-	template.Must(tpl.New("success").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot · logged in</title>` + monoStyle + `</head><body>
+	template.Must(tpl.New("success").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot - logged in</title>` + monoStyle + `</head><body>
 ` + logoTag + `
 <h1><span class="mark">✓</span> logged in to {{.Provider}}</h1>
 <hr class="rule">
 <p class="msg">method: {{.Method}}</p>
-<p class="muted">zot received the callback. you can close this tab and return to the terminal.</p>
+<p class="muted"><span class="zot">zot</span> received the callback. you can close this tab and return to the terminal.</p>
 </body></html>`))
 
-	template.Must(tpl.New("error").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot · error</title>` + monoStyle + `</head><body>
+	template.Must(tpl.New("error").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot - error</title>` + monoStyle + `</head><body>
 ` + logoTag + `
 <h1><span class="mark">✗</span> login failed</h1>
 <hr class="rule">
 <p class="msg mono">{{.Message}}</p>
-<p class="muted">go back to zot and try again.</p>
+<p class="muted">go back to <span class="zot">zot</span> and try again.</p>
 </body></html>`))
 }

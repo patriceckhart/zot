@@ -122,16 +122,18 @@ func (cs *CallbackServer) deliver(r CallbackResult) {
 
 // ---- static HTML for the callback tab ----
 
-// All zot-served pages share a single style: white background, black
-// text, the cyan pixel-art `z` logo at the top, thin black rules,
-// monospace type.
+// All zot-served pages share a single dark style matching the TUI:
+// near-black background (#0a0a0a), white text, Geist Mono type, cyan
+// accent on the word "zot". Serves every step of both the api-key
+// flow and the oauth callback flow.
 const monoStyle = `<style>
-  :root { color-scheme: light; }
+  @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;600&display=swap');
+  :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    background: #ffffff;
-    color: #000000;
+    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #0a0a0a;
+    color: #ffffff;
     max-width: 44rem;
     margin: 0 auto;
     padding: 3rem 1.5rem;
@@ -152,23 +154,28 @@ const monoStyle = `<style>
     letter-spacing: 0.01em;
   }
   h1 .mark { display: inline-block; width: 1.25rem; }
-  .rule { border: 0; border-top: 1px solid #000000; margin: 1.5rem 0; }
-  .muted { color: #595959; }
-  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
+  .zot { color: #7ed3fc; }
+  .rule { border: 0; border-top: 1px solid #ffffff; margin: 1.5rem 0; }
+  .muted { color: #9ca3af; }
+  .mono { font-family: inherit; word-break: break-all; }
   .msg { padding: 0.75rem 0; }
-  a { color: inherit; }
+  a { color: #7ed3fc; }
   input[type=password], input[type=text] {
     width: 100%; padding: 0.5rem 0.6rem;
-    border: 1px solid #000000; background: #ffffff; color: #000000;
+    background: #0a0a0a; color: #ffffff;
+    border: 1px solid #ffffff;
     font-family: inherit; font-size: 0.95rem;
+  }
+  input[type=password]:focus, input[type=text]:focus {
+    outline: none; border-color: #7ed3fc;
   }
   button {
     padding: 0.5rem 1.25rem;
-    background: #000000; color: #ffffff;
-    border: 1px solid #000000; font-family: inherit; font-size: 0.95rem;
+    background: #ffffff; color: #0a0a0a;
+    border: 1px solid #ffffff; font-family: inherit; font-size: 0.95rem;
     cursor: pointer;
   }
-  button:hover { background: #ffffff; color: #000000; }
+  button:hover { background: #0a0a0a; color: #ffffff; }
 </style>`
 
 // logoTag is the <img> element used at the top of every zot-served
@@ -189,17 +196,17 @@ func oauthSuccessHTML(provider string) string {
 ` + logoTag + `
 <h1><span class="mark">✓</span> logged in to ` + p + `</h1>
 <hr class="rule">
-<p class="msg">zot received the callback. you can close this tab.</p>
+<p class="msg"><span class="zot">zot</span> received the callback. you can close this tab.</p>
 </body></html>`
 }
 
 func oauthErrorHTML(msg string) string {
-	return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot · error</title>` + monoStyle + `</head><body>
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>zot - error</title>` + monoStyle + `</head><body>
 ` + logoTag + `
 <h1><span class="mark">✗</span> login failed</h1>
 <hr class="rule">
 <p class="msg mono">` + htmlEscape(msg) + `</p>
-<p class="muted">go back to zot and try again.</p>
+<p class="muted">go back to <span class="zot">zot</span> and try again.</p>
 </body></html>`
 }
 
