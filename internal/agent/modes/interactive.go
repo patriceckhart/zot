@@ -140,7 +140,17 @@ type Interactive struct {
 	// clears the editor / cancels a turn / shows a hint; a second press
 	// within ctrlCExitWindow exits. Mirrors the python-repl convention.
 	lastCtrlC time.Time
+
+	// welcomeStart is when the interactive run began. The welcome
+	// banner shows the binary version for welcomeVersionDuration
+	// after this point and reverts to plain text after.
+	welcomeStart time.Time
 }
+
+// welcomeVersionDuration is how long the welcome banner shows the
+// version suffix before reverting to the plain headline. 1 second
+// is enough to read at a glance and keeps the splash short.
+const welcomeVersionDuration = 1 * time.Second
 
 // NewInteractive constructs an Interactive from cfg.
 func NewInteractive(cfg InteractiveConfig) *Interactive {
@@ -199,6 +209,12 @@ func (i *Interactive) Run(ctx context.Context) error {
 	if i.cfg.InitialInput != "" {
 		i.ed.SetValue(i.cfg.InitialInput)
 	}
+
+	// Stamp the welcome time and schedule a one-shot redraw at the
+	// expiry so the version suffix disappears on its own even if the
+	// user hasn't typed anything yet.
+	i.welcomeStart = time.Now()
+	time.AfterFunc(welcomeVersionDuration, i.invalidate)
 
 	// If the agent was constructed with a pre-loaded transcript
 	// (--continue, --resume, --session) park the viewport on the
@@ -431,8 +447,11 @@ func (i *Interactive) redraw() {
 
 	// Welcome banner: shown at the top of the chat area when there is
 	// no transcript yet. Disappears after the first message is sent.
+	// The version suffix is shown for welcomeVersionDuration after
+	// startup, then drops off automatically.
 	if len(i.view.Messages) == 0 && !i.streamOn && len(i.toolOrder) == 0 {
-		chat = append(welcomeBanner(i.cfg.Theme), chat...)
+		showVer := !i.welcomeStart.IsZero() && time.Since(i.welcomeStart) < welcomeVersionDuration
+		chat = append(welcomeBanner(i.cfg.Theme, i.cfg.Version, showVer), chat...)
 	}
 
 	// Update-available banner: prepended above everything else so it's

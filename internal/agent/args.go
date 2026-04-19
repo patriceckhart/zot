@@ -184,7 +184,7 @@ func ParseArgs(in []string) (Args, error) {
 
 // PrintHelp writes the help text to w (stderr by default).
 func PrintHelp(version string) {
-	fmt.Fprintf(os.Stderr, `zot %s — lightweight terminal coding agent
+	fmt.Fprintf(os.Stderr, `zot %s — Yet another coding agent harness.
 
 usage:
   zot                          interactive tui
