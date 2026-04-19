@@ -17,6 +17,14 @@
 
 import { createInterface } from "node:readline";
 import { stderr, stdin, stdout } from "node:process";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 
 // ---- protocol types (a tiny subset of internal/extproto) ----
 
@@ -87,12 +95,75 @@ function log(msg: string): void {
 }
 
 // ---- the scratchpad state itself ----
+//
+// Notes persist as JSONL under <cwd>/.zot/scratchpad-notes.jsonl so
+// they survive zot restarts and stay scoped to the project. The path
+// is resolved once HelloAck arrives (which carries cwd); until then
+// notesPath is empty and reads/writes no-op safely.
+//
+// One note per line, format:  {"at":"<iso>","text":"<body>"}
+// Append-only on /note; full rewrite on /clear-notes.
+//
+// Single-writer assumption: only one zot session per cwd at a time.
+// Concurrent writes from two zot instances would interleave but not
+// corrupt JSONL line boundaries on POSIX (writes ≤ PIPE_BUF are
+// atomic). Good enough for a demo.
 
-const notes: Array<{ at: string; text: string }> = [];
+type Note = { at: string; text: string };
+
+let notes: Note[] = [];
+let notesPath = "";
+
+function setNotesPath(cwd: string): void {
+  notesPath = join(cwd, ".zot", "scratchpad-notes.jsonl");
+  loadNotes();
+}
+
+function loadNotes(): void {
+  notes = [];
+  if (!notesPath || !existsSync(notesPath)) return;
+  try {
+    const raw = readFileSync(notesPath, "utf8");
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed) as Note;
+        if (typeof parsed?.text === "string") notes.push(parsed);
+      } catch {
+        // skip malformed lines silently; the next /note will
+        // append correctly anyway.
+      }
+    }
+    log(`loaded ${notes.length} note(s) from ${notesPath}`);
+  } catch (err) {
+    log(`failed to read ${notesPath}: ${err}`);
+  }
+}
 
 function appendNote(text: string): number {
-  notes.push({ at: new Date().toISOString(), text });
+  const note: Note = { at: new Date().toISOString(), text };
+  notes.push(note);
+  if (notesPath) {
+    try {
+      mkdirSync(dirname(notesPath), { recursive: true });
+      appendFileSync(notesPath, JSON.stringify(note) + "\n", "utf8");
+    } catch (err) {
+      log(`failed to persist note to ${notesPath}: ${err}`);
+    }
+  }
   return notes.length;
+}
+
+function clearNotes(): void {
+  notes = [];
+  if (notesPath) {
+    try {
+      writeFileSync(notesPath, "", "utf8");
+    } catch (err) {
+      log(`failed to clear ${notesPath}: ${err}`);
+    }
+  }
 }
 
 function renderNotes(): string {
@@ -184,6 +255,7 @@ function handleHelloAck(ack: HelloAck): void {
     `connected to zot ${ack.zot_version} ` +
       `(${ack.provider}/${ack.model}, cwd=${ack.cwd})`,
   );
+  if (ack.cwd) setNotesPath(ack.cwd);
 }
 
 function handleCommand(frame: CommandInvoked): void {
@@ -221,7 +293,7 @@ function handleCommand(frame: CommandInvoked): void {
     }
 
     case "clear-notes": {
-      notes.length = 0;
+      clearNotes();
       respond(frame.id, {
         type: "command_response",
         id: frame.id,

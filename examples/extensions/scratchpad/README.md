@@ -44,9 +44,17 @@ The model also has a `read_notes` tool. Ask it:
 
 > "What did I tell you to remember?"
 
-…and it will call the tool and tell you. The scratchpad is
-process-local: it lives only as long as the extension subprocess
-(i.e. the duration of one `zot` session).
+…and it will call the tool and tell you.
+
+## Storage
+
+Notes persist as JSONL at `<cwd>/.zot/scratchpad-notes.jsonl`. The
+file is created on first `/note` and survives zot restarts. Each line
+is one note: `{"at":"2026-04-19T13:00:00.000Z","text":"..."}`.
+
+Scope is per-project: switching to a different cwd gives you a
+different scratchpad. Cross-project sharing isn't supported in this
+example (would just be a matter of changing the path constant).
 
 ## Why TypeScript here
 
