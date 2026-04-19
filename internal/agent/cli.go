@@ -184,12 +184,14 @@ func Run(rawArgs []string, version string) error {
 // ---- print / json modes: require credentials, run single-shot ----
 
 func runPrintMode(ctx context.Context, args Args, version string) error {
+	if args.NoYolo {
+		fmt.Fprintln(os.Stderr, "warning: --no-yolo has no effect in print mode (no interactive prompt available); tools will run without confirmation")
+	}
 	r, err := Resolve(args, true)
 	if err != nil {
 		return err
 	}
 	ag := r.NewAgent()
-	wireNoYoloAutoRefuse(ag, args)
 	sess, _ := openOrCreateSession(args, r, ag, version)
 	defer sess.Close()
 
@@ -208,36 +210,15 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 	return err
 }
 
-// wireNoYoloAutoRefuse installs a BeforeToolExecute hook that
-// refuses every tool call when --no-yolo is active but there's no
-// interactive UI to prompt (print / json / rpc modes). The reason
-// is written in a way the model can learn from so it proposes a
-// different action rather than looping on the same tool.
-func wireNoYoloAutoRefuse(ag *core.Agent, args Args) {
-	if !args.NoYolo || ag == nil {
-		return
-	}
-	gate := core.NewConfirmGate(nil) // nil inner = auto-refuse
-	prev := ag.BeforeToolExecute
-	ag.BeforeToolExecute = func(call provider.ToolCallBlock) (bool, string, json.RawMessage) {
-		ok, reason, _ := gate.Check(call.Name, core.BuildPreview(call.Arguments, 120))
-		if !ok {
-			return false, reason, nil
-		}
-		if prev != nil {
-			return prev(call)
-		}
-		return true, "", nil
-	}
-}
-
 func runJSONMode(ctx context.Context, args Args, version string) error {
+	if args.NoYolo {
+		fmt.Fprintln(os.Stderr, "warning: --no-yolo has no effect in json mode (no interactive prompt available); tools will run without confirmation")
+	}
 	r, err := Resolve(args, true)
 	if err != nil {
 		return err
 	}
 	ag := r.NewAgent()
-	wireNoYoloAutoRefuse(ag, args)
 	sess, _ := openOrCreateSession(args, r, ag, version)
 	defer sess.Close()
 

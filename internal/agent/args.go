@@ -69,9 +69,12 @@ type Args struct {
 	// and waits for an explicit yes/no. The user can also pick
 	// "always for this tool this session" or "always for anything
 	// this session" to stop being prompted again. Defaults off
-	// (yolo mode): tools run without asking. In -p / --json / rpc
-	// modes there's no interactive TUI, so --no-yolo auto-refuses
-	// every tool call with a reason the model can learn from.
+	// (yolo mode): tools run without asking.
+	//
+	// No effect in -p / --json / rpc modes, which have no
+	// interactive prompt. A warning is printed to stderr on startup
+	// so scripts know the flag is ignored, but tools still run
+	// freely so automated workflows keep working.
 	NoYolo bool
 
 	ListModels bool
@@ -287,8 +290,8 @@ flags:
                                default: only built-in skills load
 
   --no-yolo                    ask before running every tool call
-                               (interactive mode only; in -p / --json
-                               / rpc this refuses every tool call)
+                               (interactive tui only; ignored with
+                               a stderr warning in -p / --json / rpc)
 
   --max-steps N                agent loop iteration cap (default 50)
   --list-models                print known models and exit

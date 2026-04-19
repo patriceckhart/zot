@@ -40,6 +40,9 @@ import (
 // Auth: if $ZOTCORE_RPC_TOKEN is set, the first command must be
 // {"type":"hello","token":"..."} or the connection is closed.
 func runRPCMode(ctx context.Context, args Args, version string) error {
+	if args.NoYolo {
+		fmt.Fprintln(os.Stderr, "warning: --no-yolo has no effect in rpc mode (no interactive prompt available); tools will run without confirmation")
+	}
 	r, err := Resolve(args, true)
 	if err != nil {
 		return err

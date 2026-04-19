@@ -53,11 +53,10 @@ type ConfirmGate struct {
 	allowedTool map[string]bool
 }
 
-// NewConfirmGate returns a gate backed by inner. When inner is nil,
-// the gate operates in auto-refuse mode: every tool call is denied
-// with a fixed reason. That's what non-interactive modes (-p /
-// --json / rpc) use when --no-yolo is on, since they have no way
-// to prompt the user.
+// NewConfirmGate returns a gate backed by inner. Inner can be nil;
+// in that case every not-yet-allowed tool call is refused with a
+// fixed reason (the gate is effectively a blocker until AllowAll /
+// SetConfirmer is called).
 func NewConfirmGate(inner Confirmer) *ConfirmGate {
 	return &ConfirmGate{
 		inner:       inner,

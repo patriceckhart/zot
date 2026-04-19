@@ -152,7 +152,7 @@ zot --help
 | `--no-ext` | Skip extension discovery for this run. `--ext` still works on top, so `--no-ext --ext ./x` runs only `x`. |
 | `--with-skills` | Also load user-installed skills. Without this, only the built-in skills shipped in the binary are loaded. |
 | `--no-skill` | Disable all skills, including built-ins. No `skill` tool is registered and the system prompt has no skill manifest. |
-| `--no-yolo` | Confirm every tool call before it runs. In the TUI, a dialog shows the tool name and a one-line preview of its args with four choices: yes, yes-always-this-tool-this-session, yes-always-this-session, no. In print / json / rpc modes (no interactive prompt) every tool call is auto-refused with a reason the model can learn from. Type `/yolo` in the TUI to disable the gate for the rest of the session. |
+| `--no-yolo` | Confirm every tool call before it runs (interactive TUI only). A dialog shows the tool name and a one-line preview of its args with four choices: yes, yes-always-this-tool-this-session, yes-always-this-session, no. Ignored with a stderr warning in print / json / rpc modes, where tools still run freely so scripts and automation keep working. Type `/yolo` in the TUI to disable the gate for the rest of the session. |
 
 ## Tools
 
