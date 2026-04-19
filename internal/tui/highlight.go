@@ -144,8 +144,8 @@ var (
 // "fruity" style if the builder fails for any reason.
 func buildZotStyle() *chroma.Style {
 	builder := styles.Get("monokai").Builder()
-	// Override the most visible tokens with explicit colors that match
-	// pi's cli-highlight look on a dark terminal.
+	// Override the most visible tokens with explicit colors that
+	// read well on a dark terminal.
 	builder.Add(chroma.Keyword, "#81a1c1 bold")       // imports, funcs, control flow
 	builder.Add(chroma.KeywordConstant, "#81a1c1")    // true, false, null
 	builder.Add(chroma.KeywordDeclaration, "#81a1c1") // const, let, var, type
@@ -173,8 +173,8 @@ func buildZotStyle() *chroma.Style {
 	return s
 }
 
-// extLang mirrors pi's extToLang. Only extensions that chroma supports
-// are included.
+// extLang maps file extensions to chroma lexer names. Only
+// extensions that chroma supports are included.
 var extLang = map[string]string{
 	"ts":         "typescript",
 	"tsx":        "tsx",

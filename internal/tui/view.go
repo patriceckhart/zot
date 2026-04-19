@@ -772,7 +772,7 @@ func truncateLines(s string, n int) string {
 }
 
 // StatusBarParams groups the many bits of state the status bar needs.
-// Grew from a flat argument list once we started matching pi's format.
+// Grew from a flat argument list once we settled on the layout.
 type StatusBarParams struct {
 	Theme      Theme
 	Provider   string
@@ -786,8 +786,8 @@ type StatusBarParams struct {
 	Usage provider.Usage
 	// Subscription is true when the credential is an OAuth token (claude
 	// pro/max, chatgpt plus/pro) rather than a paid api key. We still
-	// compute a cost for visibility, but pi-style we append "(sub)" so
-	// the user knows no money actually moved.
+	// compute a cost for visibility and append "(sub)" so the user
+	// knows no real money moved.
 	Subscription bool
 
 	// Last turn's input+cache tokens (approximates current live context).
@@ -820,24 +820,24 @@ type StatusBarParams struct {
 func StatusBar(p StatusBarParams) []string {
 	th := p.Theme
 
-	// Token stats: only include each segment when non-zero (pi's
-	// behavior). Keeps the bar compact on brand-new sessions.
+	// Token stats: only include each segment when non-zero. Keeps
+	// the bar compact on brand-new sessions.
 	var stats []string
 	if p.Usage.InputTokens > 0 {
-		stats = append(stats, fmt.Sprintf("↑%s", piFormatTokens(p.Usage.InputTokens)))
+		stats = append(stats, fmt.Sprintf("↑%s", formatTokens(p.Usage.InputTokens)))
 	}
 	if p.Usage.OutputTokens > 0 {
-		stats = append(stats, fmt.Sprintf("↓%s", piFormatTokens(p.Usage.OutputTokens)))
+		stats = append(stats, fmt.Sprintf("↓%s", formatTokens(p.Usage.OutputTokens)))
 	}
 	if p.Usage.CacheReadTokens > 0 {
-		stats = append(stats, fmt.Sprintf("R%s", piFormatTokens(p.Usage.CacheReadTokens)))
+		stats = append(stats, fmt.Sprintf("R%s", formatTokens(p.Usage.CacheReadTokens)))
 	}
 	if p.Usage.CacheWriteTokens > 0 {
-		stats = append(stats, fmt.Sprintf("W%s", piFormatTokens(p.Usage.CacheWriteTokens)))
+		stats = append(stats, fmt.Sprintf("W%s", formatTokens(p.Usage.CacheWriteTokens)))
 	}
 
 	// Cost: always show the dollar value computed from token counts,
-	// even on subscription — lets you see what the equivalent api cost
+	// even on subscription. Lets you see what the equivalent api cost
 	// would be (handy for gauging subscription value). Append "(sub)"
 	// only as a hint that no real money moved.
 	var costStr string
@@ -852,7 +852,7 @@ func StatusBar(p StatusBarParams) []string {
 	}
 
 	// Context %. Color-coded: yellow >70, red >90.
-	ctx, ctxColor := piContextUsage(th, p.ContextUsed, p.ContextMax)
+	ctx, ctxColor := contextUsage(th, p.ContextUsed, p.ContextMax)
 	if ctx != "" {
 		if p.AutoCompacting {
 			ctx += " (auto)"
@@ -898,17 +898,17 @@ func StatusBar(p StatusBarParams) []string {
 	return []string{primary, cwdRendered}
 }
 
-// piContextUsage renders the "N%/ctxMax" fragment, returning the
+// contextUsage renders the "N%/ctxMax" fragment, returning the
 // rendered string plus the colour to wrap it in.
-func piContextUsage(th Theme, used, max int) (string, int) {
+func contextUsage(th Theme, used, max int) (string, int) {
 	if max <= 0 {
 		if used <= 0 {
 			return "", th.Muted
 		}
-		return piFormatTokens(used), th.Muted
+		return formatTokens(used), th.Muted
 	}
 	pct := float64(used) / float64(max) * 100
-	text := fmt.Sprintf("%.1f%%/%s", pct, piFormatTokens(max))
+	text := fmt.Sprintf("%.1f%%/%s", pct, formatTokens(max))
 	switch {
 	case pct > 90:
 		return text, th.Error
@@ -918,14 +918,14 @@ func piContextUsage(th Theme, used, max int) (string, int) {
 	return text, th.Muted
 }
 
-// piFormatTokens footer formatter:
+// formatTokens footer formatter:
 //
 //	< 1000      -> "42"
 //	< 10_000    -> "2.7k"
 //	< 1_000_000 -> "35k"
 //	< 10M       -> "1.1M"
 //	else        -> "12M"
-func piFormatTokens(n int) string {
+func formatTokens(n int) string {
 	switch {
 	case n < 0:
 		return "0"
