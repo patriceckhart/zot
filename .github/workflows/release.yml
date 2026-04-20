@@ -95,8 +95,3 @@ jobs:
           # goreleaser reads the tag we just pushed and builds binaries
           # for every (goos, goarch) combination in .goreleaser.yaml.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional PAT with `repo` scope for patriceckhart/homebrew-tap.
-          # Always exported (as empty string when the secret is unset)
-          # so the goreleaser template that gates the brew upload on
-          # this value can evaluate without errors.
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || '' }}

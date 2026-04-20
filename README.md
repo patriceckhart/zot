@@ -35,14 +35,6 @@ iwr -useb https://raw.githubusercontent.com/patriceckhart/zot/main/install.ps1 |
 
 Drops `zot.exe` into `$HOME\bin` and adds it to the user PATH if missing. Open a fresh terminal afterwards.
 
-### Homebrew (macOS, Linux)
-
-```bash
-brew install patriceckhart/tap/zot
-```
-
-The tap lives at `patriceckhart/homebrew-tap`.
-
 ### go install
 
 ```bash
