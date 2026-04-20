@@ -1045,6 +1045,11 @@ type StatusBarParams struct {
 	// context percentage so it's clear where the spinner is coming from.
 	AutoCompacting bool
 
+	// Telegram true when the telegram bridge is connected. Adds a
+	// small "· tg ·" tag to the cwd line so the user can tell at a
+	// glance that dms are being mirrored into this session.
+	Telegram bool
+
 	Cols int // terminal width; drives right-alignment of cwd
 }
 
@@ -1133,8 +1138,15 @@ func StatusBar(p StatusBarParams) []string {
 	}
 
 	cwd := shortenHome(p.CWD)
-	if p.Locked && cwd != "" {
-		cwd = "· jailed · " + cwd
+	tags := ""
+	if p.Locked {
+		tags += "· jailed "
+	}
+	if p.Telegram {
+		tags += "· tg "
+	}
+	if tags != "" && cwd != "" {
+		cwd = tags + "· " + cwd
 	}
 
 	primary := leftBuilder.String()

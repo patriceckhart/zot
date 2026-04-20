@@ -45,6 +45,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/unjail", Desc: "allow tools to touch paths outside this directory"},
 	{Name: "/reload-ext", Desc: "hot-reload all extensions (re-read manifests and respawn)"},
 	{Name: "/yolo", Desc: "turn off --no-yolo confirmation for the rest of this session"},
+	{Name: "/telegram", Desc: "connect, disconnect, or show status of the telegram bridge"},
 	{Name: "/clear", Desc: "clear the chat transcript"},
 	{Name: "/exit", Desc: "exit zot"},
 }

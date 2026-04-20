@@ -198,6 +198,7 @@ Type `/` in the TUI to open the autocomplete popup. Available commands:
 | `/unjail` | Allow tools to touch paths outside again. |
 | `/reload-ext` | Hot-reload all extensions (re-read manifests, respawn subprocesses, rebuild tool registry). |
 | `/yolo` | Turn off `--no-yolo` confirmation for the rest of this session. |
+| `/telegram` | Connect, disconnect, or show status of the Telegram bridge (takes `connect` / `disconnect` / `status` as an optional argument; opens a picker without one). When connected, DMs from the paired user become prompts in the running session and the assistant's replies are mirrored back to Telegram. Alias: `/tg`. |
 | `/clear` | Clear the chat transcript. |
 | `/exit` | Exit zot. |
 

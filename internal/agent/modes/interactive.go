@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/patriceckhart/zot/internal/agent/extensions"
+	"github.com/patriceckhart/zot/internal/agent/modes/telegram"
 	"github.com/patriceckhart/zot/internal/agent/tools"
 	"github.com/patriceckhart/zot/internal/auth"
 	"github.com/patriceckhart/zot/internal/core"
@@ -177,6 +178,8 @@ type Interactive struct {
 	changelogDialog *changelogDialog
 	confirmDialog   *confirmDialog
 	logoutDialog    *logoutDialog
+	telegramDialog  *telegramDialog
+	telegramBridge  *telegram.Bridge
 	suggest         *slashSuggester
 	spin            *spinner
 
@@ -229,6 +232,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		changelogDialog: newChangelogDialog(),
 		confirmDialog:   newConfirmDialog(),
 		logoutDialog:    newLogoutDialog(),
+		telegramDialog:  newTelegramDialog(),
 		suggest:         newSlashSuggester(),
 		spin:            newSpinner(),
 	}
@@ -248,6 +252,11 @@ func (i *Interactive) Run(ctx context.Context) error {
 		return err
 	}
 	defer restore()
+	defer func() {
+		if i.telegramBridge != nil {
+			i.telegramBridge.Stop()
+		}
+	}()
 
 	_, _ = term.Write([]byte(tui.SeqBracketedPasteOn))
 	_, _ = term.Write([]byte(tui.SeqAltScreenOn))
@@ -418,7 +427,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// and the AfterFunc-driven invalidate got dropped on a
 			// full channel.
 			drainPending()
-			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() || i.changelogDialog.Active() || i.confirmDialog.Active() || i.logoutDialog.Active() {
+			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() || i.changelogDialog.Active() || i.confirmDialog.Active() || i.logoutDialog.Active() || i.telegramDialog.Active() {
 				requestRedraw() // keep the spinner / dialog animation moving
 			}
 		}
@@ -580,6 +589,8 @@ func (i *Interactive) redraw() {
 		dialog = i.confirmDialog.Render(i.cfg.Theme, cols)
 	case i.logoutDialog.Active():
 		dialog = i.logoutDialog.Render(i.cfg.Theme, cols)
+	case i.telegramDialog.Active():
+		dialog = i.telegramDialog.Render(i.cfg.Theme, cols)
 	}
 
 	// Slash-command autocomplete: popup above the status line, only
@@ -642,6 +653,7 @@ func (i *Interactive) redraw() {
 		ContextUsed:    i.lastCtxInput,
 		ContextMax:     ctxMax,
 		AutoCompacting: i.autoCompacting,
+		Telegram:       i.telegramBridge != nil && i.telegramBridge.Active(),
 		Cols:           cols,
 	})
 	edLines, curR, curC := i.ed.Render(cols)
@@ -839,6 +851,19 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		act := i.logoutDialog.HandleKey(k)
 		if act.Select {
 			i.doLogout(act.Target)
+		}
+		i.invalidate()
+		return false
+	}
+	if i.telegramDialog.Active() {
+		if k.Kind == tui.KeyCtrlC {
+			i.telegramDialog.Close()
+			i.invalidate()
+			return false
+		}
+		act := i.telegramDialog.HandleKey(k)
+		if act.Select {
+			i.doTelegram(act.Action)
 		}
 		i.invalidate()
 		return false
@@ -1166,6 +1191,43 @@ func (i *Interactive) Submit(text string) {
 	i.startTurn(i.runCtx, text)
 }
 
+// SubmitOrQueue runs text immediately if the agent is idle, or
+// appends it to the pending queue if a turn is already in flight.
+// Used by the telegram bridge (and by the editor submit path) so
+// both input sources share the same "queue behind an active turn"
+// semantics. Images are ignored for now — only the text prompt is
+// forwarded — because the queued-prompt path is text-only; a
+// follow-up can expand the queue entry to carry images.
+func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
+	_ = images // reserved for future queued-with-images support
+	i.mu.Lock()
+	if i.agent == nil {
+		i.statusErr = "not logged in. type /login first."
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	if i.busy {
+		i.queued = append(i.queued, text)
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.mu.Unlock()
+	i.startTurn(i.runCtx, text)
+}
+
+// CancelTurn aborts the active turn if one is running. Used by the
+// telegram bridge when the paired user sends /stop.
+func (i *Interactive) CancelTurn() {
+	i.mu.Lock()
+	cancel := i.cancelTurn
+	i.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // Insert places text at the cursor in the editor.
 func (i *Interactive) Insert(text string) {
 	i.ed.Insert(text)
@@ -1266,6 +1328,12 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.runReloadExt(ctx)
 	case "/yolo":
 		i.runYoloOn()
+	case "/telegram", "/tg":
+		if len(parts) >= 2 {
+			i.doTelegram(parts[1])
+			break
+		}
+		i.openTelegramDialog()
 	default:
 		// Last-resort fallback: try the extension manager. Built-in
 		// cases above always win; this branch only fires for slash
@@ -1979,6 +2047,24 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		if i.cfg.OnAssistant != nil {
 			i.cfg.OnAssistant(e.Message)
 		}
+		// Mirror the assistant's final visible text to the telegram
+		// bridge when active. Only TextBlock content is forwarded;
+		// tool_use blocks are internal. Send on a goroutine so the
+		// network call doesn't hold the event loop lock.
+		if i.telegramBridge != nil && i.telegramBridge.Active() {
+			var sb strings.Builder
+			for _, c := range e.Message.Content {
+				if tb, ok := c.(provider.TextBlock); ok {
+					if sb.Len() > 0 {
+						sb.WriteString("\n")
+					}
+					sb.WriteString(tb.Text)
+				}
+			}
+			if text := sb.String(); strings.TrimSpace(text) != "" {
+				go i.telegramBridge.OnAssistantText(text)
+			}
+		}
 	case core.EvToolUseStart:
 		// Live streaming: pre-create the view so the user sees the
 		// tool call being composed in real time. Any subsequent
@@ -2170,4 +2256,213 @@ func (i *Interactive) runYoloOn() {
 	i.statusErr = ""
 	i.mu.Unlock()
 	i.invalidate()
+}
+
+// openTelegramDialog shows the picker for `/telegram` with no arg.
+// Items depend on current state: disconnect + status when running,
+// connect + status when stopped.
+func (i *Interactive) openTelegramDialog() {
+	items := i.telegramMenuItems()
+	if len(items) == 0 {
+		i.mu.Lock()
+		i.statusErr = "telegram not configured. run `zot telegram-bot setup` first."
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.telegramDialog.Open(items)
+	i.invalidate()
+}
+
+// telegramMenuItems builds the dialog entries for the current
+// bridge state. Returns empty when no bot.json exists so the
+// caller can show a helpful status line instead of an empty menu.
+func (i *Interactive) telegramMenuItems() []telegramItem {
+	cfg, err := telegram.LoadConfig(i.cfg.ZotHome)
+	if err != nil || cfg.BotToken == "" {
+		return nil
+	}
+	var items []telegramItem
+	if i.telegramBridge != nil && i.telegramBridge.Active() {
+		items = append(items, telegramItem{label: "disconnect", action: "disconnect", hint: "stop mirroring"})
+		st := i.telegramBridge.State()
+		hint := "active"
+		if st.Username != "" {
+			hint += " as @" + st.Username
+		}
+		items = append(items, telegramItem{label: "status", action: "status", hint: hint})
+	} else {
+		label := "connect"
+		hint := "start mirroring dms into this session"
+		if cfg.AllowedUserID == 0 {
+			hint = "awaiting pairing (send /start to the bot once connected)"
+		}
+		items = append(items, telegramItem{label: label, action: "connect", hint: hint})
+		items = append(items, telegramItem{label: "status", action: "status", hint: "disconnected"})
+	}
+	return items
+}
+
+// doTelegram dispatches one of the three explicit actions. Called
+// from /telegram <action> or after the picker selects a row.
+func (i *Interactive) doTelegram(action string) {
+	switch action {
+	case "connect":
+		i.telegramConnect()
+	case "disconnect":
+		i.telegramDisconnect()
+	case "status":
+		i.telegramStatus()
+	default:
+		i.mu.Lock()
+		i.statusErr = "unknown telegram action: " + action + " (use connect, disconnect, or status)"
+		i.mu.Unlock()
+		i.invalidate()
+	}
+}
+
+// telegramConnect starts the bridge. Refuses if it's already
+// running or if the on-disk bot.json is missing a token.
+func (i *Interactive) telegramConnect() {
+	if i.telegramBridge != nil && i.telegramBridge.Active() {
+		i.mu.Lock()
+		i.statusOK = "telegram already connected"
+		i.statusErr = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	cfg, err := telegram.LoadConfig(i.cfg.ZotHome)
+	if err != nil {
+		i.mu.Lock()
+		i.statusErr = "telegram: " + err.Error()
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	if cfg.BotToken == "" {
+		i.mu.Lock()
+		i.statusErr = "telegram: no bot token configured. run `zot telegram-bot setup` first."
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	// Refuse to start when a background daemon is already polling
+	// the same bot. Two concurrent long-poll consumers race each
+	// update and one always loses, so DMs get half-delivered. The
+	// user can `zot telegram-bot stop` first, then /telegram connect.
+	if pid, alive, _ := telegram.IsRunning(i.cfg.ZotHome); alive && pid > 0 {
+		i.mu.Lock()
+		i.statusErr = fmt.Sprintf("telegram: bot daemon already running (pid %d). stop it with `zot telegram-bot stop` first.", pid)
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.telegramBridge = &telegram.Bridge{
+		Client: telegram.NewClient(cfg.BotToken),
+		Config: cfg,
+		Save: func(next telegram.Config) error {
+			return telegram.SaveConfig(i.cfg.ZotHome, next)
+		},
+		Host: &telegramHost{iv: i},
+	}
+	if err := i.telegramBridge.Start(i.runCtx); err != nil {
+		i.telegramBridge = nil
+		i.mu.Lock()
+		i.statusErr = "telegram connect failed: " + err.Error()
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	state := i.telegramBridge.State()
+	label := "telegram connected"
+	if state.Username != "" {
+		label += " as @" + state.Username
+	}
+	if state.PairedID == 0 {
+		label += " — send /start to the bot from your phone to claim it"
+	}
+	i.mu.Lock()
+	i.statusOK = label
+	i.statusErr = ""
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// telegramDisconnect stops the bridge. No-op when already stopped.
+func (i *Interactive) telegramDisconnect() {
+	if i.telegramBridge == nil || !i.telegramBridge.Active() {
+		i.mu.Lock()
+		i.statusOK = "telegram already disconnected"
+		i.statusErr = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.telegramBridge.Stop()
+	i.mu.Lock()
+	i.statusOK = "telegram disconnected"
+	i.statusErr = ""
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// telegramStatus writes a one-liner describing the bridge state.
+// Reports on both the in-tui bridge and the background daemon so
+// the user isn't confused when the daemon owns the poll loop.
+func (i *Interactive) telegramStatus() {
+	var msg string
+	if i.telegramBridge != nil && i.telegramBridge.Active() {
+		s := i.telegramBridge.State()
+		msg = "telegram: connected (tui bridge)"
+		if s.Username != "" {
+			msg += " as @" + s.Username
+		}
+		if s.PairedID != 0 {
+			msg += fmt.Sprintf(" · paired with user %d", s.PairedID)
+		} else {
+			msg += " · awaiting pairing"
+		}
+	} else if pid, alive, _ := telegram.IsRunning(i.cfg.ZotHome); alive && pid > 0 {
+		msg = fmt.Sprintf("telegram: background daemon running (pid %d) · /telegram connect won't work until you stop it", pid)
+	} else {
+		cfg, _ := telegram.LoadConfig(i.cfg.ZotHome)
+		if cfg.BotToken == "" {
+			msg = "telegram: not configured. run `zot telegram-bot setup` first."
+		} else {
+			msg = "telegram: disconnected"
+			if cfg.BotUsername != "" {
+				msg += " (@" + cfg.BotUsername + " ready to connect)"
+			}
+		}
+	}
+	i.mu.Lock()
+	i.statusOK = msg
+	i.statusErr = ""
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// telegramHost adapts *Interactive to telegram.Host so the bridge
+// can call back into the TUI without importing modes directly.
+type telegramHost struct{ iv *Interactive }
+
+func (h *telegramHost) SubmitOrQueue(prompt string, images []provider.ImageBlock) {
+	h.iv.SubmitOrQueue(prompt, images)
+}
+
+func (h *telegramHost) CancelTurn() { h.iv.CancelTurn() }
+
+func (h *telegramHost) Notify(level, message string) {
+	h.iv.mu.Lock()
+	switch level {
+	case "error", "warn":
+		h.iv.statusErr = message
+		h.iv.statusOK = ""
+	default:
+		h.iv.statusOK = message
+		h.iv.statusErr = ""
+	}
+	h.iv.mu.Unlock()
+	h.iv.invalidate()
 }
