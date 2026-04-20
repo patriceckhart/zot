@@ -1091,6 +1091,14 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.mu.Unlock()
 			return false
 		}
+		// Mirror the user's typed prompt into the paired Telegram
+		// chat (when the bridge is active) so the Telegram thread
+		// stays a complete record of the session, not just the half
+		// that originated on the phone. On a goroutine so the
+		// network write doesn't delay the local turn.
+		if i.telegramBridge != nil && i.telegramBridge.Active() {
+			go i.telegramBridge.OnUserTyped(text)
+		}
 		// If a turn is already in flight, queue this prompt instead of
 		// starting a second one. The drain loop at the end of startTurn
 		// will pick it up when the current turn finishes.

@@ -45,6 +45,14 @@ type Bridge struct {
 	me       *User
 	chatID   int64 // populated after first DM from the paired user
 	replyBuf strings.Builder
+
+	// nextReplyFromTelegram is set when the next assistant reply
+	// should be sent bare (no "zot: " prefix) because the turn was
+	// initiated by a Telegram DM. The flag clears as soon as the
+	// reply is flushed. TUI-originated turns leave the flag false
+	// so the reply is tagged "zot: " for clarity on the two-sided
+	// transcript.
+	nextReplyFromTelegram bool
 }
 
 // State is the snapshot /telegram status reports.
@@ -106,6 +114,12 @@ func (b *Bridge) Start(parent context.Context) error {
 	b.running = true
 	b.cancel = cancel
 	b.me = me
+	// Telegram private-chat ids are the same as the user id, so if
+	// we've already paired in a previous session we can send to the
+	// user immediately without waiting for them to DM first.
+	if b.Config.AllowedUserID != 0 && b.chatID == 0 {
+		b.chatID = b.Config.AllowedUserID
+	}
 	if b.Config.BotID != me.ID || b.Config.BotUsername != me.Username {
 		b.Config.BotID = me.ID
 		b.Config.BotUsername = me.Username
@@ -131,10 +145,37 @@ func (b *Bridge) Stop() {
 
 // OnAssistantText should be called by the TUI with the assistant's
 // final visible text for each turn. The bridge forwards it to the
-// paired chat in message-sized chunks. Safe to call from any
-// goroutine; a no-op when the bridge is stopped or no chat is
-// known yet.
+// paired chat in message-sized chunks. Prefix depends on which
+// side initiated the turn: TUI-originated turns get "zot: " so the
+// two-sided transcript reads naturally ("you: ..." / "zot: ..."),
+// while Telegram-originated turns send bare text (the user's own
+// bubble is already on-screen, a "zot: " prefix would just add
+// visual noise to a plain back-and-forth).
 func (b *Bridge) OnAssistantText(text string) {
+	b.mu.Lock()
+	prefix := "zot: "
+	if b.nextReplyFromTelegram {
+		prefix = ""
+		b.nextReplyFromTelegram = false
+	}
+	b.mu.Unlock()
+	b.sendToPaired(text, prefix)
+}
+
+// OnUserTyped mirrors a message the user typed in the zot TUI into
+// the paired Telegram chat, tagged "you:" so the Telegram thread
+// stays a complete record of the conversation (both TUI-originated
+// and Telegram-originated turns). Messages sent from Telegram
+// itself aren't mirrored back (they already appear as the user's
+// own bubble), only TUI-originated prompts flow through here.
+func (b *Bridge) OnUserTyped(text string) {
+	b.sendToPaired(text, "you: ")
+}
+
+// sendToPaired writes text (with an optional prefix, chunked to
+// Telegram's 4096-char cap) to the paired chat. No-op when the
+// bridge is stopped or before the paired chat id is known.
+func (b *Bridge) sendToPaired(text, prefix string) {
 	b.mu.Lock()
 	chatID := b.chatID
 	running := b.running
@@ -146,7 +187,9 @@ func (b *Bridge) OnAssistantText(text string) {
 	if text == "" {
 		return
 	}
-	// Telegram caps at 4096 chars; chunk to be safe.
+	if prefix != "" {
+		text = prefix + text
+	}
 	for _, chunk := range chunkMessage(text, 4000) {
 		if err := b.Client.SendMessage(context.Background(), chatID, chunk, 0); err != nil {
 			fmt.Fprintln(stderr(), "telegram bridge: sendMessage:", err)
@@ -290,6 +333,9 @@ func (b *Bridge) handleUpdate(ctx context.Context, u Update) {
 		return
 	}
 
+	b.mu.Lock()
+	b.nextReplyFromTelegram = true
+	b.mu.Unlock()
 	b.Host.SubmitOrQueue(prompt, images)
 }
 
