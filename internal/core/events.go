@@ -43,6 +43,40 @@ type EvToolCall struct {
 
 func (EvToolCall) Type() string { return "tool_call" }
 
+// EvToolUseStart fires the moment the provider announces a new
+// tool_use block during streaming, before any arg JSON has
+// arrived. Gives UIs a hook to pre-render a live "tool is being
+// composed" panel so the user sees the model typing the call in
+// real time. Name is already final at this point; Args is empty.
+type EvToolUseStart struct {
+	ID   string
+	Name string
+}
+
+func (EvToolUseStart) Type() string { return "tool_use_start" }
+
+// EvToolUseArgs fires for each delta fragment of the tool_use
+// block's argument JSON. Concatenating every delta for a given
+// ID produces the full JSON string; during streaming it's likely
+// truncated mid-value. UIs can extract partial string fields
+// (e.g. the `content` arg of `write`) with an escape-aware scan.
+type EvToolUseArgs struct {
+	ID    string
+	Delta string
+}
+
+func (EvToolUseArgs) Type() string { return "tool_use_args" }
+
+// EvToolUseEnd fires when the provider marks the tool_use block
+// complete. At this point the full args JSON is known; a separate
+// EvToolCall follows once the assistant message is assembled,
+// carrying the parsed block that actually runs.
+type EvToolUseEnd struct {
+	ID string
+}
+
+func (EvToolUseEnd) Type() string { return "tool_use_end" }
+
 type EvToolProgress struct {
 	ID   string
 	Text string

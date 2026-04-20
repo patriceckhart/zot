@@ -228,10 +228,12 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 			// nothing
 		case provider.EventTextDelta:
 			sink(EvTextDelta{Delta: e.Delta})
-		case provider.EventToolStart, provider.EventToolArgs, provider.EventToolEnd:
-			// The provider emits these to support partial-JSON UIs.
-			// We surface the complete tool call once per block at EvToolCall
-			// below (after EventDone), so for now we drop them.
+		case provider.EventToolStart:
+			sink(EvToolUseStart{ID: e.ID, Name: e.Name})
+		case provider.EventToolArgs:
+			sink(EvToolUseArgs{ID: e.ID, Delta: e.Delta})
+		case provider.EventToolEnd:
+			sink(EvToolUseEnd{ID: e.ID})
 		case provider.EventUsage:
 			cum := a.cost.Add(e.Usage)
 			sink(EvUsage{Usage: e.Usage, Cumulative: cum})

@@ -1979,14 +1979,50 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		if i.cfg.OnAssistant != nil {
 			i.cfg.OnAssistant(e.Message)
 		}
-	case core.EvToolCall:
-		tcv := &tui.ToolCallView{
-			ID:   e.ID,
-			Name: e.Name,
-			Args: shortArgs(e.Args),
+	case core.EvToolUseStart:
+		// Live streaming: pre-create the view so the user sees the
+		// tool call being composed in real time. Any subsequent
+		// EvToolCall for the same ID updates the same struct (the
+		// final parsed args + name are already known here).
+		if _, exists := i.toolCalls[e.ID]; !exists {
+			i.toolCalls[e.ID] = &tui.ToolCallView{
+				ID:        e.ID,
+				Name:      e.Name,
+				Streaming: true,
+			}
+			i.toolOrder = append(i.toolOrder, e.ID)
 		}
-		i.toolCalls[e.ID] = tcv
-		i.toolOrder = append(i.toolOrder, e.ID)
+	case core.EvToolUseArgs:
+		if tc, ok := i.toolCalls[e.ID]; ok {
+			tc.RawJSONBuf += e.Delta
+			// Refresh the live path as soon as it parses; used in
+			// the header (▸ write /Users/pat/Desktop/demo.ts)
+			// while the content is still streaming.
+			if p, pok, _ := tui.ExtractPartialStringField(tc.RawJSONBuf, "path"); pok {
+				tc.LivePath = p
+			} else if p, pok, _ := tui.ExtractPartialStringField(tc.RawJSONBuf, "file_path"); pok {
+				tc.LivePath = p
+			}
+		}
+	case core.EvToolUseEnd:
+		if tc, ok := i.toolCalls[e.ID]; ok {
+			tc.Streaming = false
+		}
+	case core.EvToolCall:
+		// If we already pre-created the view during streaming, just
+		// refresh the final Args summary. Otherwise create a new one
+		// (non-streaming providers or legacy paths).
+		if tc, ok := i.toolCalls[e.ID]; ok {
+			tc.Args = shortArgs(e.Args)
+			tc.Streaming = false
+		} else {
+			i.toolCalls[e.ID] = &tui.ToolCallView{
+				ID:   e.ID,
+				Name: e.Name,
+				Args: shortArgs(e.Args),
+			}
+			i.toolOrder = append(i.toolOrder, e.ID)
+		}
 	case core.EvToolResult:
 		if tc, ok := i.toolCalls[e.ID]; ok {
 			tc.Done = true

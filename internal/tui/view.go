@@ -130,6 +130,24 @@ type ToolCallView struct {
 	Result string // rendered result preview (truncated)
 	Error  bool
 	Done   bool
+
+	// Streaming is true while the model is still typing the tool
+	// call's JSON arguments. The TUI renders a live preview of any
+	// interesting string fields (for `write`, the `content`; for
+	// `bash`, the `command`) so the user can watch the file being
+	// composed. Set to false as soon as EvToolUseEnd arrives.
+	Streaming bool
+
+	// RawJSONBuf is the accumulator of every EvToolUseArgs delta
+	// the stream has delivered for this tool call. Used by the
+	// partial-JSON extractor to peel off the live string value
+	// of one named field on each render.
+	RawJSONBuf string
+
+	// LivePath is the `path` arg extracted as soon as it parses
+	// out of RawJSONBuf. Shown next to the tool name in the header
+	// so the user can see which file is being written to.
+	LivePath string
 }
 
 // MessageAnchor records where a rendered message starts in the chat
@@ -408,8 +426,29 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 
 func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	var lines []string
-	head := v.Theme.FG256(v.Theme.Tool, "▸ "+tc.Name+" "+tc.Args)
+
+	// Header. While the call is still streaming, prefer the live path
+	// extracted from the partial args so the user sees the target
+	// file as soon as it's known, even before the full JSON arrived.
+	arg := tc.Args
+	if arg == "" && tc.LivePath != "" {
+		arg = tc.LivePath
+	}
+	head := v.Theme.FG256(v.Theme.Tool, "▸ "+tc.Name+" "+arg)
 	lines = append(lines, head)
+
+	// Live streaming body: pulled out of the partial JSON buffer for
+	// tools whose interesting content is a string field (currently
+	// write's `content` and edit's `new_text` chunks). Rendered with
+	// the same rules + highlighter the final result would use, so the
+	// transition from streaming to result is visually seamless.
+	if tc.Streaming && tc.Result == "" {
+		if body := v.renderLiveToolBody(tc, width); len(body) > 0 {
+			lines = append(lines, body...)
+		}
+		return lines
+	}
+
 	if tc.Result != "" {
 		color := v.Theme.ToolOut
 		if tc.Error {
@@ -426,6 +465,52 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 		lines = append(lines, block...)
 	}
 	return lines
+}
+
+// renderLiveToolBody renders the in-flight preview of a streaming
+// tool call. Supported tools:
+//
+//   - write: shows the partial `content` field, syntax-highlighted
+//     by the target path's language.
+//   - edit:  shows the partial `newText` of the edit currently being
+//     streamed, prefixed with a "editing foo.ts (edit 2)" header so
+//     the user can see which of a multi-edit batch is in progress.
+//
+// Anything else returns nil and only the tool-call header shows.
+func (v *View) renderLiveToolBody(tc ToolCallView, width int) []string {
+	switch tc.Name {
+	case "write", "Write":
+		partial, ok, _ := ExtractPartialStringField(tc.RawJSONBuf, "content")
+		if !ok || partial == "" {
+			return nil
+		}
+		return v.wrapLiveBody(v.renderRawFile(partial, tc.LivePath, 1), width)
+	case "edit", "Edit":
+		partial, ok, _, idx := ExtractLastNewText(tc.RawJSONBuf)
+		if !ok || partial == "" {
+			return nil
+		}
+		// Header line hints which edit is streaming and, when more
+		// than one has landed, how many the model is doing.
+		hint := fmt.Sprintf("  edit %d (streaming)", idx)
+		body := []string{v.Theme.FG256(v.Theme.Muted, hint), ""}
+		body = append(body, v.renderRawFile(partial, tc.LivePath, 1)...)
+		return v.wrapLiveBody(body, width)
+	}
+	return nil
+}
+
+// wrapLiveBody wraps a list of content lines with the standard
+// tool-result rules (top + bottom), collapsing to the preview height
+// if the body is tall. Shared between write and edit streaming.
+func (v *View) wrapLiveBody(body []string, width int) []string {
+	body = v.collapseToolBody(body, false)
+	rule := v.Theme.FG256(v.Theme.Muted, strings.Repeat("─", width))
+	out := make([]string, 0, len(body)+2)
+	out = append(out, rule)
+	out = append(out, body...)
+	out = append(out, rule)
+	return out
 }
 
 // toolResultBlock wraps text in thin horizontal rules (top + bottom),
