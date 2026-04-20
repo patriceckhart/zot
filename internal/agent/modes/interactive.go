@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +75,13 @@ type InteractiveConfig struct {
 	// LoadSession swaps the current session for the one at path. The
 	// callback returns the new agent message slice so the TUI can invalidate.
 	LoadSession func(path string) error
+
+	// CurrentSessionPath returns the path of the live session file
+	// on disk (the one every AppendMessage writes to). Used by
+	// /session export so the exporter ships the exact bytes on
+	// disk. Returns an empty string when --no-session is set or
+	// no session is open.
+	CurrentSessionPath func() string
 
 	// PersistModel is called whenever the user switches model or provider.
 	// It should update config.json and (if there's an active session)
@@ -169,19 +178,20 @@ type Interactive struct {
 	// while the check hasn't completed or nothing is available.
 	updateInfo UpdateInfo
 
-	dialog          *loginDialog
-	modelDialog     *modelDialog
-	sessionDialog   *sessionDialog
-	jumpDialog      *jumpDialog
-	btwDialog       *btwDialog
-	skillsDialog    *skillsDialog
-	changelogDialog *changelogDialog
-	confirmDialog   *confirmDialog
-	logoutDialog    *logoutDialog
-	telegramDialog  *telegramDialog
-	telegramBridge  *telegram.Bridge
-	suggest         *slashSuggester
-	spin            *spinner
+	dialog           *loginDialog
+	modelDialog      *modelDialog
+	sessionDialog    *sessionDialog
+	jumpDialog       *jumpDialog
+	btwDialog        *btwDialog
+	skillsDialog     *skillsDialog
+	changelogDialog  *changelogDialog
+	confirmDialog    *confirmDialog
+	logoutDialog     *logoutDialog
+	telegramDialog   *telegramDialog
+	telegramBridge   *telegram.Bridge
+	sessionOpsDialog *sessionOpsDialog
+	suggest          *slashSuggester
+	spin             *spinner
 
 	// parkedTurn is the 1-based turn number the viewport is currently
 	// scrolled to by /jump. 0 = not parked, showing the tail as usual.
@@ -219,22 +229,23 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 			Theme:      cfg.Theme,
 			ImageProto: tui.DetectImageProtocol(),
 		},
-		ed:              tui.NewEditor(cfg.Theme.FG256(cfg.Theme.Accent, "▌ ")),
-		rend:            tui.NewRenderer(cfg.Terminal),
-		toolCalls:       map[string]*tui.ToolCallView{},
-		dirty:           make(chan struct{}, 8),
-		dialog:          newLoginDialog(),
-		modelDialog:     newModelDialog(),
-		sessionDialog:   newSessionDialog(),
-		jumpDialog:      newJumpDialog(),
-		btwDialog:       newBtwDialog(),
-		skillsDialog:    newSkillsDialog(),
-		changelogDialog: newChangelogDialog(),
-		confirmDialog:   newConfirmDialog(),
-		logoutDialog:    newLogoutDialog(),
-		telegramDialog:  newTelegramDialog(),
-		suggest:         newSlashSuggester(),
-		spin:            newSpinner(),
+		ed:               tui.NewEditor(cfg.Theme.FG256(cfg.Theme.Accent, "▌ ")),
+		rend:             tui.NewRenderer(cfg.Terminal),
+		toolCalls:        map[string]*tui.ToolCallView{},
+		dirty:            make(chan struct{}, 8),
+		dialog:           newLoginDialog(),
+		modelDialog:      newModelDialog(),
+		sessionDialog:    newSessionDialog(),
+		jumpDialog:       newJumpDialog(),
+		btwDialog:        newBtwDialog(),
+		skillsDialog:     newSkillsDialog(),
+		changelogDialog:  newChangelogDialog(),
+		confirmDialog:    newConfirmDialog(),
+		logoutDialog:     newLogoutDialog(),
+		telegramDialog:   newTelegramDialog(),
+		sessionOpsDialog: newSessionOpsDialog(),
+		suggest:          newSlashSuggester(),
+		spin:             newSpinner(),
 	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
@@ -427,7 +438,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// and the AfterFunc-driven invalidate got dropped on a
 			// full channel.
 			drainPending()
-			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() || i.changelogDialog.Active() || i.confirmDialog.Active() || i.logoutDialog.Active() || i.telegramDialog.Active() {
+			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() || i.changelogDialog.Active() || i.confirmDialog.Active() || i.logoutDialog.Active() || i.telegramDialog.Active() || i.sessionOpsDialog.Active() {
 				requestRedraw() // keep the spinner / dialog animation moving
 			}
 		}
@@ -591,6 +602,8 @@ func (i *Interactive) redraw() {
 		dialog = i.logoutDialog.Render(i.cfg.Theme, cols)
 	case i.telegramDialog.Active():
 		dialog = i.telegramDialog.Render(i.cfg.Theme, cols)
+	case i.sessionOpsDialog.Active():
+		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, cols)
 	}
 
 	// Slash-command autocomplete: popup above the status line, only
@@ -864,6 +877,19 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		act := i.telegramDialog.HandleKey(k)
 		if act.Select {
 			i.doTelegram(act.Action)
+		}
+		i.invalidate()
+		return false
+	}
+	if i.sessionOpsDialog.Active() {
+		if k.Kind == tui.KeyCtrlC {
+			i.sessionOpsDialog.Close()
+			i.invalidate()
+			return false
+		}
+		act := i.sessionOpsDialog.HandleKey(k)
+		if act.Select {
+			i.doSessionOp(act.Action, "")
 		}
 		i.invalidate()
 		return false
@@ -1342,6 +1368,17 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 			break
 		}
 		i.openTelegramDialog()
+	case "/session":
+		if len(parts) >= 2 {
+			action := parts[1]
+			arg := ""
+			if len(parts) >= 3 {
+				arg = strings.Join(parts[2:], " ")
+			}
+			i.doSessionOp(action, arg)
+			break
+		}
+		i.openSessionOpsDialog()
 	default:
 		// Last-resort fallback: try the extension manager. Built-in
 		// cases above always win; this branch only fires for slash
@@ -2473,4 +2510,174 @@ func (h *telegramHost) Notify(level, message string) {
 	}
 	h.iv.mu.Unlock()
 	h.iv.invalidate()
+}
+
+// openSessionOpsDialog shows the picker for `/session` with no arg.
+// Always offers both export and import; the handlers bail with a
+// clear status message when the precondition isn't met (empty
+// transcript on export; missing file on import).
+func (i *Interactive) openSessionOpsDialog() {
+	items := []sessionOpsItem{
+		{label: "export", action: "export", hint: "write the current session to a .zotsession file"},
+		{label: "import", action: "import", hint: "load a .zotsession file into this directory"},
+	}
+	i.sessionOpsDialog.Open(items)
+	i.invalidate()
+}
+
+// doSessionOp dispatches export or import. path is the optional
+// positional argument from /session export <path> or /session
+// import <path>; when empty, sensible defaults apply (see
+// doSessionExport / doSessionImport).
+func (i *Interactive) doSessionOp(action, path string) {
+	switch action {
+	case "export":
+		i.doSessionExport(path)
+	case "import":
+		i.doSessionImport(path)
+	default:
+		i.mu.Lock()
+		i.statusErr = "unknown /session action: " + action + " (use export or import)"
+		i.mu.Unlock()
+		i.invalidate()
+	}
+}
+
+// doSessionExport writes the live session file to destination path
+// dst. When dst is empty we default to ~/Downloads (falling back to
+// the user's home directory if it doesn't exist). The helper
+// expands a leading `~` and creates any missing parent directories.
+func (i *Interactive) doSessionExport(dst string) {
+	if i.cfg.CurrentSessionPath == nil {
+		i.mu.Lock()
+		i.statusErr = "export: no session is active (running with --no-session?)"
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	src := i.cfg.CurrentSessionPath()
+	if src == "" {
+		i.mu.Lock()
+		i.statusErr = "export: no session is active (running with --no-session?)"
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	dst = strings.TrimSpace(dst)
+	if dst == "" {
+		dst = defaultExportDir()
+	} else {
+		dst = expandTilde(dst)
+	}
+	out, err := core.ExportSession(src, dst)
+	if err != nil {
+		i.mu.Lock()
+		i.statusErr = "export: " + err.Error()
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.mu.Lock()
+	i.statusOK = "exported session to " + friendlyPath(out)
+	i.statusErr = ""
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// doSessionImport copies the .zotsession file at src into the
+// running cwd's sessions directory and loads it as the active
+// session, same as `/sessions` -> pick. When src is empty we ask
+// the user to pass a path (no usable default here).
+func (i *Interactive) doSessionImport(src string) {
+	src = strings.TrimSpace(src)
+	if src == "" {
+		i.mu.Lock()
+		i.statusErr = "import: pass a path — e.g. /session import ~/Downloads/work.zotsession"
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	src = expandTilde(src)
+	if _, err := os.Stat(src); err != nil {
+		i.mu.Lock()
+		i.statusErr = "import: " + err.Error()
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	newPath, err := core.ImportSession(src, i.cfg.ZotHome, i.cfg.CWD, i.cfg.Version)
+	if err != nil {
+		i.mu.Lock()
+		i.statusErr = "import: " + err.Error()
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	if i.cfg.LoadSession == nil {
+		i.mu.Lock()
+		i.statusOK = "imported session at " + friendlyPath(newPath) + " (run /sessions to resume it)"
+		i.statusErr = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	if err := i.cfg.LoadSession(newPath); err != nil {
+		i.mu.Lock()
+		i.statusErr = "import: load failed: " + err.Error()
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.mu.Lock()
+	i.statusOK = "imported and switched to session " + friendlyPath(newPath)
+	i.statusErr = ""
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// defaultExportDir returns ~/Downloads when it exists, or ~ as a
+// fallback, or /tmp on exotic machines with no home dir.
+func defaultExportDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return os.TempDir()
+	}
+	downloads := filepath.Join(home, "Downloads")
+	if fi, err := os.Stat(downloads); err == nil && fi.IsDir() {
+		return downloads
+	}
+	return home
+}
+
+// expandTilde turns a leading ~ into the user's home directory.
+// Returns the input unchanged when there's no tilde or no home.
+func expandTilde(p string) string {
+	if p == "" || p[0] != '~' {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if len(p) == 1 {
+		return home
+	}
+	if p[1] == '/' || p[1] == filepath.Separator {
+		return filepath.Join(home, p[2:])
+	}
+	return p
+}
+
+// friendlyPath collapses the user's home directory to a leading ~
+// so status messages read cleanly. Falls back to the raw path when
+// the home dir is unknown.
+func friendlyPath(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if strings.HasPrefix(p, home+string(filepath.Separator)) {
+		return "~" + p[len(home):]
+	}
+	return p
 }

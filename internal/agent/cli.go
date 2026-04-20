@@ -564,8 +564,14 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		BuildAgent:     buildAgent,
 		BuildAgentFor:  buildAgentFor,
 		LoadSession:    loadSession,
-		Extensions:     extMgr,
-		ChangelogChan:  changelogCh,
+		CurrentSessionPath: func() string {
+			if sess == nil {
+				return ""
+			}
+			return sess.Path
+		},
+		Extensions:    extMgr,
+		ChangelogChan: changelogCh,
 		OnChangelogDismiss: func() {
 			_ = MarkChangelogShown(version)
 		},

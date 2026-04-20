@@ -190,6 +190,7 @@ Type `/` in the TUI to open the autocomplete popup. Available commands:
 | `/logout [provider]` | Clear credentials for `anthropic`, `openai`, or all when omitted. |
 | `/model` | Pick a model from a list (or `/model <id>` to set directly). |
 | `/sessions` | Resume a previous session for this directory. |
+| `/session` | Export the current session to a portable `.zotsession` file, or import one. Opens a picker without an argument; direct form: `/session export [path]` / `/session import <path>`. Default export destination is `~/Downloads`. |
 | `/jump` | Scroll the chat to a previous turn (or `/jump <text>` to filter). |
 | `/btw` | Side chat with full context that doesn't add to the main thread. |
 | `/skills` | List discovered skills (SKILL.md files) and preview their bodies. |
