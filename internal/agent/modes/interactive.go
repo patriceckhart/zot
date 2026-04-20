@@ -652,6 +652,16 @@ func (i *Interactive) redraw() {
 	case i.modelDialog.Active():
 		dialog = i.modelDialog.Render(i.cfg.Theme, cols)
 	case i.sessionDialog.Active():
+		// Reserve rows for the editor (~3), status line (1-2),
+		// dialog chrome (header + hint + rule + indicators, ~5),
+		// and leave the remainder for session rows. Minimum of 3
+		// rows so even a very small terminal shows something.
+		_, rows := i.cfg.Terminal.Size()
+		avail := rows - 12
+		if avail < 3 {
+			avail = 3
+		}
+		i.sessionDialog.MaxRows = avail
 		dialog = i.sessionDialog.Render(i.cfg.Theme, cols)
 	case i.jumpDialog.Active():
 		dialog = i.jumpDialog.Render(i.cfg.Theme, cols)

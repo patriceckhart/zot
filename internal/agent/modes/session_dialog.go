@@ -14,6 +14,20 @@ type sessionDialog struct {
 	active   bool
 	sessions []core.SessionSummary
 	cursor   int
+
+	// MaxRows is the maximum number of session rows the dialog
+	// will render in a single frame. Set by the host right before
+	// Render based on the available chat space; if 0, the dialog
+	// falls back to rendering every row (original behaviour).
+	// When the list is longer than MaxRows the dialog scrolls so
+	// the cursor stays visible and tags the first/last visible
+	// entry with a muted "↑ N more" / "↓ N more" row so the user
+	// knows there's offscreen content.
+	MaxRows int
+
+	// viewTop is the index of the first session currently drawn.
+	// Adjusted to follow the cursor on up/down moves.
+	viewTop int
 }
 
 // sessionDialogAction is returned by HandleKey.
@@ -41,6 +55,7 @@ func (d *sessionDialog) Open(root, cwd string) {
 	}
 	d.sessions = filtered
 	d.cursor = 0
+	d.viewTop = 0
 	d.active = true
 }
 
@@ -63,8 +78,31 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, frameRule(th, width))
 		return lines
 	}
-	lines = append(lines, th.FG256(th.Muted, "pick a session to resume (↑/↓, enter, esc to cancel)"))
-	for i, s := range d.sessions {
+	lines = append(lines, th.FG256(th.Muted, "pick a session to resume (↑/↓, pgup/pgdn, enter, esc to cancel)"))
+
+	// Viewport: windowed slice of d.sessions around d.cursor so a
+	// list taller than the terminal still scrolls. Caller sets
+	// MaxRows to the number of rows available for session entries
+	// (i.e. excluding the header, hint, chrome). When it's zero or
+	// bigger than the list, we draw everything.
+	total := len(d.sessions)
+	window := d.MaxRows
+	if window <= 0 || window >= total {
+		window = total
+	}
+	d.viewTop = clampViewTop(d.viewTop, d.cursor, window, total)
+	viewBot := d.viewTop + window
+	if viewBot > total {
+		viewBot = total
+	}
+
+	// Top indicator: how many rows are above the viewport.
+	if d.viewTop > 0 {
+		hidden := d.viewTop
+		lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("  ↑ %d more above", hidden)))
+	}
+	for i := d.viewTop; i < viewBot; i++ {
+		s := d.sessions[i]
 		plain := "  " + formatSessionRowPlain(s, width-2)
 		if i == d.cursor {
 			lines = append(lines, th.PadHighlight(plain, width))
@@ -72,8 +110,44 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 			lines = append(lines, th.FG256(th.Muted, plain))
 		}
 	}
+	// Bottom indicator: how many rows are below the viewport.
+	if viewBot < total {
+		hidden := total - viewBot
+		lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("  ↓ %d more below", hidden)))
+	}
 	lines = append(lines, frameRule(th, width))
 	return lines
+}
+
+// clampViewTop returns a viewTop that keeps cursor visible in a
+// window of the given size over a list of `total` rows. Leaves one
+// row of padding above/below where possible so moving the cursor
+// doesn't land right on the top/bottom edge — easier to see what
+// direction you're moving.
+func clampViewTop(viewTop, cursor, window, total int) int {
+	if window <= 0 || total <= 0 {
+		return 0
+	}
+	if window >= total {
+		return 0
+	}
+	pad := 2
+	if window < 6 {
+		pad = 0
+	}
+	if cursor < viewTop+pad {
+		viewTop = cursor - pad
+	}
+	if cursor >= viewTop+window-pad {
+		viewTop = cursor - window + pad + 1
+	}
+	if viewTop < 0 {
+		viewTop = 0
+	}
+	if viewTop+window > total {
+		viewTop = total - window
+	}
+	return viewTop
 }
 
 // formatSessionRowPlain returns the session row body without any ANSI
@@ -119,6 +193,13 @@ func formatRelative(t time.Time) string {
 
 // HandleKey advances the dialog and returns an action to apply, if any.
 func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
+	page := d.MaxRows
+	if page <= 0 {
+		page = 10
+	}
+	if page > 1 {
+		page--
+	}
 	switch k.Kind {
 	case tui.KeyUp:
 		if d.cursor > 0 {
@@ -127,6 +208,25 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 	case tui.KeyDown:
 		if d.cursor < len(d.sessions)-1 {
 			d.cursor++
+		}
+	case tui.KeyPageUp:
+		d.cursor -= page
+		if d.cursor < 0 {
+			d.cursor = 0
+		}
+	case tui.KeyPageDown:
+		d.cursor += page
+		if d.cursor >= len(d.sessions) {
+			d.cursor = len(d.sessions) - 1
+			if d.cursor < 0 {
+				d.cursor = 0
+			}
+		}
+	case tui.KeyHome:
+		d.cursor = 0
+	case tui.KeyEnd:
+		if len(d.sessions) > 0 {
+			d.cursor = len(d.sessions) - 1
 		}
 	case tui.KeyEsc:
 		d.Close()
