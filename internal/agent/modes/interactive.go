@@ -2068,6 +2068,18 @@ func (i *Interactive) startTurn(parent context.Context, prompt string) {
 		if err != nil && ctx.Err() == nil {
 			i.statusErr = err.Error()
 		}
+		// Persist the assistant's reply (and every tool row before
+		// it) to the session file while the turn memory is hot.
+		// Without this, WriteNewTranscript only fires at zot exit,
+		// meaning a crash or ungraceful kill drops the whole
+		// conversation. FlushSession is idempotent (it advances the
+		// baseline so subsequent flushes only write new rows).
+		flush := i.cfg.FlushSession
+		i.mu.Unlock()
+		if flush != nil {
+			flush()
+		}
+		i.mu.Lock()
 		// Pop the next queued message, if any, and relaunch.
 		var next string
 		var hasNext bool
