@@ -528,11 +528,23 @@ func (i *Interactive) redraw() {
 	}
 	i.view.Streaming = i.streaming.String()
 	i.view.StreamingActive = i.streamOn
-	// Belt and suspenders: if the transcript's last message is already an
-	// assistant message, the streaming view is stale (EvAssistantMessage may
-	// not have fired yet) — suppress it to avoid double-rendering the reply.
-	if n := len(i.view.Messages); n > 0 && i.view.Messages[n-1].Role == provider.RoleAssistant {
-		i.view.StreamingActive = false
+	// Guard against the narrow race where EvAssistantMessage has
+	// just promoted a streaming reply into the transcript but a
+	// render tick hasn't flipped streamOn off yet. Without the
+	// guard, the same text would appear twice (once as the
+	// in-flight streaming block, once as the last transcript
+	// message). We detect the duplicate strictly: the last
+	// assistant message's visible text must equal the streaming
+	// buffer. Just matching on role is too broad — it also hides
+	// the next round's typewriter streaming after a tool turn,
+	// because the last transcript message is always assistant
+	// (the tool-use block) until the follow-up summary lands.
+	if i.streamOn && i.streaming.Len() > 0 {
+		if n := len(i.view.Messages); n > 0 && i.view.Messages[n-1].Role == provider.RoleAssistant {
+			if assistantText(i.view.Messages[n-1]) == i.streaming.String() {
+				i.view.StreamingActive = false
+			}
+		}
 	}
 	// Live tool-call view: only shown while a turn is in flight. Once
 	// the agent is idle, every tool call has already been folded into
@@ -2141,8 +2153,17 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	switch e := ev.(type) {
+	case core.EvAssistantStart:
+		// Fires at the top of every oneTurn, including follow-up
+		// turns after tool use. Without this, the streaming buffer
+		// is still marked off from the previous assistant message
+		// and the final summary text pops in all at once instead
+		// of typewriter-streaming delta by delta.
+		i.streaming.Reset()
+		i.streamOn = true
 	case core.EvTextDelta:
 		i.streaming.WriteString(e.Delta)
+		i.streamOn = true
 	case core.EvAssistantMessage:
 		i.streaming.Reset()
 		i.streamOn = false
@@ -2917,4 +2938,20 @@ func (i *Interactive) applyForkSelection(msgIdx int) {
 // from needing a strconv import just for one call.
 func formatInt(n int) string {
 	return fmt.Sprintf("%d", n)
+}
+
+// assistantText returns the concatenated text of every TextBlock in
+// m. Used by the streaming-view dedupe guard to tell when a live
+// streamed reply has already been promoted into the transcript.
+func assistantText(m provider.Message) string {
+	var sb strings.Builder
+	for _, c := range m.Content {
+		if tb, ok := c.(provider.TextBlock); ok {
+			if sb.Len() > 0 {
+				sb.WriteByte('\n')
+			}
+			sb.WriteString(tb.Text)
+		}
+	}
+	return sb.String()
 }
