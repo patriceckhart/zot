@@ -43,8 +43,16 @@ command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar  >/dev/null 2>&1 || die "tar is required"
 
 # CURL_AUTH is prepended to every curl invocation so private-repo
-# downloads work while $GITHUB_TOKEN is set. Empty string when the repo
-# becomes public.
+# downloads work while $GITHUB_TOKEN is set. Empty array when the repo
+# is public.
+#
+# Note the "${CURL_AUTH[@]+"${CURL_AUTH[@]}"}" pattern at every call
+# site: bash 3.2 (the default /bin/bash on macOS) treats an
+# unquoted empty-array expansion as an unbound variable under
+# `set -u` and aborts with "CURL_AUTH[@]: unbound variable". The
+# guard expands to nothing when the array is empty and to the
+# array's contents when it isn't. Bash 4+ doesn't need this, but
+# the installer's primary audience is `curl | bash` on macOS.
 CURL_AUTH=()
 if [ -n "${GITHUB_TOKEN:-}" ]; then
   CURL_AUTH=(-H "Authorization: Bearer $GITHUB_TOKEN")
@@ -76,7 +84,7 @@ if [ "$VERSION" = "latest" ]; then
   # Private-repo friendly: hit the api, grab tag_name. Falls back to
   # following the /releases/latest redirect on public repos.
   if [ ${#CURL_AUTH[@]} -gt 0 ]; then
-    VERSION=$(curl -fsSL "${CURL_AUTH[@]}" \
+    VERSION=$(curl -fsSL "${CURL_AUTH[@]+"${CURL_AUTH[@]}"}" \
       "https://api.github.com/repos/${OWNER}/${REPO}/releases/latest" \
       | sed -nE 's/.*"tag_name": *"([^"]+)".*/\1/p' | head -n1)
   else
@@ -126,11 +134,11 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 msg "downloading ${ARCHIVE}"
-curl -fsSL "${CURL_AUTH[@]}" -o "$TMP/$ARCHIVE" "$ARCHIVE_URL" \
+curl -fsSL "${CURL_AUTH[@]+"${CURL_AUTH[@]}"}" -o "$TMP/$ARCHIVE" "$ARCHIVE_URL" \
   || die "download failed: $ARCHIVE_URL (set GITHUB_TOKEN if the repo is private)"
 
 msg "verifying checksum"
-curl -fsSL "${CURL_AUTH[@]}" -o "$TMP/checksums.txt" "$CHECKSUMS_URL" \
+curl -fsSL "${CURL_AUTH[@]+"${CURL_AUTH[@]}"}" -o "$TMP/checksums.txt" "$CHECKSUMS_URL" \
   || die "download failed: $CHECKSUMS_URL"
 
 expected=$(grep " ${ARCHIVE}\$" "$TMP/checksums.txt" | awk '{print $1}' || true)
