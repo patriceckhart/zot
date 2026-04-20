@@ -1040,11 +1040,22 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	// Global keys.
 	switch k.Kind {
 	case tui.KeyCtrlC:
-		// While busy: cancel the active turn (same as esc). The exit
-		// hint stays armed so a quick second ctrl+c after the turn
-		// dies still exits, matching habits from other repls.
-		if i.busy && i.cancelTurn != nil {
-			i.cancelTurn()
+		// While busy: do NOT cancel the turn. ctrl+c during a
+		// running turn is almost always reflex muscle memory
+		// ("be quiet" in a shell) rather than a deliberate
+		// decision to kill a multi-minute model call that's
+		// already cost tokens. Use esc to interrupt a turn; use
+		// a deliberate double-ctrl+c to exit zot entirely. First
+		// press arms the exit hint, second press within
+		// ctrlCExitWindow quits.
+		if i.busy {
+			if i.ctrlCExitArmed() {
+				return true
+			}
+			i.mu.Lock()
+			i.statusOK = "press ctrl+c again to exit, esc to cancel the turn"
+			i.statusErr = ""
+			i.mu.Unlock()
 			i.armCtrlCExit()
 			return false
 		}

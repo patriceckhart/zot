@@ -367,26 +367,20 @@ const (
 	fnv64aPrime uint64 = 0x100000001b3
 )
 
-// maxAssistantWidth caps the rendered width of assistant prose
-// (and the code fences embedded in it) in both the finalised
-// transcript and the streaming overlay. Unbounded lines on
-// ultra-wide terminals (300+ columns) produce prose that's hard
-// to read and rule strokes that run edge-to-edge in the window.
-// Tool output (read, bash, edit diffs) is unaffected — it
-// deliberately uses the full width so long paths and diff rows
-// aren't artificially truncated.
-const maxAssistantWidth = 120
+// assistantBodyRightPad is the blank gutter kept on the right
+// side of every assistant prose line so text doesn't kiss the
+// terminal edge. Matches the 4-cell left indent, so a line of
+// fully-wrapped prose sits in a symmetric column.
+const assistantBodyRightPad = 4
 
 // assistantBodyWidth returns the usable width for the assistant
-// message body (markdown prose + code fence rules), clamped at
-// maxAssistantWidth and at 1 so wrap helpers don't divide by
-// zero on absurdly narrow terminals. outer is the total width
-// of the column the body will sit inside (the terminal width
-// minus any surrounding indent).
+// message body (markdown prose + code fences). Uses the full
+// column width passed in minus assistantBodyRightPad, clamped
+// at 1 so wrap helpers don't divide by zero on absurdly narrow
+// terminals. The right-side padding keeps a small breathing
+// column to the terminal edge that mirrors the left indent.
 func assistantBodyWidth(outer int) int {
-	if outer > maxAssistantWidth {
-		return maxAssistantWidth
-	}
+	outer -= assistantBodyRightPad
 	if outer < 1 {
 		return 1
 	}
