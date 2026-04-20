@@ -345,7 +345,23 @@ See [docs/skills.md](docs/skills.md) for the frontmatter fields, authoring tips,
 
 ## Telegram bot (bridge)
 
-zot can run as a telegram bot so you can DM it from your phone. It's a built-in subcommand, not a plugin:
+zot can run as a telegram bot so you can DM it from your phone. Two ways to run it: **from inside the TUI** (the running session mirrors into Telegram) or **as a standalone background daemon** (a headless bot with its own independent agent).
+
+### From inside the TUI
+
+Type `/telegram` in the running TUI to open a picker with **connect**, **disconnect**, and **status**. When connected:
+
+- DMs from the paired user become prompts in the **same** session you're typing in, so you can continue a conversation from the terminal on your phone and back again.
+- Messages you type in the TUI are mirrored into the Telegram thread prefixed `you: …` and the assistant's replies come back prefixed `zot: …`, so the Telegram chat stays a complete record of both sides of the conversation.
+- Messages sent from Telegram show up as your own bubble in Telegram (no mirror) and the assistant's reply to them comes back bare (no prefix).
+- The status bar shows a `· tg ·` tag while the bridge is active.
+- `/telegram connect` / `/telegram disconnect` / `/telegram status` (or `/tg`) also work as direct commands without the picker.
+
+The in-TUI bridge refuses to start while the standalone daemon (below) is running, since two concurrent long-poll consumers of the same bot race on every update and silently drop messages.
+
+### Standalone daemon
+
+For headless servers or long-running bots unattached to a TUI:
 
 ```bash
 zot telegram-bot setup     # paste a BotFather token, verify, save
