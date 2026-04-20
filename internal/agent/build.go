@@ -301,7 +301,7 @@ func (r Resolved) NewClient() provider.Client {
 }
 
 // UseSandbox replaces the sandbox pointer that every tool in r's
-// registry references. Used to keep the /lock state stable across
+// registry references. Used to keep the /jail state stable across
 // agent rebuilds (e.g. /login, /model switching providers).
 func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 	if s == nil || r == nil {

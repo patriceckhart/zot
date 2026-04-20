@@ -161,7 +161,7 @@ zot --help
 - `edit`: one or more exact-match replacements in an existing file.
 - `bash`: run a shell command in the session cwd, with merged stdout/stderr and a timeout.
 
-When the sandbox is on (see `/lock`), all four tools refuse paths outside the session cwd.
+When the sandbox is on (see `/jail`), all four tools refuse paths outside the session cwd.
 
 ## Modes
 
@@ -194,8 +194,8 @@ Type `/` in the TUI to open the autocomplete popup. Available commands:
 | `/btw` | Side chat with full context that doesn't add to the main thread. |
 | `/skills` | List discovered skills (SKILL.md files) and preview their bodies. |
 | `/compact` | Summarize the transcript into one message to free up context. |
-| `/lock` | Confine tools to the current directory. |
-| `/unlock` | Allow tools to touch paths outside again. |
+| `/jail` | Confine tools to the current directory. |
+| `/unjail` | Allow tools to touch paths outside again. |
 | `/reload-ext` | Hot-reload all extensions (re-read manifests, respawn subprocesses, rebuild tool registry). |
 | `/yolo` | Turn off `--no-yolo` confirmation for the rest of this session. |
 | `/clear` | Clear the chat transcript. |
@@ -236,9 +236,9 @@ Sends the current transcript through the model with a structured summarization p
 
 zot also auto-compacts in the background: after any turn that leaves context usage at or above **85%** of the model's window, the agent kicks off a condense pass on its own. You'll see `condensing history, esc to cancel` above the status bar and an `(auto)` tag next to the context percentage; `esc` aborts it without touching the transcript.
 
-### `/lock`
+### `/jail`
 
-Enforces a sandbox rooted at the cwd shown in the status bar. `read`, `write`, and `edit` resolve their target path (including through symlinks) and refuse anything outside the sandbox. `bash` refuses obvious escape patterns: `sudo`, `rm -rf /`, leading `cd /`, `cd ..`, `cd ~`, `chmod -R`, `dd of=/`, and similar. The status bar shows `locked, ~/your/cwd` while active.
+Enforces a sandbox rooted at the cwd shown in the status bar. `read`, `write`, and `edit` resolve their target path (including through symlinks) and refuse anything outside the sandbox. `bash` refuses obvious escape patterns: `sudo`, `rm -rf /`, leading `cd /`, `cd ..`, `cd ~`, `chmod -R`, `dd of=/`, and similar. The status bar shows `jailed, ~/your/cwd` while active.
 
 This is a guardrail against accidents, not a hard security boundary. If you need real isolation, run zot under docker or a proper sandbox.
 
@@ -273,7 +273,8 @@ Frames containing images are full-repainted (no differential diff) to prevent st
 
 You can keep typing while the agent is working. Pressing `enter` during a turn queues the message instead of interrupting: it shows up above the status bar as `sliding in: <text>` and is delivered as the next user turn the moment the current one finishes. Queue as many as you want; they run in order. `esc` or `ctrl+c` cancels the active turn and drops the queue so a runaway turn doesn't flood you with stale follow-ups.
 
-Slash commands also work while the agent is busy. Read-only ones (`/help`, `/jump`, `/btw`, `/sessions`, `/skills`, `/lock`, `/unlock`, `/exit`) take effect immediately. Destructive ones (`/clear`, `/compact`, `/login`, `/logout`, `/model`, `/reload-ext`) cancel the active turn first and then run.
+Slash commands also work while the agent is busy. Read-only ones (`/help`, `/jump`, `/btw`, `/sessions`, `/skills`, `/jail`, `/unjail`, `/exit`) take effect immediately. Destructive ones (`/clear`, `/compact`, `/login`, `/logout`, `/model`, `/reload-ext`) cancel the active turn first and then run.
+
 
 ## Keys (interactive mode)
 

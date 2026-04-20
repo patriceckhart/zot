@@ -66,7 +66,7 @@ type InteractiveConfig struct {
 	// chat. Nil channel = no banner, no startup cost.
 	UpdateInfoChan <-chan UpdateInfo
 
-	// Sandbox is the shared sandbox pointer. Toggled by /lock and /unlock.
+	// Sandbox is the shared sandbox pointer. Toggled by /jail and /unjail.
 	Sandbox *tools.Sandbox
 
 	// LoadSession swaps the current session for the one at path. The
@@ -1052,7 +1052,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			// /compact, /logout, /login, /model) cancel the active turn
 			// first and wait for the goroutine to wind down so they don't
 			// race with a streaming response. Safe commands (/help,
-			// /jump, /sessions, /lock, /unlock, /exit) run immediately
+			// /jump, /sessions, /jail, /unjail, /exit) run immediately
 			// without disturbing the active turn.
 			if slashCancelsTurn(head) {
 				i.cancelAndWaitForIdle()
@@ -1238,7 +1238,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.openSkillsDialog()
 	case "/compact":
 		i.runCompact(ctx, false)
-	case "/lock":
+	case "/jail":
 		if i.cfg.Sandbox == nil {
 			i.mu.Lock()
 			i.statusErr = "sandbox not available in this build"
@@ -1247,10 +1247,10 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		}
 		i.cfg.Sandbox.Lock()
 		i.mu.Lock()
-		i.statusOK = "locked to " + i.cfg.CWD + " (tools cannot touch paths outside this directory)"
+		i.statusOK = "jailed to " + i.cfg.CWD + " (tools cannot touch paths outside this directory)"
 		i.statusErr = ""
 		i.mu.Unlock()
-	case "/unlock":
+	case "/unjail":
 		if i.cfg.Sandbox == nil {
 			i.mu.Lock()
 			i.statusErr = "sandbox not available in this build"
@@ -1259,7 +1259,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		}
 		i.cfg.Sandbox.Unlock()
 		i.mu.Lock()
-		i.statusOK = "unlocked"
+		i.statusOK = "unjailed"
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "/reload-ext":

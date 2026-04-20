@@ -79,7 +79,7 @@ type Config struct {
 	// NoTools disables every tool. Useful for chat-only embeddings.
 	NoTools bool
 
-	// Lock confines tools to CWD. Same effect as the /lock command.
+	// Lock confines tools to CWD. Same effect as the /jail command.
 	Lock bool
 }
 

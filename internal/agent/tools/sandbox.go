@@ -51,13 +51,13 @@ func (s *Sandbox) CheckPath(path string) error {
 		return fmt.Errorf("sandbox path: %w", err)
 	}
 	if !isUnder(rootAbs, target) {
-		return fmt.Errorf("locked: path %q is outside sandbox root %q (use /unlock to disable)", path, s.Root)
+		return fmt.Errorf("jailed: path %q is outside sandbox root %q (use /unjail to disable)", path, s.Root)
 	}
 	return nil
 }
 
 // CheckCommand applies a lightweight sanity check to a bash command
-// when locked. We cannot fully sandbox a shell, but we can reject the
+// when jailed. We cannot fully sandbox a shell, but we can reject the
 // most obvious escapes so the model does not accidentally touch files
 // outside root via absolute paths.
 func (s *Sandbox) CheckCommand(cmd string) error {
@@ -78,7 +78,7 @@ func (s *Sandbox) CheckCommand(cmd string) error {
 	lower := strings.ToLower(cmd)
 	for _, b := range banned {
 		if strings.Contains(lower, strings.ToLower(b)) {
-			return fmt.Errorf("locked: command contains banned pattern %q (use /unlock to disable)", b)
+			return fmt.Errorf("jailed: command contains banned pattern %q (use /unjail to disable)", b)
 		}
 	}
 	// Heuristic: reject a leading `cd /` or `cd ~` that tries to move
@@ -89,7 +89,7 @@ func (s *Sandbox) CheckCommand(cmd string) error {
 	first = strings.TrimSpace(strings.SplitN(first, "&&", 2)[0])
 	if strings.HasPrefix(first, "cd /") || strings.HasPrefix(first, "cd ~") ||
 		strings.HasPrefix(first, "cd $HOME") || strings.HasPrefix(first, "cd ..") {
-		return fmt.Errorf("locked: cd outside sandbox root is not allowed (use /unlock to disable)")
+		return fmt.Errorf("jailed: cd outside sandbox root is not allowed (use /unjail to disable)")
 	}
 	return nil
 }

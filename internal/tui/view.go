@@ -1085,7 +1085,7 @@ func StatusBar(p StatusBarParams) []string {
 
 	cwd := shortenHome(p.CWD)
 	if p.Locked && cwd != "" {
-		cwd = "· locked · " + cwd
+		cwd = "· jailed · " + cwd
 	}
 
 	primary := leftBuilder.String()
