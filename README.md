@@ -209,6 +209,15 @@ Extension-registered commands appear under a divider at the bottom of the popup,
 
 Shows previous sessions for the current working directory, newest first, with timestamp, model, message count, cost, and the first user prompt. Pick one with `up`/`down`, `enter` to resume, `esc` to cancel. zot swaps the current session file for the selected one and replays the full transcript (including tool calls) into the agent. Sessions remember the model they ended on, so resuming picks up on that exact model even if your global default changed.
 
+### `/session`
+
+Four ops on the current session. `/session` alone opens a picker; each is also runnable directly.
+
+- **`/session export [path]`**. Writes the running transcript to a portable `.zotsession` file. Default destination is `~/Downloads/<timestamp>-<session-id>-<prompt-slug>.zotsession`. Pass a path to override; a directory is fine (a dated name is built inside), a bare name gets `.zotsession` appended. The meta's cwd is stripped on the way out so the recipient doesn't see your filesystem layout.
+- **`/session import <path>`**. Copies a `.zotsession` file into `$ZOT_HOME/sessions/<cwd-hash>/` with a fresh id and the current cwd, then switches the running agent onto it. Imported sessions are first-class: they show up in `/sessions`, `/jump`, and the tree. Drag-drop paths in the editor are accepted (zot strips the surrounding quotes automatically).
+- **`/session fork`**. Opens a turn picker (same shape as `/jump`). Pick any past user message; zot copies every message up to and including that turn into a new session, records `parent` + `fork_point` in the new meta, and switches onto the branch. The parent session stays on disk. Use it to try a different question without polluting the original transcript, or to rewind after the agent went down the wrong path.
+- **`/session tree`**. Shows every session in the current cwd arranged by parent/child relationships, depth-first with indent per level. The current session is tagged `[current]`. Pick any entry to switch into it. Parentless sessions are roots; branches created via `/session fork` nest under whichever session they were forked from. Orphaned children (whose parent file was deleted) still show as roots so they stay discoverable.
+
 ### `/jump`
 
 Opens a turn picker for the current session, one row per user prompt, each showing the turn number, how many tools that turn invoked, and the first line of the prompt. `up`/`down` to pick, `enter` to jump, `esc` to cancel. Any printable rune while the picker is open extends a filter; backspace narrows it back. `/jump <text>` pre-applies the filter; if exactly one turn matches, zot jumps straight there without showing the picker.
