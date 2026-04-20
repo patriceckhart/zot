@@ -586,6 +586,15 @@ func (v *View) renderToolText(text string, width, defaultColor int, sourcePath s
 	// becomes part of the scrollback you can page back through.
 	lines := strings.Split(text, "\n")
 
+	// Bash-result styling: when the first row looks like a shell
+	// prompt line ("$ ...") emitted by the bash tool, style the
+	// prompt line in accent and the trailing "[exit N]  Took X.Ys"
+	// line in muted type so the command + timing read at a glance.
+	// Everything between is left on the default tool-output color.
+	if len(lines) > 0 && strings.HasPrefix(lines[0], "$ ") {
+		return v.renderBashResult(lines, width, defaultColor)
+	}
+
 	inDiff := false
 	oldLine, newLine := 1, 1
 	var out []string
@@ -849,6 +858,46 @@ func (v *View) renderNumberedFile(text, sourcePath string) []string {
 // or "error:"-style prefixes tools emit. False positives are OK,
 // the worst case is a line-number gutter on something that isn't
 // really code.
+// renderBashResult styles a bash tool result: the "$ command" first
+// line in the accent color, the trailing "[exit N]  Took X.Ys" line
+// in muted type, everything else on the default tool-output color.
+// Called from renderToolText when the first line starts with "$ ".
+func (v *View) renderBashResult(lines []string, width, defaultColor int) []string {
+	// Identify the footer line (exit + timing). The bash tool writes
+	// it as the last non-empty line of the result.
+	footerIdx := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[exit ") {
+			footerIdx = i
+		}
+		break
+	}
+
+	var out []string
+	for i, l := range lines {
+		switch {
+		case i == 0 && strings.HasPrefix(l, "$ "):
+			// Style the $ and the command text in accent. No
+			// further processing / wrapping so the shell-style
+			// prompt reads at a glance.
+			for _, w := range wrapLine(l, width-4, "    ") {
+				out = append(out, "    "+v.Theme.FG256(v.Theme.Accent, w))
+			}
+		case i == footerIdx:
+			out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, l))
+		default:
+			for _, w := range wrapLine(l, width-4, "    ") {
+				out = append(out, "    "+v.Theme.FG256(defaultColor, w))
+			}
+		}
+	}
+	return out
+}
+
 func looksLikeFileContent(text string) bool {
 	if strings.TrimSpace(text) == "" {
 		return false

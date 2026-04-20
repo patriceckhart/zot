@@ -65,6 +65,7 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		defer cancel()
 	}
 
+	start := time.Now()
 	cmd := newShellCmd(runCtx, a.Command)
 	cmd.Dir = cwd
 	cmd.Env = os.Environ()
@@ -134,8 +135,17 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		}
 	}
 
+	elapsed := time.Since(start)
+
+	// Terminal-log style: echo the command on the first line with
+	// a shell-prompt prefix, a blank line, the captured output, and
+	// a footer showing exit code + elapsed time. Matches the look
+	// a human would see if they ran the command themselves, which
+	// makes the model's reasoning about it more natural too.
 	var sb strings.Builder
+	fmt.Fprintf(&sb, "$ %s\n", a.Command)
 	if trimmed != "" {
+		sb.WriteString("\n")
 		sb.WriteString(trimmed)
 		if !strings.HasSuffix(trimmed, "\n") {
 			sb.WriteString("\n")
@@ -147,7 +157,12 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	if truncBytes {
 		fmt.Fprintf(&sb, "... [truncated at %d bytes]\n", maxBashBytes)
 	}
-	sb.WriteString(fmt.Sprintf("[exit %d]", exitCode))
+	sb.WriteString("\n")
+	if exitCode == 0 {
+		fmt.Fprintf(&sb, "[exit 0]")
+	} else {
+		fmt.Fprintf(&sb, "[exit %d]", exitCode)
+	}
 
 	var fullPath string
 	if truncBytes || truncLines {
@@ -156,6 +171,7 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 			fmt.Fprintf(&sb, " (full output: %s)", fullPath)
 		}
 	}
+	fmt.Fprintf(&sb, "  Took %s", humanDuration(elapsed))
 
 	isErr := exitCode != 0 || ctx.Err() != nil
 	return core.ToolResult{
@@ -166,8 +182,31 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 			"full_output_path": fullPath,
 			"lines_truncated":  truncLines,
 			"bytes_truncated":  truncBytes,
+			"duration_ms":      elapsed.Milliseconds(),
 		},
 	}, nil
+}
+
+// humanDuration renders a duration in the "Took X.Ys" style used by
+// the shell-log output: tenths of a second for sub-minute runs,
+// whole seconds once we pass a minute. Trailing zeros dropped so
+// "0.1s" instead of "0.10s".
+func humanDuration(d time.Duration) string {
+	switch {
+	case d < time.Millisecond:
+		return "0.0s"
+	case d < time.Minute:
+		s := d.Seconds()
+		return fmt.Sprintf("%.1fs", s)
+	case d < time.Hour:
+		m := int(d.Minutes())
+		s := int(d.Seconds()) - m*60
+		return fmt.Sprintf("%dm%ds", m, s)
+	default:
+		h := int(d.Hours())
+		m := int(d.Minutes()) - h*60
+		return fmt.Sprintf("%dh%dm", h, m)
+	}
 }
 
 func writeFullOutput(s string) string {
