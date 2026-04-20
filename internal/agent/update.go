@@ -62,8 +62,20 @@ func CheckForUpdate(ctx context.Context, zotHome, currentVersion string) UpdateI
 	cachePath := filepath.Join(zotHome, updateCheckFile)
 	if c, ok := readUpdateCache(cachePath); ok {
 		// Cache is fresh and tracks the same binary version.
+		// Additional guard: only trust the cache when it already
+		// reports an available update. If the cache says "up to
+		// date" (Latest <= Current) we re-check anyway so a
+		// release published after the last launch is picked up
+		// without waiting out the full TTL. The API call is a
+		// single 4s request; cheap to do on every up-to-date
+		// launch, and skips entirely for the common "installed a
+		// new version, cache reports update available" path.
 		if time.Since(c.CheckedAt) < updateCheckTTL && c.CurrentAt == currentVersion {
-			return buildInfo(currentVersion, c.Latest, c.URL)
+			info := buildInfo(currentVersion, c.Latest, c.URL)
+			if info.Available {
+				return info
+			}
+			// fall through to re-check
 		}
 	}
 
