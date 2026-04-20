@@ -451,7 +451,7 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 				// assistant prose above. The matching closing rule
 				// is emitted at the end of the tool-role message.
 				lines = append(lines, toolBlockRule(v.Theme, width))
-				lines = append(lines, indent+v.Theme.FG256(v.Theme.Tool, "▸ "+b.Name+" "+shortArgs(b.Arguments)))
+				lines = append(lines, indent+v.Theme.FG256(v.Theme.Tool, "▸ "+b.Name+" "+ShortArgs(b.Name, b.Arguments)))
 			}
 		}
 	case provider.RoleTool:
@@ -1158,28 +1158,95 @@ func toolResultBlock(th Theme, text string, width int, color int) []string {
 	return out
 }
 
-func shortArgs(raw json.RawMessage) string {
+// ShortArgs renders a tool call's arguments into a one-line
+// suffix for the "tool name <args>" header. tool is the tool
+// name so we can add shape-specific decorations: for read we
+// append the requested line range (e.g. "path:1-200") pulled
+// from the offset/limit args, which is useful context at a
+// glance without expanding the result body. Other tools keep
+// the legacy "path or command, truncated at 60 cells" shape.
+//
+// Exported because the interactive mode pre-populates the
+// ToolCallView.Args field with this value as soon as the tool
+// call is announced, so the live overlay's header matches what
+// the finalised transcript will later render.
+func ShortArgs(tool string, raw json.RawMessage) string {
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return ""
 	}
-	switch x := v.(type) {
-	case map[string]any:
-		for _, k := range []string{"path", "file_path", "command"} {
-			if s, ok := x[k].(string); ok {
-				if len(s) > 60 {
-					s = s[:57] + "..."
-				}
-				return s
-			}
+	x, ok := v.(map[string]any)
+	if !ok {
+		b, _ := json.Marshal(v)
+		s := string(b)
+		if len(s) > 60 {
+			s = s[:57] + "..."
+		}
+		return s
+	}
+	var primary string
+	for _, k := range []string{"path", "file_path", "command"} {
+		if s, ok := x[k].(string); ok {
+			primary = s
+			break
 		}
 	}
-	b, _ := json.Marshal(v)
-	s := string(b)
-	if len(s) > 60 {
-		s = s[:57] + "..."
+	if primary == "" {
+		b, _ := json.Marshal(v)
+		s := string(b)
+		if len(s) > 60 {
+			s = s[:57] + "..."
+		}
+		return s
 	}
-	return s
+
+	// Tool-specific decoration. Only the read tool gets a range
+	// suffix for now; other tools just truncate the primary arg.
+	suffix := ""
+	switch strings.ToLower(tool) {
+	case "read":
+		start := 1
+		if n, ok := toInt(x["offset"]); ok && n >= 1 {
+			start = n
+		}
+		if lim, ok := toInt(x["limit"]); ok && lim > 0 {
+			end := start + lim - 1
+			suffix = fmt.Sprintf(":%d-%d", start, end)
+		} else if start > 1 {
+			suffix = fmt.Sprintf(":%d-", start)
+		}
+	}
+
+	// Truncate the primary arg leaving room for the suffix so the
+	// range stays visible even on absurdly long paths.
+	max := 60 - len(suffix)
+	if max < 10 {
+		max = 10
+	}
+	if len(primary) > max {
+		primary = primary[:max-3] + "..."
+	}
+	return primary + suffix
+}
+
+// toInt coerces a json.Unmarshal'd number (float64) or a string
+// containing a number into an int. Returns ok=false if the value
+// is neither. Used by shortArgs to survive model quirks where
+// numeric args come back as strings.
+func toInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case string:
+		i, err := strconv.Atoi(strings.TrimSpace(n))
+		if err != nil {
+			return 0, false
+		}
+		return i, true
+	}
+	return 0, false
 }
 
 func collectText(blocks []provider.Content) string {

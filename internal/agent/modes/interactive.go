@@ -2,7 +2,6 @@ package modes
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2268,13 +2267,13 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		// refresh the final Args summary. Otherwise create a new one
 		// (non-streaming providers or legacy paths).
 		if tc, ok := i.toolCalls[e.ID]; ok {
-			tc.Args = shortArgs(e.Args)
+			tc.Args = tui.ShortArgs(e.Name, e.Args)
 			tc.Streaming = false
 		} else {
 			i.toolCalls[e.ID] = &tui.ToolCallView{
 				ID:   e.ID,
 				Name: e.Name,
-				Args: shortArgs(e.Args),
+				Args: tui.ShortArgs(e.Name, e.Args),
 			}
 			i.toolOrder = append(i.toolOrder, e.ID)
 		}
@@ -2324,29 +2323,6 @@ func (i *Interactive) Agent() *core.Agent {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	return i.agent
-}
-
-func shortArgs(raw json.RawMessage) string {
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return ""
-	}
-	if m, ok := v.(map[string]any); ok {
-		for _, k := range []string{"path", "file_path", "command"} {
-			if s, ok := m[k].(string); ok {
-				if len(s) > 60 {
-					s = s[:57] + "..."
-				}
-				return s
-			}
-		}
-	}
-	b, _ := json.Marshal(v)
-	s := string(b)
-	if len(s) > 60 {
-		s = s[:57] + "..."
-	}
-	return s
 }
 
 // silence unused import in some build configs
