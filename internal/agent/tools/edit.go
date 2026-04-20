@@ -130,9 +130,13 @@ func (t *EditTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	}
 
 	diff := unifiedDiff(a.Path, string(orig), strings.ReplaceAll(newBody, "\r\n", "\n"))
-	msg := fmt.Sprintf("applied %d edit(s) to %s", len(a.Edits), a.Path)
+	// The tool-call header renders the path above the result, so the
+	// result body is just the context diff — no "applied N edit(s)"
+	// prose prefix. The Details map carries the edit count for
+	// programmatic consumers (json mode, rpc clients) that might
+	// want it.
 	return core.ToolResult{
-		Content: []provider.Content{provider.TextBlock{Text: msg + "\n" + diff}},
+		Content: []provider.Content{provider.TextBlock{Text: diff}},
 		Details: map[string]any{"path": path, "edits": len(a.Edits), "diff": diff},
 	}, nil
 }
@@ -144,18 +148,63 @@ func detectLineEnding(b []byte) string {
 	return "\n"
 }
 
-// unifiedDiff is a minimal unified diff good enough for tool output.
+// diffContextLines is the number of unchanged lines kept on each
+// side of an edit when rendering the diff. 3 is the git-diff
+// default and balances readability with transcript size.
+const diffContextLines = 3
+
+// unifiedDiff emits a context diff for the edit tool's result.
+//
+// Shape: each output row is either
+//   - " <line>"       unchanged context
+//   - "-<line>"       deletion (from a)
+//   - "+<line>"       addition (to b)
+//   - "..."           context break between hunks
+//
+// The legacy "--- name / +++ name" header is omitted because the
+// tool-call header above the result already shows the path. Only
+// lines within diffContextLines of a +/- row are kept; longer
+// runs of unchanged content collapse into a single "..." row so
+// a one-line edit in a thousand-line file produces a short
+// transcript.
 func unifiedDiff(name, a, b string) string {
 	if a == b {
 		return ""
 	}
 	aLines := strings.Split(a, "\n")
 	bLines := strings.Split(b, "\n")
-	// Use simple LCS-based diff.
 	ops := diffLines(aLines, bLines)
+
+	// Mark ops that sit within diffContextLines of any +/- op.
+	keep := make([]bool, len(ops))
+	for i, op := range ops {
+		if op.kind == '+' || op.kind == '-' {
+			keep[i] = true
+			for d := 1; d <= diffContextLines; d++ {
+				if i-d >= 0 {
+					keep[i-d] = true
+				}
+				if i+d < len(ops) {
+					keep[i+d] = true
+				}
+			}
+		}
+	}
+
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "--- %s\n+++ %s\n", name, name)
-	for _, op := range ops {
+	prevKept := false
+	anyOutput := false
+	for i, op := range ops {
+		if !keep[i] {
+			if prevKept {
+				sb.WriteString("...\n")
+				prevKept = false
+			}
+			continue
+		}
+		if !prevKept && anyOutput {
+			sb.WriteString("...\n")
+		}
 		switch op.kind {
 		case ' ':
 			fmt.Fprintf(&sb, " %s\n", op.line)
@@ -164,7 +213,10 @@ func unifiedDiff(name, a, b string) string {
 		case '+':
 			fmt.Fprintf(&sb, "+%s\n", op.line)
 		}
+		prevKept = true
+		anyOutput = true
 	}
+	_ = name // header dropped; kept in signature for call-site stability
 	return sb.String()
 }
 

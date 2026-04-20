@@ -194,7 +194,13 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 		out = append(out, rendered[idx]...)
 		out = append(out, "")
 	}
-	if v.StreamingActive {
+	// Only render the streaming header/body when there's actual
+	// text to show. An empty streaming block (streamOn=true,
+	// Streaming="") appears when a turn starts with a tool_use
+	// block instead of text — in that case the live tool-call
+	// overlay below is the real content and a naked "zot" bar
+	// above it reads as a stray empty message.
+	if v.StreamingActive && strings.TrimSpace(v.Streaming) != "" {
 		out = append(out, v.Theme.FG256(v.Theme.Assistant, "▍ zot"))
 		// Stream the partial assistant text through the same markdown
 		// renderer used for finalised messages so code fences, diffs,
@@ -202,11 +208,10 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 		// don't suddenly reflow when the turn ends. Indent matches the
 		// finalised assistant body in renderMessage so the column
 		// stays consistent across the stream/finalise transition.
+		// Width is capped so ultra-wide terminals don't produce
+		// edge-to-edge rules / unreadably long prose lines.
 		const indent = "    "
-		inner := width - len(indent)
-		if inner < 1 {
-			inner = width
-		}
+		inner := assistantBodyWidth(width - len(indent))
 		md := RenderMarkdown(v.Streaming, v.Theme, inner)
 		for _, l := range strings.Split(md, "\n") {
 			for _, w := range wrapLine(l, inner, "") {
@@ -215,7 +220,29 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 		}
 		out = append(out, "")
 	}
+	// Live tool-call overlay: skip any entry whose assistant
+	// tool_use block OR tool_result has already made it into the
+	// transcript. The EvAssistantMessage for a tool-use turn
+	// lands BEFORE executeTools runs, so between that moment and
+	// the tool-result being appended the overlay and the
+	// finalised transcript both render the same call. Checking
+	// for either side of the pair suppresses the duplicate in
+	// both windows.
+	finalised := map[string]bool{}
+	for _, m := range v.Messages {
+		for _, c := range m.Content {
+			switch b := c.(type) {
+			case provider.ToolCallBlock:
+				finalised[b.ID] = true
+			case provider.ToolResultBlock:
+				finalised[b.CallID] = true
+			}
+		}
+	}
 	for _, tc := range v.ToolCalls {
+		if finalised[tc.ID] {
+			continue
+		}
 		out = append(out, v.renderToolCall(tc, width)...)
 		out = append(out, "")
 	}
@@ -340,6 +367,32 @@ const (
 	fnv64aPrime uint64 = 0x100000001b3
 )
 
+// maxAssistantWidth caps the rendered width of assistant prose
+// (and the code fences embedded in it) in both the finalised
+// transcript and the streaming overlay. Unbounded lines on
+// ultra-wide terminals (300+ columns) produce prose that's hard
+// to read and rule strokes that run edge-to-edge in the window.
+// Tool output (read, bash, edit diffs) is unaffected — it
+// deliberately uses the full width so long paths and diff rows
+// aren't artificially truncated.
+const maxAssistantWidth = 120
+
+// assistantBodyWidth returns the usable width for the assistant
+// message body (markdown prose + code fence rules), clamped at
+// maxAssistantWidth and at 1 so wrap helpers don't divide by
+// zero on absurdly narrow terminals. outer is the total width
+// of the column the body will sit inside (the terminal width
+// minus any surrounding indent).
+func assistantBodyWidth(outer int) int {
+	if outer > maxAssistantWidth {
+		return maxAssistantWidth
+	}
+	if outer < 1 {
+		return 1
+	}
+	return outer
+}
+
 func fnv64aWriteByte(h uint64, b byte) uint64 {
 	h ^= uint64(b)
 	h *= fnv64aPrime
@@ -378,12 +431,11 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 		// Indent assistant body the same 4 cells the user body uses,
 		// so the conversation column lines up vertically. The width
 		// passed into the markdown renderer / wrap is reduced by the
-		// indent so long lines wrap inside the indented column.
+		// indent so long lines wrap inside the indented column, and
+		// capped so ultra-wide terminals don't produce edge-to-edge
+		// code-fence rules or unreadably long prose lines.
 		const indent = "    "
-		inner := width - len(indent)
-		if inner < 1 {
-			inner = width
-		}
+		inner := assistantBodyWidth(width - len(indent))
 		for _, c := range m.Content {
 			switch b := c.(type) {
 			case provider.TextBlock:
@@ -394,16 +446,19 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 					}
 				}
 			case provider.ToolCallBlock:
+				// Rule above the tool header frames the call as a
+				// self-contained block separating it from the
+				// assistant prose above. The matching closing rule
+				// is emitted at the end of the tool-role message.
+				lines = append(lines, toolBlockRule(v.Theme, width))
 				lines = append(lines, indent+v.Theme.FG256(v.Theme.Tool, "▸ "+b.Name+" "+shortArgs(b.Arguments)))
 			}
 		}
 	case provider.RoleTool:
 		for _, c := range m.Content {
 			if tr, ok := c.(provider.ToolResultBlock); ok {
-				title := "  result"
 				color := v.Theme.ToolOut
 				if tr.IsError {
-					title = "  error"
 					color = v.Theme.Error
 				}
 				path := ""
@@ -416,8 +471,18 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 						startLine = s
 					}
 				}
-				lines = append(lines, v.Theme.FG256(color, title))
+				// Render the body directly under the tool-call
+				// header (no "result" sub-header). Errors keep a
+				// one-line header so they're distinguishable from
+				// successful output. A closing rule below the body
+				// pairs with the opening rule emitted above the
+				// tool-call header in the assistant message,
+				// framing the whole tool block.
+				if tr.IsError {
+					lines = append(lines, v.Theme.FG256(color, "  error"))
+				}
 				lines = append(lines, v.renderToolResultContent(tr.Content, width, color, path, startLine)...)
+				lines = append(lines, toolBlockRule(v.Theme, width))
 			}
 		}
 	}
@@ -435,35 +500,36 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 		arg = tc.LivePath
 	}
 	head := v.Theme.FG256(v.Theme.Tool, "▸ "+tc.Name+" "+arg)
-	lines = append(lines, head)
 
 	// Live streaming body: pulled out of the partial JSON buffer for
 	// tools whose interesting content is a string field (currently
-	// write's `content` and edit's `new_text` chunks). Rendered with
-	// the same rules + highlighter the final result would use, so the
-	// transition from streaming to result is visually seamless.
+	// write's `content` and edit's `new_text` chunks). The body is
+	// already framed by wrapLiveBody with top+bottom rules, so we
+	// don't add the extra toolBlockRule around it — that would
+	// produce four rules per streaming block, with a visible doubled
+	// line at the bottom.
 	if tc.Streaming && tc.Result == "" {
+		lines = append(lines, head)
 		if body := v.renderLiveToolBody(tc, width); len(body) > 0 {
 			lines = append(lines, body...)
 		}
 		return lines
 	}
 
+	// Finished tool call: frame the whole block with opening +
+	// closing rules so it stands apart from surrounding assistant
+	// prose. Matches the transcript-side framing in renderMessage.
+	lines = append(lines, toolBlockRule(v.Theme, width))
+	lines = append(lines, head)
 	if tc.Result != "" {
 		color := v.Theme.ToolOut
 		if tc.Error {
 			color = v.Theme.Error
 		}
-		block := toolResultBlock(v.Theme, tc.Result, width, color)
-		// Strip rules, collapse the body, put rules back on.
-		if len(block) >= 2 {
-			top, bot := block[0], block[len(block)-1]
-			body := v.collapseToolBody(block[1:len(block)-1], false)
-			block = append([]string{top}, body...)
-			block = append(block, bot)
-		}
-		lines = append(lines, block...)
+		body := toolResultBlock(v.Theme, tc.Result, width, color)
+		lines = append(lines, v.collapseToolBody(body, false)...)
 	}
+	lines = append(lines, toolBlockRule(v.Theme, width))
 	return lines
 }
 
@@ -501,8 +567,10 @@ func (v *View) renderLiveToolBody(tc ToolCallView, width int) []string {
 }
 
 // wrapLiveBody wraps a list of content lines with the standard
-// tool-result rules (top + bottom), collapsing to the preview height
-// if the body is tall. Shared between write and edit streaming.
+// wrapLiveBody wraps a list of content lines with the standard
+// tool-result rules (top + bottom), collapsing to the preview
+// height if the body is tall. Shared between write and edit
+// streaming.
 func (v *View) wrapLiveBody(body []string, width int) []string {
 	body = v.collapseToolBody(body, false)
 	rule := v.Theme.FG256(v.Theme.Muted, strings.Repeat("─", width))
@@ -515,14 +583,24 @@ func (v *View) wrapLiveBody(body []string, width int) []string {
 
 // toolResultBlock wraps text in thin horizontal rules (top + bottom),
 // indenting the body with four spaces. The rules span the content column.
+// toolBlockRule renders the muted horizontal separator drawn
+// above and below a tool call block. Spans the full content
+// width so it reads as a real section break in the chat
+// regardless of terminal size.
+func toolBlockRule(th Theme, width int) string {
+	w := width
+	if w < 8 {
+		w = 8
+	}
+	return th.FG256(th.Muted, strings.Repeat("─", w))
+}
+
 // renderToolResultContent renders the body of a tool result block.
 // Text blocks get the usual rules-wrapped treatment; text that looks
 // like a unified diff gets +/- coloring. Image blocks are rendered
 // inline when the terminal supports a protocol, else as a text
 // placeholder with dimensions.
 func (v *View) renderToolResultContent(blocks []provider.Content, width, color int, sourcePath string, startLine int) []string {
-	rule := v.Theme.FG256(v.Theme.Muted, strings.Repeat("─", width))
-
 	var body []string
 	hasImage := false
 	for _, b := range blocks {
@@ -534,13 +612,7 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width, color i
 			body = append(body, v.renderImageBlock(bb, width)...)
 		}
 	}
-	body = v.collapseToolBody(body, hasImage)
-
-	out := make([]string, 0, len(body)+2)
-	out = append(out, rule)
-	out = append(out, body...)
-	out = append(out, rule)
-	return out
+	return v.collapseToolBody(body, hasImage)
 }
 
 // collapseToolBody trims lines to the configured preview size when the
@@ -573,6 +645,17 @@ func (v *View) renderToolText(text string, width, defaultColor int, sourcePath s
 	if looksLikeNumberedFile(text) {
 		return v.renderNumberedFile(text, sourcePath)
 	}
+	// If the result embeds a unified diff (the edit tool's output
+	// starts with a short "applied N edit(s)" line and then a
+	// standard --- / +++ / +/- patch), render the patch with
+	// add/remove coloring. This takes priority over the file-like
+	// detector below because a diff technically has many lines of
+	// "file content" but what the user cares about is what changed,
+	// not a dump of the post-edit file.
+	if looksLikeUnifiedDiff(text) {
+		return v.renderUnifiedDiff(text, width, sourcePath)
+	}
+
 	// Current path: text came from `read` as raw file bytes. When a
 	// source path is known (the call had a `path` arg), render with
 	// a synthetic line-number gutter starting at startLine so the
@@ -702,29 +785,55 @@ func (v *View) renderDiffRow(line string, width, color int, lineNo int, mark byt
 		}
 	}
 	if codeRendered == "" {
-		codeRendered = v.Theme.FG256(color, code)
+		if mark == ' ' {
+			codeRendered = v.Theme.FG256(v.Theme.Muted, code)
+		} else {
+			codeRendered = v.Theme.FG256(color, code)
+		}
 	}
 
-	gutter := v.Theme.FG256(v.Theme.Muted, fmt.Sprintf("%6d\t", lineNo))
-	marker := v.Theme.FG256(color, string(mark)+" ")
-	row := "    " + gutter + marker + codeRendered
+	// Gutter shape: sign + number share a color so they read as one
+	// visual token ("+123") instead of a neutral line number next to
+	// a stray marker. Unchanged context lines get a muted gutter and
+	// a leading space so column alignment stays consistent with +/-
+	// rows.
+	var gutterText string
+	switch mark {
+	case '+':
+		gutterText = fmt.Sprintf("+%5d\t", lineNo)
+	case '-':
+		gutterText = fmt.Sprintf("-%5d\t", lineNo)
+	default:
+		gutterText = fmt.Sprintf(" %5d\t", lineNo)
+	}
+	var gutter string
+	if mark == ' ' {
+		gutter = v.Theme.FG256(v.Theme.Muted, gutterText)
+	} else {
+		gutter = v.Theme.FG256(color, gutterText)
+	}
+	row := "    " + gutter + codeRendered
 
 	// Cheap width clamp: truncate visible text if the raw code is too
 	// long. We work on the pre-ANSI code string because measuring ansi
 	// output is unreliable.
-	maxCode := width - 4 /* indent */ - 7 /* gutter */ - 2 /* marker */
+	maxCode := width - 4 /* indent */ - 7 /* gutter (sign+5 digits+tab) */
 	if maxCode > 0 && len(code) > maxCode {
 		trunc := code[:maxCode-1] + "…"
 		if lang != "" {
 			if h := HighlightCode(trunc, lang); len(h) == 1 {
 				codeRendered = h[0]
+			} else if mark == ' ' {
+				codeRendered = v.Theme.FG256(v.Theme.Muted, trunc)
 			} else {
 				codeRendered = v.Theme.FG256(color, trunc)
 			}
+		} else if mark == ' ' {
+			codeRendered = v.Theme.FG256(v.Theme.Muted, trunc)
 		} else {
 			codeRendered = v.Theme.FG256(color, trunc)
 		}
-		row = "    " + gutter + marker + codeRendered
+		row = "    " + gutter + codeRendered
 	}
 	return row
 }
@@ -898,6 +1007,82 @@ func (v *View) renderBashResult(lines []string, width, defaultColor int) []strin
 	return out
 }
 
+// looksLikeUnifiedDiff reports whether text is a context diff as
+// emitted by the edit tool: rows start with '+', '-', ' ', or
+// literal "..." (context-break marker). The presence of at least
+// one '+' or '-' row distinguishes a real diff from an ordinary
+// file whose lines happen to begin with a space.
+func looksLikeUnifiedDiff(text string) bool {
+	lines := strings.Split(text, "\n")
+	if len(lines) < 2 {
+		return false
+	}
+	sawChange := false
+	for _, l := range lines {
+		if l == "" {
+			continue
+		}
+		if l == "..." {
+			continue
+		}
+		switch l[0] {
+		case '+', '-':
+			sawChange = true
+		case ' ':
+			// context, ok
+		default:
+			return false
+		}
+	}
+	return sawChange
+}
+
+// renderUnifiedDiff renders the edit tool's context diff. Each
+// kept row shows a line-number gutter plus a marker column: '+'
+// for additions (colored like add), '-' for deletions (colored
+// like remove), and unmarked context in muted type. A literal
+// "..." line between hunks renders as an ellipsis in muted type,
+// indicating skipped unchanged rows. The old and new line
+// counters advance so each row carries its actual position in
+// the pre- or post-edit file. Heuristic: when we hit a "...", we
+// can't know where the next hunk starts, so we don't reset the
+// counters — they stay approximate in the rare multi-hunk case.
+func (v *View) renderUnifiedDiff(text string, width int, sourcePath string) []string {
+	lines := strings.Split(text, "\n")
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	oldLine, newLine := 1, 1
+	var out []string
+	for _, l := range lines {
+		if l == "" {
+			out = append(out, "")
+			continue
+		}
+		if l == "..." {
+			out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, "…"))
+			continue
+		}
+		switch l[0] {
+		case '+':
+			out = append(out, v.renderDiffRow(l, width, v.Theme.Tool, newLine, '+', sourcePath))
+			newLine++
+		case '-':
+			out = append(out, v.renderDiffRow(l, width, v.Theme.Error, oldLine, '-', sourcePath))
+			oldLine++
+		case ' ':
+			out = append(out, v.renderDiffRow(l, width, v.Theme.Muted, newLine, ' ', sourcePath))
+			oldLine++
+			newLine++
+		default:
+			for _, w := range wrapLine(l, width-4, "    ") {
+				out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, w))
+			}
+		}
+	}
+	return out
+}
+
 func looksLikeFileContent(text string) bool {
 	if strings.TrimSpace(text) == "" {
 		return false
@@ -958,17 +1143,18 @@ func (v *View) renderRawFile(text, sourcePath string, startLine int) []string {
 	return out
 }
 
+// toolResultBlock renders the live tool-call result body (shown
+// while the turn is still in flight). The rules that used to
+// bracket this block have been dropped so the live path looks
+// identical to the transcript rendering that replaces it when
+// the turn ends.
 func toolResultBlock(th Theme, text string, width int, color int) []string {
-	rule := th.FG256(th.Muted, strings.Repeat("─", width))
-
 	var out []string
-	out = append(out, rule)
 	for _, l := range strings.Split(text, "\n") {
 		for _, w := range wrapLine(l, width-4, "    ") {
 			out = append(out, "    "+th.FG256(color, w))
 		}
 	}
-	out = append(out, rule)
 	return out
 }
 

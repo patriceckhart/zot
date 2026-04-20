@@ -16,7 +16,6 @@ func RenderMarkdown(src string, th Theme, width int) string {
 	if width <= 0 {
 		width = 80
 	}
-	rule := th.FG256(th.Muted, strings.Repeat("─", width))
 
 	lines := strings.Split(src, "\n")
 	var out strings.Builder
@@ -25,6 +24,14 @@ func RenderMarkdown(src string, th Theme, width int) string {
 	fenceLang := ""
 	fenceIndent := ""
 
+	// flushFence emits the buffered fence content without decorative
+	// horizontal rules. The tui draws rules around tool-result
+	// boxes, where they delimit real content; inside assistant
+	// prose they clutter the chat without adding information and
+	// look particularly bad around one-line snippets like `rm -rf
+	// foo`. Syntax highlighting alone is enough to signal "this is
+	// code"; unambiguous because prose doesn't use the accent
+	// palette.
 	flushFence := func() {
 		if fenceBuf.Len() == 0 {
 			return
@@ -51,12 +58,13 @@ func RenderMarkdown(src string, th Theme, width int) string {
 				flushFence()
 				inFence = false
 				fenceLang = ""
-				out.WriteString(rule + "\n")
 			} else {
 				inFence = true
 				fenceIndent = line[:len(line)-len(trim)]
 				fenceLang = strings.TrimSpace(strings.TrimPrefix(trim, "```"))
-				out.WriteString(rule + "\n")
+				// Rule will be emitted by flushFence once the
+				// content is known so we can size it to the
+				// widest line inside the fence.
 			}
 			continue
 		}
@@ -95,6 +103,12 @@ func RenderMarkdown(src string, th Theme, width int) string {
 			continue
 		}
 		out.WriteString(renderInline(line, th) + "\n")
+	}
+	// Handle streaming / truncated input: the opening ``` arrived
+	// but the closing one hasn't yet. Emit the buffered content
+	// with both rules so the partial fence still reads cleanly.
+	if inFence {
+		flushFence()
 	}
 	return strings.TrimRight(out.String(), "\n")
 }
