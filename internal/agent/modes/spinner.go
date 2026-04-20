@@ -13,7 +13,6 @@ type spinner struct {
 	messages  []string
 	startedAt time.Time
 	msgIdx    int
-	lastSwap  time.Time
 
 	// fixedMsg overrides the rotating funnyWorkingLines message when
 	// set. Used for auto-compaction so the spinner clearly says what's
@@ -80,12 +79,17 @@ func newSpinner() *spinner {
 	return s
 }
 
-// Start resets the spinner to the beginning of its animation and picks
-// a random opening message.
+// Start resets the spinner to the beginning of its animation and
+// picks a random message that stays fixed for the whole run. A
+// rotating rollodex of quips during a single turn felt noisy in
+// practice — you'd see five different phrases for one
+// long-running response, which implies progress that isn't
+// actually happening. One stable phrase per turn reads calmer
+// and the variety across turns (next Start picks another index)
+// still keeps the set fresh over a session.
 func (s *spinner) Start() {
 	s.startedAt = time.Now()
 	s.msgIdx = rand.Intn(len(s.messages))
-	s.lastSwap = s.startedAt
 	s.fixedMsg = ""
 }
 
@@ -93,7 +97,6 @@ func (s *spinner) Start() {
 // duration of this spinner run. Cleared by the next Start() call.
 func (s *spinner) StartFixed(msg string) {
 	s.startedAt = time.Now()
-	s.lastSwap = s.startedAt
 	s.fixedMsg = msg
 }
 
@@ -109,17 +112,13 @@ func (s *spinner) Frame() string {
 	return s.frames[idx]
 }
 
-// Message returns the current rotating status text. The text changes
-// every ~2.5 seconds so the spinner doesn't look frozen. When the
-// spinner was started via StartFixed, the pinned message is returned
+// Message returns the spinner's status text. One random phrase
+// per Start call, pinned until the next turn. When the spinner
+// was started via StartFixed, the pinned message is returned
 // unchanged.
 func (s *spinner) Message() string {
 	if s.fixedMsg != "" {
 		return s.fixedMsg
-	}
-	if time.Since(s.lastSwap) > 2500*time.Millisecond {
-		s.msgIdx = (s.msgIdx + 1) % len(s.messages)
-		s.lastSwap = time.Now()
 	}
 	return s.messages[s.msgIdx]
 }
