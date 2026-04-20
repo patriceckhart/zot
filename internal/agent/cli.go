@@ -570,6 +570,24 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			}
 			return sess.Path
 		},
+		FlushSession: func() {
+			// Append any not-yet-persisted agent messages to the
+			// current session file, then advance the baseline so
+			// the final WriteNewTranscript at exit doesn't write
+			// duplicates. Called by /session export so the
+			// exported bytes include everything the user has
+			// said in the running TUI, not just whatever got
+			// flushed at startup.
+			if sess == nil {
+				return
+			}
+			currentAg := iv.Agent()
+			if currentAg == nil {
+				return
+			}
+			WriteNewTranscript(currentAg, sess, sessBaselineMsgs)
+			sessBaselineMsgs = len(currentAg.Messages())
+		},
 		Extensions:    extMgr,
 		ChangelogChan: changelogCh,
 		OnChangelogDismiss: func() {

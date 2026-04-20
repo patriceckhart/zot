@@ -83,6 +83,17 @@ type InteractiveConfig struct {
 	// no session is open.
 	CurrentSessionPath func() string
 
+	// FlushSession writes any in-memory agent messages to the
+	// session file that haven't been persisted yet. Called by
+	// /session export right before reading the file so the
+	// exported bytes reflect the full current conversation, not
+	// just the rows the agent happened to write synchronously.
+	// The default WriteNewTranscript-at-exit strategy means most
+	// of a running session lives only in memory until the tui
+	// closes; without a flush hook, /session export writes a
+	// file that only has the meta row.
+	FlushSession func()
+
 	// PersistModel is called whenever the user switches model or provider.
 	// It should update config.json and (if there's an active session)
 	// write a new meta row so resume picks up the same model.
@@ -2563,7 +2574,14 @@ func (i *Interactive) doSessionExport(dst string) {
 		i.invalidate()
 		return
 	}
-	dst = strings.TrimSpace(dst)
+	// Persist any in-memory agent messages to the session file so
+	// the export carries the full conversation. Without this, the
+	// default lazy-flush-at-exit strategy leaves most of a running
+	// session unwritten and the export ends up with only the meta.
+	if i.cfg.FlushSession != nil {
+		i.cfg.FlushSession()
+	}
+	dst = unquotePath(dst)
 	if dst == "" {
 		dst = defaultExportDir()
 	} else {
@@ -2589,7 +2607,7 @@ func (i *Interactive) doSessionExport(dst string) {
 // session, same as `/sessions` -> pick. When src is empty we ask
 // the user to pass a path (no usable default here).
 func (i *Interactive) doSessionImport(src string) {
-	src = strings.TrimSpace(src)
+	src = unquotePath(src)
 	if src == "" {
 		i.mu.Lock()
 		i.statusErr = "import: pass a path — e.g. /session import ~/Downloads/work.zotsession"
@@ -2664,6 +2682,23 @@ func expandTilde(p string) string {
 	}
 	if p[1] == '/' || p[1] == filepath.Separator {
 		return filepath.Join(home, p[2:])
+	}
+	return p
+}
+
+// unquotePath strips a matching pair of surrounding single or
+// double quotes. Drag-drop paste in the tui auto-quotes dropped
+// file paths so the shell-like `/session import 'foo bar.zs'`
+// stays well-formed; when the TUI's own slash handler consumes
+// the arg, we want the raw path back.
+func unquotePath(p string) string {
+	p = strings.TrimSpace(p)
+	if len(p) >= 2 {
+		first := p[0]
+		last := p[len(p)-1]
+		if (first == '\'' && last == '\'') || (first == '"' && last == '"') {
+			p = p[1 : len(p)-1]
+		}
 	}
 	return p
 }
