@@ -238,6 +238,224 @@ func ImportSession(srcPath, root, cwd, version string) (string, error) {
 	return outPath, nil
 }
 
+// BranchSession creates a new session in root/cwd that contains the
+// parent's messages 0..upToMessageIdx-1 (i.e. the first N user+
+// assistant+tool rows). The new meta records Parent=<parent id> and
+// ForkPoint=N so /session tree can rebuild the branch topology
+// later. All non-message rows (usage) are preserved up to the cut
+// point so the running cost tracker stays accurate.
+//
+// upToMessageIdx is a count over the flat message stream as
+// returned by OpenSession. To "branch at user turn 3" the caller
+// passes the index of that user message in msgs + 1 (so the
+// message itself is included). The caller figures that out; this
+// helper just copies the first N message rows.
+//
+// Returns the path of the new session file, ready for OpenSession.
+func BranchSession(parentPath, root, cwd, version string, upToMessageIdx int) (string, error) {
+	if parentPath == "" {
+		return "", errors.New("branch: parent path is empty")
+	}
+	if upToMessageIdx < 0 {
+		return "", errors.New("branch: upToMessageIdx must be >= 0")
+	}
+
+	src, err := os.Open(parentPath)
+	if err != nil {
+		return "", fmt.Errorf("branch: open parent: %w", err)
+	}
+	defer src.Close()
+
+	// Read the parent meta so we can copy model/provider and record
+	// the parent id on the child.
+	sc := bufio.NewScanner(src)
+	sc.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
+	if !sc.Scan() {
+		return "", errors.New("branch: parent session is empty")
+	}
+	var head sessionLine
+	if err := json.Unmarshal(sc.Bytes(), &head); err != nil {
+		return "", fmt.Errorf("branch: parse parent meta: %w", err)
+	}
+	if head.Type != "meta" || head.Meta == nil {
+		return "", errors.New("branch: parent first line is not a meta row")
+	}
+	parentMeta := *head.Meta
+
+	// Build the destination file.
+	dir := SessionsDir(root, cwd)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	newID := uuid.NewString()
+	name := fmt.Sprintf("%s-%s.jsonl", time.Now().UTC().Format("20060102-150405"), newID[:8])
+	outPath := filepath.Join(dir, name)
+	dst, err := os.OpenFile(outPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("branch: create dst: %w", err)
+	}
+	defer dst.Close()
+	bw := bufio.NewWriter(dst)
+
+	// Write the branch meta.
+	branchMeta := SessionMeta{
+		ID:        newID,
+		CWD:       cwd,
+		Model:     parentMeta.Model,
+		Provider:  parentMeta.Provider,
+		Started:   time.Now().UTC(),
+		Version:   version,
+		Parent:    parentMeta.ID,
+		ForkPoint: upToMessageIdx,
+	}
+	metaLine, err := json.Marshal(sessionLine{Type: "meta", Meta: &branchMeta})
+	if err != nil {
+		return "", fmt.Errorf("branch: marshal meta: %w", err)
+	}
+	if _, err := bw.Write(metaLine); err != nil {
+		return "", err
+	}
+	if err := bw.WriteByte('\n'); err != nil {
+		return "", err
+	}
+
+	// Copy message rows up to the cut point, plus all usage rows
+	// that land before the cut (they describe the cost of those
+	// messages).
+	msgCount := 0
+	for sc.Scan() && msgCount < upToMessageIdx {
+		line := sc.Bytes()
+		var h sessionLineHead
+		if err := json.Unmarshal(line, &h); err != nil {
+			continue
+		}
+		switch h.Type {
+		case "message":
+			if _, err := bw.Write(line); err != nil {
+				return "", err
+			}
+			if err := bw.WriteByte('\n'); err != nil {
+				return "", err
+			}
+			msgCount++
+		case "usage":
+			if _, err := bw.Write(line); err != nil {
+				return "", err
+			}
+			if err := bw.WriteByte('\n'); err != nil {
+				return "", err
+			}
+			// don't increment msgCount for usage rows
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", fmt.Errorf("branch: read parent: %w", err)
+	}
+	if err := bw.Flush(); err != nil {
+		return "", err
+	}
+	return outPath, nil
+}
+
+// TreeNode is one entry in the branch tree returned by
+// BuildSessionTree. Children are populated by linking on Parent ID.
+type TreeNode struct {
+	Summary  SessionSummary
+	Meta     SessionMeta
+	Children []*TreeNode
+}
+
+// BuildSessionTree loads every session in the cwd dir and returns
+// the forest rooted at parentless sessions, with each non-root
+// session placed under its parent. Used by /session tree to render
+// the branch hierarchy.
+func BuildSessionTree(root, cwd string) []*TreeNode {
+	dir := SessionsDir(root, cwd)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	nodes := make(map[string]*TreeNode)
+	order := []string{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		summary := describeSession(path)
+		meta, _ := readSessionMeta(path)
+		if meta.ID == "" {
+			continue
+		}
+		nodes[meta.ID] = &TreeNode{Summary: summary, Meta: meta}
+		order = append(order, meta.ID)
+	}
+	var roots []*TreeNode
+	for _, id := range order {
+		n := nodes[id]
+		if n.Meta.Parent == "" {
+			roots = append(roots, n)
+			continue
+		}
+		if parent, ok := nodes[n.Meta.Parent]; ok {
+			parent.Children = append(parent.Children, n)
+		} else {
+			// Parent file missing (was manually deleted). Treat as
+			// a root so it still shows up in the tree.
+			roots = append(roots, n)
+		}
+	}
+	return roots
+}
+
+// readSessionMeta opens path, reads the meta row, and returns it.
+// Empty SessionMeta when the file is missing or not a valid session.
+func readSessionMeta(path string) (SessionMeta, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return SessionMeta{}, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
+	if !sc.Scan() {
+		return SessionMeta{}, errors.New("empty file")
+	}
+	var line sessionLine
+	if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
+		return SessionMeta{}, err
+	}
+	if line.Type != "meta" || line.Meta == nil {
+		return SessionMeta{}, errors.New("first line is not meta")
+	}
+	return *line.Meta, nil
+}
+
+// FindSessionByID looks up a session file in root/cwd whose meta id
+// matches. Used by /session tree when the user picks an entry. O(n)
+// over the files in the dir; the list is small in practice.
+func FindSessionByID(root, cwd, id string) string {
+	dir := SessionsDir(root, cwd)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		meta, err := readSessionMeta(path)
+		if err != nil {
+			continue
+		}
+		if meta.ID == id {
+			return path
+		}
+	}
+	return ""
+}
+
 // firstUserPrompt scans forward from the current scanner position
 // looking for the first user-role message and returns its text
 // (trimmed, short). Used to build a humane export filename.

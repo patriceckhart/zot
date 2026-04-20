@@ -45,6 +45,17 @@ type SessionMeta struct {
 	Provider string    `json:"provider"`
 	Started  time.Time `json:"started"`
 	Version  string    `json:"version"`
+
+	// Parent is the ID of the session this one was forked from, or
+	// empty for top-level sessions. The tree picker walks parents
+	// upward and sibling files (same cwd dir, same parent ID)
+	// laterally to render the branch topology.
+	Parent string `json:"parent,omitempty"`
+	// ForkPoint is the 0-indexed message position within the parent
+	// transcript where this branch diverges. Messages 0..ForkPoint-1
+	// are copied from the parent verbatim; the user's next turn on
+	// the child session continues from there.
+	ForkPoint int `json:"fork_point,omitempty"`
 }
 
 // sessionLine is the on-disk row type. Message is kept as a raw

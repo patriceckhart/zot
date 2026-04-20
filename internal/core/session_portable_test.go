@@ -130,3 +130,89 @@ func TestExportStripsCWDFromMeta(t *testing.T) {
 		t.Errorf("exported file leaks the source cwd: %s", string(b))
 	}
 }
+
+// TestBranchSessionCopiesPrefix writes several messages to a
+// session, branches at message index 2 (first user + first
+// assistant), and verifies the new session has exactly those two
+// messages with parent + fork_point meta set.
+func TestBranchSessionCopiesPrefix(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/project"
+	parent, err := NewSession(root, cwd, "anthropic", "claude-opus-4-7", "0.0.0-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = parent.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "first"}},
+	})
+	_ = parent.AppendMessage(provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: []provider.Content{provider.TextBlock{Text: "first reply"}},
+	})
+	_ = parent.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "second"}},
+	})
+	_ = parent.Close()
+
+	// Branch at the first user+assistant pair (upToMessageIdx=2).
+	branchPath, err := BranchSession(parent.Path, root, cwd, "0.0.0-test", 2)
+	if err != nil {
+		t.Fatalf("BranchSession: %v", err)
+	}
+	branch, msgs, err := OpenSession(branchPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer branch.Close()
+
+	if len(msgs) != 2 {
+		t.Errorf("want 2 copied messages, got %d", len(msgs))
+	}
+	if branch.Meta.Parent != parent.Meta.ID {
+		t.Errorf("parent id: want %q, got %q", parent.Meta.ID, branch.Meta.Parent)
+	}
+	if branch.Meta.ForkPoint != 2 {
+		t.Errorf("fork_point: want 2, got %d", branch.Meta.ForkPoint)
+	}
+	if branch.Meta.ID == parent.Meta.ID {
+		t.Errorf("branch kept parent id; must rotate")
+	}
+}
+
+// TestBuildSessionTree verifies parent/child edges are rebuilt
+// from meta + sibling-scan.
+func TestBuildSessionTree(t *testing.T) {
+	root := t.TempDir()
+	cwd := "/project"
+	parent, _ := NewSession(root, cwd, "anthropic", "claude-opus-4-7", "0.0.0-test")
+	_ = parent.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "x"}},
+	})
+	_ = parent.Close()
+
+	childA, err := BranchSession(parent.Path, root, cwd, "0.0.0-test", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childB, err := BranchSession(parent.Path, root, cwd, "0.0.0-test", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = childA
+	_ = childB
+
+	tree := BuildSessionTree(root, cwd)
+	if len(tree) != 1 {
+		t.Fatalf("want 1 root, got %d", len(tree))
+	}
+	rootNode := tree[0]
+	if rootNode.Meta.ID != parent.Meta.ID {
+		t.Errorf("root should be parent %q, got %q", parent.Meta.ID, rootNode.Meta.ID)
+	}
+	if len(rootNode.Children) != 2 {
+		t.Errorf("want 2 children, got %d", len(rootNode.Children))
+	}
+}

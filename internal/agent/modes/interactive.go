@@ -189,20 +189,27 @@ type Interactive struct {
 	// while the check hasn't completed or nothing is available.
 	updateInfo UpdateInfo
 
-	dialog           *loginDialog
-	modelDialog      *modelDialog
-	sessionDialog    *sessionDialog
-	jumpDialog       *jumpDialog
-	btwDialog        *btwDialog
-	skillsDialog     *skillsDialog
-	changelogDialog  *changelogDialog
-	confirmDialog    *confirmDialog
-	logoutDialog     *logoutDialog
-	telegramDialog   *telegramDialog
-	telegramBridge   *telegram.Bridge
-	sessionOpsDialog *sessionOpsDialog
-	suggest          *slashSuggester
-	spin             *spinner
+	dialog            *loginDialog
+	modelDialog       *modelDialog
+	sessionDialog     *sessionDialog
+	jumpDialog        *jumpDialog
+	btwDialog         *btwDialog
+	skillsDialog      *skillsDialog
+	changelogDialog   *changelogDialog
+	confirmDialog     *confirmDialog
+	logoutDialog      *logoutDialog
+	telegramDialog    *telegramDialog
+	telegramBridge    *telegram.Bridge
+	sessionOpsDialog  *sessionOpsDialog
+	sessionTreeDialog *sessionTreeDialog
+
+	// pendingFork is true when the user ran /session fork: the next
+	// jump-picker selection should branch off that message instead
+	// of scrolling. Flag resets after the action fires or the dialog
+	// is dismissed, so repeated /jump calls don't turn into forks.
+	pendingFork bool
+	suggest     *slashSuggester
+	spin        *spinner
 
 	// parkedTurn is the 1-based turn number the viewport is currently
 	// scrolled to by /jump. 0 = not parked, showing the tail as usual.
@@ -240,23 +247,24 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 			Theme:      cfg.Theme,
 			ImageProto: tui.DetectImageProtocol(),
 		},
-		ed:               tui.NewEditor(cfg.Theme.FG256(cfg.Theme.Accent, "▌ ")),
-		rend:             tui.NewRenderer(cfg.Terminal),
-		toolCalls:        map[string]*tui.ToolCallView{},
-		dirty:            make(chan struct{}, 8),
-		dialog:           newLoginDialog(),
-		modelDialog:      newModelDialog(),
-		sessionDialog:    newSessionDialog(),
-		jumpDialog:       newJumpDialog(),
-		btwDialog:        newBtwDialog(),
-		skillsDialog:     newSkillsDialog(),
-		changelogDialog:  newChangelogDialog(),
-		confirmDialog:    newConfirmDialog(),
-		logoutDialog:     newLogoutDialog(),
-		telegramDialog:   newTelegramDialog(),
-		sessionOpsDialog: newSessionOpsDialog(),
-		suggest:          newSlashSuggester(),
-		spin:             newSpinner(),
+		ed:                tui.NewEditor(cfg.Theme.FG256(cfg.Theme.Accent, "▌ ")),
+		rend:              tui.NewRenderer(cfg.Terminal),
+		toolCalls:         map[string]*tui.ToolCallView{},
+		dirty:             make(chan struct{}, 8),
+		dialog:            newLoginDialog(),
+		modelDialog:       newModelDialog(),
+		sessionDialog:     newSessionDialog(),
+		jumpDialog:        newJumpDialog(),
+		btwDialog:         newBtwDialog(),
+		skillsDialog:      newSkillsDialog(),
+		changelogDialog:   newChangelogDialog(),
+		confirmDialog:     newConfirmDialog(),
+		logoutDialog:      newLogoutDialog(),
+		telegramDialog:    newTelegramDialog(),
+		sessionOpsDialog:  newSessionOpsDialog(),
+		sessionTreeDialog: newSessionTreeDialog(),
+		suggest:           newSlashSuggester(),
+		spin:              newSpinner(),
 	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
@@ -449,7 +457,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// and the AfterFunc-driven invalidate got dropped on a
 			// full channel.
 			drainPending()
-			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() || i.changelogDialog.Active() || i.confirmDialog.Active() || i.logoutDialog.Active() || i.telegramDialog.Active() || i.sessionOpsDialog.Active() {
+			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() || i.changelogDialog.Active() || i.confirmDialog.Active() || i.logoutDialog.Active() || i.telegramDialog.Active() || i.sessionOpsDialog.Active() || i.sessionTreeDialog.Active() {
 				requestRedraw() // keep the spinner / dialog animation moving
 			}
 		}
@@ -615,6 +623,8 @@ func (i *Interactive) redraw() {
 		dialog = i.telegramDialog.Render(i.cfg.Theme, cols)
 	case i.sessionOpsDialog.Active():
 		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, cols)
+	case i.sessionTreeDialog.Active():
+		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, cols)
 	}
 
 	// Slash-command autocomplete: popup above the status line, only
@@ -905,14 +915,38 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	}
+	if i.sessionTreeDialog.Active() {
+		if k.Kind == tui.KeyCtrlC {
+			i.sessionTreeDialog.Close()
+			i.invalidate()
+			return false
+		}
+		act := i.sessionTreeDialog.HandleKey(k)
+		if act.Select {
+			i.applySessionTreeSelection(act.Path)
+		}
+		i.invalidate()
+		return false
+	}
 	if i.jumpDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.jumpDialog.Close()
+			i.pendingFork = false
 			return false
 		}
 		act := i.jumpDialog.HandleKey(k)
 		if act.Select {
-			i.applyJumpSelection(act.MessageIdx, act.TurnNo)
+			if i.pendingFork {
+				i.applyForkSelection(act.MessageIdx)
+			} else {
+				i.applyJumpSelection(act.MessageIdx, act.TurnNo)
+			}
+		}
+		// If the user dismissed the dialog without selecting, also
+		// clear the pending-fork flag so a later plain /jump isn't
+		// hijacked.
+		if act.Close {
+			i.pendingFork = false
 		}
 		return false
 	}
@@ -2524,31 +2558,36 @@ func (h *telegramHost) Notify(level, message string) {
 }
 
 // openSessionOpsDialog shows the picker for `/session` with no arg.
-// Always offers both export and import; the handlers bail with a
-// clear status message when the precondition isn't met (empty
-// transcript on export; missing file on import).
+// Always offers export, import, fork, tree; the handlers bail with
+// a clear status message when the precondition isn't met (empty
+// transcript on fork; no parent/siblings on tree).
 func (i *Interactive) openSessionOpsDialog() {
 	items := []sessionOpsItem{
 		{label: "export", action: "export", hint: "write the current session to a .zotsession file"},
 		{label: "import", action: "import", hint: "load a .zotsession file into this directory"},
+		{label: "fork", action: "fork", hint: "branch from a past user message into a new session"},
+		{label: "tree", action: "tree", hint: "switch between branches in this directory"},
 	}
 	i.sessionOpsDialog.Open(items)
 	i.invalidate()
 }
 
-// doSessionOp dispatches export or import. path is the optional
-// positional argument from /session export <path> or /session
-// import <path>; when empty, sensible defaults apply (see
-// doSessionExport / doSessionImport).
-func (i *Interactive) doSessionOp(action, path string) {
+// doSessionOp dispatches export, import, fork, or tree. arg is the
+// optional positional argument from e.g. /session export <path>
+// or /session import <path>; fork and tree ignore it.
+func (i *Interactive) doSessionOp(action, arg string) {
 	switch action {
 	case "export":
-		i.doSessionExport(path)
+		i.doSessionExport(arg)
 	case "import":
-		i.doSessionImport(path)
+		i.doSessionImport(arg)
+	case "fork":
+		i.doSessionFork()
+	case "tree":
+		i.doSessionTree()
 	default:
 		i.mu.Lock()
-		i.statusErr = "unknown /session action: " + action + " (use export or import)"
+		i.statusErr = "unknown /session action: " + action + " (use export, import, fork, or tree)"
 		i.mu.Unlock()
 		i.invalidate()
 	}
@@ -2715,4 +2754,155 @@ func friendlyPath(p string) string {
 		return "~" + p[len(home):]
 	}
 	return p
+}
+
+// doSessionFork opens the /jump turn picker in "fork mode". The
+// next selection branches the current session at that user turn
+// instead of scrolling the viewport to it.
+func (i *Interactive) doSessionFork() {
+	if i.cfg.CurrentSessionPath == nil || i.cfg.CurrentSessionPath() == "" {
+		i.mu.Lock()
+		i.statusErr = "fork: no session is active (running with --no-session?)"
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	msgs := []provider.Message{}
+	if i.agent != nil {
+		msgs = i.agent.Messages()
+	}
+	if len(msgs) == 0 {
+		i.mu.Lock()
+		i.statusErr = "fork: transcript is empty; nothing to fork from"
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.pendingFork = true
+	i.jumpDialog.Open(msgs, "")
+	i.invalidate()
+}
+
+// doSessionTree shows the branch topology picker for this cwd.
+// Pick an entry to switch into it (same semantics as /sessions
+// picking a past session, but with the parent/child indentation).
+func (i *Interactive) doSessionTree() {
+	if i.cfg.ZotHome == "" || i.cfg.CWD == "" {
+		i.mu.Lock()
+		i.statusErr = "tree: session storage not configured"
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	// Flush the running agent's transcript first so its message
+	// count + latest preview are accurate in the tree.
+	if i.cfg.FlushSession != nil {
+		i.cfg.FlushSession()
+	}
+	roots := core.BuildSessionTree(i.cfg.ZotHome, i.cfg.CWD)
+	if len(roots) == 0 {
+		i.mu.Lock()
+		i.statusErr = "tree: no sessions in this directory yet"
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	current := ""
+	if i.cfg.CurrentSessionPath != nil {
+		current = i.cfg.CurrentSessionPath()
+	}
+	if !i.sessionTreeDialog.Open(roots, current) {
+		i.mu.Lock()
+		i.statusErr = "tree: no branches to show"
+		i.mu.Unlock()
+	}
+	i.invalidate()
+}
+
+// applySessionTreeSelection switches the running agent to the
+// session file at path. Thin wrapper around LoadSession that also
+// writes a status line.
+func (i *Interactive) applySessionTreeSelection(path string) {
+	if i.cfg.LoadSession == nil {
+		i.mu.Lock()
+		i.statusErr = "tree: session swap not available in this build"
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	if err := i.cfg.LoadSession(path); err != nil {
+		i.mu.Lock()
+		i.statusErr = "tree: load failed: " + err.Error()
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.mu.Lock()
+	i.statusOK = "switched to branch " + friendlyPath(path)
+	i.statusErr = ""
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// applyForkSelection branches the current session at msgIdx+1 (so
+// the selected user message and everything before it is included
+// in the new branch), then switches the running agent to the new
+// file. Called from the jump-dialog handler when pendingFork=true.
+func (i *Interactive) applyForkSelection(msgIdx int) {
+	i.pendingFork = false
+	if i.cfg.CurrentSessionPath == nil {
+		i.mu.Lock()
+		i.statusErr = "fork: no session is active"
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	src := i.cfg.CurrentSessionPath()
+	if src == "" {
+		i.mu.Lock()
+		i.statusErr = "fork: no session is active"
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	if i.cfg.FlushSession != nil {
+		i.cfg.FlushSession()
+	}
+	// msgIdx is 0-indexed message position; copy msgIdx+1 rows so
+	// the selected user message is included.
+	upTo := msgIdx + 1
+	newPath, err := core.BranchSession(src, i.cfg.ZotHome, i.cfg.CWD, i.cfg.Version, upTo)
+	if err != nil {
+		i.mu.Lock()
+		i.statusErr = "fork: " + err.Error()
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	if i.cfg.LoadSession == nil {
+		i.mu.Lock()
+		i.statusOK = "forked at message " + formatInt(upTo) + " (run /sessions to resume)"
+		i.statusErr = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	if err := i.cfg.LoadSession(newPath); err != nil {
+		i.mu.Lock()
+		i.statusErr = "fork: switch failed: " + err.Error()
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.mu.Lock()
+	i.statusOK = "forked and switched to new branch at " + friendlyPath(newPath)
+	i.statusErr = ""
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// formatInt is a tiny strconv.Itoa shim; keeps the handler above
+// from needing a strconv import just for one call.
+func formatInt(n int) string {
+	return fmt.Sprintf("%d", n)
 }
