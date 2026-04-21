@@ -123,10 +123,6 @@ func renderKitty(data []byte, maxCellsWide, maxCellsHigh int) string {
 	const chunk = 4096
 	var sb strings.Builder
 
-	// Prefix: delete any previously-placed images so old frames don't
-	// linger on screen when the chat scrolls past them.
-	sb.WriteString("\x1b_Ga=d\x1b\\")
-
 	// Pick the most constraining dimension and use only it. Kitty
 	// preserves aspect ratio when exactly one of c/r is provided.
 	hdr := "a=T,f=100"

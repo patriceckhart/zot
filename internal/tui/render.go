@@ -152,15 +152,24 @@ func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 	// is unreliable. Inline images are opt-in via ZOT_INLINE_IMAGES;
 	// the common code path below is the fast cached diff.
 	curHasImage := false
+	curHasKittyImage := false
 	for _, l := range frame {
 		if containsImageEscape(l) {
 			curHasImage = true
-			break
+			if strings.Contains(l, "\x1b_G") {
+				curHasKittyImage = true
+			}
 		}
 	}
 	forceAll := curHasImage || r.prevHadImage
 	if forceAll {
 		w.WriteString(SeqClearScreen)
+		if curHasKittyImage {
+			// Delete previously placed kitty images once per frame,
+			// before rewriting all rows. Doing this inside each image
+			// escape makes only the last image in the frame survive.
+			w.WriteString("\x1b_Ga=d\x1b\\")
+		}
 	}
 
 	full := r.prev == nil || len(r.prev) != r.rows
