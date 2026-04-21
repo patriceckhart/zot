@@ -715,7 +715,13 @@ func (i *Interactive) redraw() {
 	}
 	var suggest []string
 	currentInput := i.ed.Value()
-	if len(dialog) == 0 && i.suggest.Active(currentInput) && !i.busy {
+	// Slash popup renders even while the agent is busy so the user
+	// can queue a destructive command (/clear, /compact, /logout,
+	// /model) or a read-only one (/help, /jump, /sessions, etc.)
+	// without waiting for the current turn to finish. The dispatcher
+	// in runSlash already handles the busy case per-command: safe
+	// ones run immediately, destructive ones cancel the turn first.
+	if len(dialog) == 0 && i.suggest.Active(currentInput) {
 		suggest = i.suggest.Render(currentInput, i.cfg.Theme, cols)
 	}
 
@@ -1105,8 +1111,30 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.armCtrlCExit()
 		return false
 	case tui.KeyEsc:
-		// Esc interrupts a running turn. When idle, fall through so the
-		// editor can clear itself.
+		// Esc interrupts a running turn — but only when nothing
+		// else on screen wants to consume the key first. The slash
+		// popup has its own Esc behaviour (close + clear editor),
+		// and transient overlays like the /help block and extension
+		// notes should dismiss on Esc before we even consider the
+		// turn. Without these guards, a casual Esc press after
+		// running /help on a busy turn rips the turn away.
+		if i.suggest.Active(i.ed.Value()) {
+			break
+		}
+		i.mu.Lock()
+		hadHelp := len(i.helpBlock) > 0
+		hadNotes := len(i.extNotes) > 0
+		if hadHelp {
+			i.helpBlock = nil
+		}
+		if hadNotes {
+			i.extNotes = nil
+		}
+		i.mu.Unlock()
+		if hadHelp || hadNotes {
+			i.invalidate()
+			return false
+		}
 		if i.busy && i.cancelTurn != nil {
 			i.cancelTurn()
 			// If a confirm dialog is pending, refuse it so the agent
