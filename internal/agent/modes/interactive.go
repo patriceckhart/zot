@@ -719,9 +719,10 @@ func (i *Interactive) redraw() {
 	// drifts every second and shouldn't grab focus.
 	var busyPrefix string
 	if i.busy {
-		busyPrefix = fmt.Sprintf("%s %s - %s",
+		busyPrefix = fmt.Sprintf("%s %s %s %s",
 			i.cfg.Theme.FG256(i.cfg.Theme.Assistant, i.spin.Frame()),
 			i.cfg.Theme.FG256(i.cfg.Theme.Assistant, i.spin.Message()),
+			i.cfg.Theme.FG256(i.cfg.Theme.Muted, "-"),
 			i.cfg.Theme.FG256(i.cfg.Theme.Muted, i.spin.Elapsed().String()),
 		)
 	}

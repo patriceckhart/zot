@@ -1374,6 +1374,10 @@ func StatusBar(p StatusBarParams) []string {
 		// segments. Wrapping the whole thing here would override
 		// those choices. The pad itself needs no color (it's spaces).
 		leftBuilder.WriteString(pad + p.BusyPrefix)
+		// Exactly one pad (2 spaces) between the busy segment and
+		// the provider/model block. The leading pad above covers
+		// the left indent.
+	} else {
 		leftBuilder.WriteString(pad)
 	}
 	leftBuilder.WriteString(pad)
