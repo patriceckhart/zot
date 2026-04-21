@@ -1452,6 +1452,22 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.openSkillsDialog()
 	case "/compact":
 		i.runCompact(ctx, false)
+	case "/study":
+		// Canned prompt that tells the agent to read every file
+		// in the current directory so its later turns have the
+		// whole project in context. Dispatched through the normal
+		// queue-or-start path so it behaves identically to
+		// typing the prompt by hand.
+		const studyPrompt = "Read and understand everything in the current directory."
+		i.mu.Lock()
+		if i.busy {
+			i.queued = append(i.queued, studyPrompt)
+			i.mu.Unlock()
+			i.invalidate()
+			break
+		}
+		i.mu.Unlock()
+		i.startTurn(ctx, studyPrompt)
 	case "/jail":
 		if i.cfg.Sandbox == nil {
 			i.mu.Lock()

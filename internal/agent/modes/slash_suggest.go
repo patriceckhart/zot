@@ -40,6 +40,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/session", Desc: "export the current session to a .zotsession file, or import one"},
 	{Name: "/jump", Desc: "scroll the chat to a previous turn (or /jump <text>)"},
 	{Name: "/compact", Desc: "summarize and replace the transcript to free up context"},
+	{Name: "/study", Desc: "read every file in the current directory so the agent has full project context"},
 	{Name: "/btw", Desc: "side-chat that doesn't add to the main thread (saves tokens)"},
 	{Name: "/jail", Desc: "confine tools to the current directory"},
 	{Name: "/skills", Desc: "list discovered skills (SKILL.md files)"},
