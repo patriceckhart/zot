@@ -478,8 +478,15 @@ func (i *Interactive) Run(ctx context.Context) error {
 			// and the AfterFunc-driven invalidate got dropped on a
 			// full channel.
 			drainPending()
-			if i.busy || i.dialog.Active() || i.modelDialog.Active() || i.sessionDialog.Active() || i.jumpDialog.Active() || i.btwDialog.Active() || i.skillsDialog.Active() || i.changelogDialog.Active() || i.confirmDialog.Active() || i.logoutDialog.Active() || i.telegramDialog.Active() || i.sessionOpsDialog.Active() || i.sessionTreeDialog.Active() {
-				requestRedraw() // keep the spinner / dialog animation moving
+			// Only force a periodic redraw when something is actually
+			// animating (the main spinner during a busy turn, or the
+			// btw side-chat spinner while it's awaiting a response).
+			// Static pickers (model, session, jump, etc.) don't need
+			// the tick and firing it cancels the terminal's cursor
+			// blink inside dialogs that host their own editor (btw),
+			// because each frame re-emits hide-cursor + show-cursor.
+			if i.busy || i.btwDialog.Loading() {
+				requestRedraw()
 			}
 		}
 	}
@@ -755,7 +762,7 @@ func (i *Interactive) redraw() {
 	var queue []string
 	if len(i.queued) > 0 {
 		for _, q := range i.queued {
-			label := i.cfg.Theme.FG256(i.cfg.Theme.Accent, "▸ sliding in: ")
+			label := i.cfg.Theme.FG256(i.cfg.Theme.Accent, "sliding in: ")
 			text := truncateLine(q, cols-15)
 			queue = append(queue, label+i.cfg.Theme.FG256(i.cfg.Theme.Muted, text))
 		}
@@ -822,8 +829,20 @@ func (i *Interactive) redraw() {
 	frame = append(frame, visibleChat...)
 	frame = append(frame, bottom...)
 
+	// Default: the real terminal cursor sits on the main editor's
+	// input position. When an overlay dialog has its own input
+	// field (today just /btw), route the cursor there instead so
+	// the blinking cursor shows where the user is actually typing.
+	// Dialogs without a cursor (model picker, /help, /login, etc.)
+	// return -1 and the main editor keeps the cursor.
 	cursorRow := len(visibleChat) + len(dialog) + len(suggest) + len(queue) + len(statusLines) + curR
 	cursorCol := curC
+	if i.btwDialog.Active() {
+		if r, c := i.btwDialog.CursorPos(cols); r >= 0 {
+			cursorRow = len(visibleChat) + r
+			cursorCol = c
+		}
+	}
 	i.rend.Draw(frame, cursorRow, cursorCol)
 }
 
@@ -1716,7 +1735,7 @@ func (i *Interactive) openBtwDialog(args []string) {
 		return
 	}
 	seed := strings.TrimSpace(strings.Join(args, " "))
-	i.btwDialog.Open(i.cfg.Theme, i.agent, i.agent.System, i.cfg.Model, seed)
+	i.btwDialog.Open(i.cfg.Theme, i.agent, i.agent.System, i.cfg.Model, seed, i.invalidate)
 	i.invalidate()
 }
 
@@ -2289,7 +2308,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		if tc, ok := i.toolCalls[e.ID]; ok {
 			tc.RawJSONBuf += e.Delta
 			// Refresh the live path as soon as it parses; used in
-			// the header (▸ write /Users/pat/Desktop/demo.ts)
+			// the header (write /Users/pat/Desktop/demo.ts)
 			// while the content is still streaming.
 			if p, pok, _ := tui.ExtractPartialStringField(tc.RawJSONBuf, "path"); pok {
 				tc.LivePath = p

@@ -73,11 +73,27 @@ func (d *btwDialog) Active() bool {
 	return d.active
 }
 
+// Loading reports whether the dialog is currently awaiting a
+// model response (and therefore rendering an animated spinner).
+// Used by the host to decide whether a periodic redraw is worth
+// triggering; when false and the user is just typing, we can
+// skip the tick and let the terminal drive the cursor blink.
+func (d *btwDialog) Loading() bool {
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.active && d.loading
+}
+
 // Open enters the side chat. agent supplies the live transcript and
 // system prompt, plus the underlying provider client to use for the
 // one-off completion. seed is an optional first question that gets
-// auto-submitted (so /btw <text> behaves like the reference).
-func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, seed string) {
+// auto-submitted (so /btw <text> starts a conversation right away).
+// invalidate, if non-nil, is called after each state change so the
+// host redraw loop can pick up the update without polling.
+func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, seed string, invalidate func()) {
 	d.mu.Lock()
 	d.active = true
 	d.theme = th
@@ -93,7 +109,7 @@ func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, seed st
 
 	if seed = strings.TrimSpace(seed); seed != "" {
 		d.editor.SetValue(seed)
-		d.submit()
+		d.submit(invalidate)
 	}
 }
 
@@ -151,14 +167,17 @@ func (d *btwDialog) HandleKey(k tui.Key, invalidate func()) (closed bool) {
 	submitted := editor.HandleKey(k)
 	invalidate()
 	if submitted && !loading {
-		d.submit()
+		d.submit(invalidate)
 	}
 	return false
 }
 
 // submit fires the LLM call for the current input and, on success,
-// appends a new turn to d.turns.
-func (d *btwDialog) submit() {
+// appends a new turn to d.turns. invalidate is called every time
+// the turn's visible state changes (text delta, error, complete)
+// so the host redraw loop picks up the update without relying on
+// a periodic tick.
+func (d *btwDialog) submit(invalidate func()) {
 	d.mu.Lock()
 	if d.editor == nil || d.loading {
 		d.mu.Unlock()
@@ -219,6 +238,9 @@ func (d *btwDialog) submit() {
 		stream, err := client.Stream(ctx, req)
 		if err != nil {
 			d.completeTurn(turnIdx, "", err.Error())
+			if invalidate != nil {
+				invalidate()
+			}
 			return
 		}
 
@@ -240,6 +262,9 @@ func (d *btwDialog) submit() {
 			errMsg = finalErr.Error()
 		}
 		d.completeTurn(turnIdx, reply.String(), errMsg)
+		if invalidate != nil {
+			invalidate()
+		}
 	}()
 }
 
@@ -267,7 +292,7 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 	}
 
 	var out []string
-	out = append(out, frameHeaderColor(th, "btw — side chat (esc closes; nothing is added to the main thread)", width, th.Accent))
+	out = append(out, frameHeaderColor(th, "btw - side chat (esc closes; nothing is added to the main thread)", width, th.Accent))
 
 	if len(d.turns) == 0 && !d.loading {
 		out = append(out, "  "+th.FG256(th.Muted, "ask anything; replies stay private to this side chat."))

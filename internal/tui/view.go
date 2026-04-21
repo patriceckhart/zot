@@ -445,7 +445,7 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 				// assistant prose above. The matching closing rule
 				// is emitted at the end of the tool-role message.
 				lines = append(lines, toolBlockRule(v.Theme, width))
-				lines = append(lines, indent+v.Theme.FG256(v.Theme.Tool, "▸ "+b.Name+" "+ShortArgs(b.Name, b.Arguments)))
+				lines = append(lines, indent+v.Theme.FG256(v.Theme.Tool, ""+b.Name+" "+ShortArgs(b.Name, b.Arguments)))
 			}
 		}
 	case provider.RoleTool:
@@ -493,7 +493,7 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	if arg == "" && tc.LivePath != "" {
 		arg = tc.LivePath
 	}
-	head := v.Theme.FG256(v.Theme.Tool, "▸ "+tc.Name+" "+arg)
+	head := v.Theme.FG256(v.Theme.Tool, ""+tc.Name+" "+arg)
 
 	// Live streaming body: pulled out of the partial JSON buffer for
 	// tools whose interesting content is a string field (currently
@@ -1377,10 +1377,14 @@ func StatusBar(p StatusBarParams) []string {
 		// Exactly one pad (2 spaces) between the busy segment and
 		// the provider/model block. The leading pad above covers
 		// the left indent.
+		leftBuilder.WriteString(pad)
 	} else {
+		// Idle path: a single pad of left inset so the line
+		// aligns with the conversation column on its left edge
+		// ("  you" / "  zot" message markers). Without the busy
+		// prefix there's no trailing separator to double-pad.
 		leftBuilder.WriteString(pad)
 	}
-	leftBuilder.WriteString(pad)
 	leftBuilder.WriteString(th.FG256(th.Muted, left))
 	if middle != "" {
 		leftBuilder.WriteString(pad)
