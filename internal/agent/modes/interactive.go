@@ -822,6 +822,7 @@ func (i *Interactive) redraw() {
 		start = alignSliceStartToImageBlock(chat, start, end)
 		visibleChat = chat[start:end]
 	}
+	visibleChat = clipBottomClippedImages(visibleChat)
 
 	// A tiny "scrolled up" indicator in the top-right of the chat pane
 	// so you know you're not at the bottom. When the viewport was
@@ -893,6 +894,37 @@ func alignSliceStartToImageBlock(chat []string, start, end int) int {
 		}
 	}
 	return start
+}
+
+func clipBottomClippedImages(lines []string) []string {
+	if len(lines) == 0 {
+		return lines
+	}
+	out := append([]string(nil), lines...)
+	for i, line := range out {
+		if !strings.Contains(line, "\x1b]1337;File=") && !strings.Contains(line, "\x1b_G") {
+			continue
+		}
+		// Image blocks render as: image escape, zero or more blank
+		// reservation rows, then the muted "image - ..." info line,
+		// then one trailing blank. If the info line isn't visible in
+		// the current chat slice, the image would paint down into the
+		// fixed status bar area. Suppress that image for this frame.
+		foundInfo := false
+		for j := i + 1; j < len(out); j++ {
+			if strings.Contains(out[j], "image - ") {
+				foundInfo = true
+				break
+			}
+			if strings.TrimSpace(out[j]) != "" {
+				break
+			}
+		}
+		if !foundInfo {
+			out[i] = ""
+		}
+	}
+	return out
 }
 
 // truncateLine shortens s so it fits within n display cells, with an
