@@ -353,7 +353,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 	// want to dismiss it (e.g. to check /help or /exit first).
 	if i.agent == nil {
 		i.statusErr = "not logged in. pick a login method below or press esc to dismiss."
-		i.dialog.Open()
+		i.dialog.Open(i.cfg.ZotHome)
 	}
 
 	// Input goroutine.
@@ -1420,7 +1420,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.scrollOffset = 0
 		i.mu.Unlock()
 	case "/login":
-		i.dialog.Open()
+		i.dialog.Open(i.cfg.ZotHome)
 	case "/logout":
 		if len(parts) >= 2 {
 			// Explicit target: /logout anthropic | openai | all
