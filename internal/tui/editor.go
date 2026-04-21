@@ -23,10 +23,12 @@ type Editor struct {
 	Prompt   string
 	MaxWidth int
 
-	// History is a ring of previously submitted buffers (newest last).
-	History    []string
-	histIdx    int // -1 means "editing current buffer"
-	savedDraft string
+	// lastRenderWidth is the column count passed to the most recent
+	// Render() call. Up/Down key handling needs this to walk the
+	// same visual layout the user sees: a logical line that wraps to
+	// two rows should respond to Up by moving to the previous visual
+	// row, not do nothing because CursorR is already 0.
+	lastRenderWidth int
 
 	// pastes stores the full content of every multi-line paste,
 	// keyed by the id embedded in the visible placeholder token.
@@ -42,9 +44,8 @@ type Editor struct {
 // NewEditor returns an empty editor with the given prompt.
 func NewEditor(prompt string) *Editor {
 	return &Editor{
-		Lines:   []string{""},
-		Prompt:  prompt,
-		histIdx: -1,
+		Lines:  []string{""},
+		Prompt: prompt,
 	}
 }
 
@@ -83,7 +84,6 @@ func (e *Editor) SetValue(s string) {
 	}
 	e.CursorR = len(e.Lines) - 1
 	e.CursorC = runeLen(e.Lines[e.CursorR])
-	e.histIdx = -1
 	e.pastes = nil
 	e.pasteSeq = 0
 }
@@ -96,9 +96,9 @@ func (e *Editor) IsEmpty() bool {
 	return len(e.Lines) == 1 && e.Lines[0] == ""
 }
 
-// HandleKey applies k to the editor. It returns (submit, key).
-// If submit is true, the caller should read Value() and call
-// PushHistory + Clear.
+// HandleKey applies k to the editor. It returns submit=true when
+// the user pressed enter and there is content to send; the caller
+// should read SubmitValue() and then Clear().
 func (e *Editor) HandleKey(k Key) (submit bool) {
 	switch k.Kind {
 	case KeyRune:
@@ -134,23 +134,17 @@ func (e *Editor) HandleKey(k Key) (submit bool) {
 			e.moveRight()
 		}
 	case KeyUp:
-		if e.CursorR == 0 {
-			e.historyPrev()
-		} else {
-			e.CursorR--
-			if e.CursorC > runeLen(e.Lines[e.CursorR]) {
-				e.CursorC = runeLen(e.Lines[e.CursorR])
-			}
-		}
+		// Visual-row navigation. When a single logical line wraps
+		// to several visual rows, Up needs to climb one visual
+		// row — which may mean moving within the same
+		// e.Lines[CursorR] back toward an earlier rune index,
+		// not jumping to CursorR-1. Buffer-line navigation is
+		// subsumed: a visual row above may also live in the
+		// previous logical line when a short line precedes a
+		// wrapped one.
+		e.moveCursorVisual(-1)
 	case KeyDown:
-		if e.CursorR == len(e.Lines)-1 {
-			e.historyNext()
-		} else {
-			e.CursorR++
-			if e.CursorC > runeLen(e.Lines[e.CursorR]) {
-				e.CursorC = runeLen(e.Lines[e.CursorR])
-			}
-		}
+		e.moveCursorVisual(+1)
 	case KeyHome, KeyCtrlA:
 		e.CursorC = 0
 	case KeyEnd, KeyCtrlE:
@@ -372,7 +366,6 @@ func singleQuote(s string) string {
 func (e *Editor) Insert(s string) { e.insert(s) }
 
 func (e *Editor) insert(s string) {
-	e.histIdx = -1
 	line := e.Lines[e.CursorR]
 	pre := substringBefore(line, e.CursorC)
 	post := substringAfter(line, e.CursorC)
@@ -398,7 +391,6 @@ func (e *Editor) insert(s string) {
 }
 
 func (e *Editor) newline() {
-	e.histIdx = -1
 	line := e.Lines[e.CursorR]
 	pre := substringBefore(line, e.CursorC)
 	post := substringAfter(line, e.CursorC)
@@ -411,7 +403,6 @@ func (e *Editor) newline() {
 }
 
 func (e *Editor) backspace() {
-	e.histIdx = -1
 	if e.CursorC == 0 {
 		if e.CursorR == 0 {
 			return
@@ -430,7 +421,6 @@ func (e *Editor) backspace() {
 }
 
 func (e *Editor) delete() {
-	e.histIdx = -1
 	line := e.Lines[e.CursorR]
 	if e.CursorC == runeLen(line) {
 		if e.CursorR == len(e.Lines)-1 {
@@ -510,8 +500,145 @@ func (e *Editor) moveRight() {
 	}
 }
 
+// moveCursorVisual moves the cursor one visual row in direction
+// dir (-1 = up, +1 = down) through the wrapped layout the user
+// sees on screen. Handles both multi-line logical inputs and the
+// case where a single long line wraps across several visual
+// rows.
+//
+// Algorithm: rebuild the same wrapped layout Render produces,
+// tagging each visual row with (logicalRow, runeOffsetStart,
+// runeOffsetEnd, leadingWidth). Find the row the cursor sits on,
+// then pick (row+dir) and map the cursor's current visual column
+// (minus the target row's leading indent) to a rune index inside
+// that row's slice of its logical line. No-op at the top/bottom
+// edges of the whole buffer.
+func (e *Editor) moveCursorVisual(dir int) {
+	width := e.lastRenderWidth
+	if width <= 0 {
+		// Fall back to logical-line navigation if Render hasn't
+		// been called yet (shouldn't happen in practice; the
+		// host always renders once before accepting input).
+		e.moveCursorLogical(dir)
+		return
+	}
+
+	type vrow struct {
+		logical    int    // e.Lines index
+		runeStart  int    // rune offset into e.Lines[logical]
+		runeEnd    int    // exclusive
+		leadWidth  int    // width of prompt / cont indent on this row
+		leadPrefix string // the prefix used (prompt on row 0, indent on cont)
+	}
+
+	promptLen := visibleWidth(e.Prompt)
+	indent := strings.Repeat(" ", promptLen)
+
+	var rows []vrow
+	curVRow, curVCol := 0, 0
+	for r, line := range e.Lines {
+		prefix := indent
+		if r == 0 {
+			prefix = e.Prompt
+		}
+		wrapped := wrapLine(prefix+line, width, indent)
+		lineRunes := []rune(line)
+		seen := 0
+		for wi, w := range wrapped {
+			var leadW int
+			var leadP string
+			body := w
+			if wi == 0 {
+				if strings.HasPrefix(body, prefix) {
+					body = body[len(prefix):]
+				}
+				leadW = promptLen
+				leadP = prefix
+			} else {
+				if strings.HasPrefix(body, indent) {
+					body = body[len(indent):]
+				}
+				leadW = promptLen
+				leadP = indent
+			}
+			bodyRunes := []rune(body)
+			start := seen
+			end := seen + len(bodyRunes)
+			rows = append(rows, vrow{
+				logical: r, runeStart: start, runeEnd: end,
+				leadWidth: leadW, leadPrefix: leadP,
+			})
+			// Record where the cursor currently sits.
+			if r == e.CursorR && e.CursorC >= start && e.CursorC <= end {
+				curVRow = len(rows) - 1
+				inner := e.CursorC - start
+				if inner < 0 {
+					inner = 0
+				}
+				if inner > len(bodyRunes) {
+					inner = len(bodyRunes)
+				}
+				curVCol = leadW + runewidth.StringWidth(string(bodyRunes[:inner]))
+			}
+			seen = end
+			// Word-wrap often drops a single space at the boundary.
+			for seen < len(lineRunes) && lineRunes[seen] == ' ' {
+				seen++
+			}
+		}
+	}
+
+	target := curVRow + dir
+	if target < 0 || target >= len(rows) {
+		return
+	}
+	tr := rows[target]
+	line := e.Lines[tr.logical]
+	lineRunes := []rune(line)
+	bodyRunes := lineRunes[tr.runeStart:tr.runeEnd]
+
+	// Find the rune offset inside bodyRunes whose visible column
+	// most closely matches curVCol after accounting for leadWidth.
+	want := curVCol - tr.leadWidth
+	if want < 0 {
+		want = 0
+	}
+	best := 0
+	bestW := 0
+	for i := 1; i <= len(bodyRunes); i++ {
+		w := runewidth.StringWidth(string(bodyRunes[:i]))
+		if w > want {
+			break
+		}
+		best = i
+		bestW = w
+		if w == want {
+			break
+		}
+	}
+	_ = bestW
+	e.CursorR = tr.logical
+	e.CursorC = tr.runeStart + best
+}
+
+// moveCursorLogical is the pre-visual-navigation fallback used
+// when Render hasn't told us the terminal width yet. Walks the
+// e.Lines array directly.
+func (e *Editor) moveCursorLogical(dir int) {
+	switch {
+	case dir < 0 && e.CursorR > 0:
+		e.CursorR--
+	case dir > 0 && e.CursorR < len(e.Lines)-1:
+		e.CursorR++
+	default:
+		return
+	}
+	if e.CursorC > runeLen(e.Lines[e.CursorR]) {
+		e.CursorC = runeLen(e.Lines[e.CursorR])
+	}
+}
+
 func (e *Editor) deleteWord() {
-	e.histIdx = -1
 	line := e.Lines[e.CursorR]
 	if e.CursorC == 0 {
 		e.backspace()
@@ -551,69 +678,12 @@ func isWordSep(r rune) bool {
 	return true
 }
 
-// ---- history ----
-
-// PushHistory saves s to the history ring.
-func (e *Editor) PushHistory(s string) {
-	s = strings.TrimRight(s, "\n")
-	if s == "" {
-		return
-	}
-	if n := len(e.History); n > 0 && e.History[n-1] == s {
-		return
-	}
-	e.History = append(e.History, s)
-	if len(e.History) > 200 {
-		e.History = e.History[len(e.History)-200:]
-	}
-	e.histIdx = -1
-}
-
-func (e *Editor) historyPrev() {
-	if len(e.History) == 0 {
-		return
-	}
-	if e.histIdx == -1 {
-		e.savedDraft = e.Value()
-		e.histIdx = len(e.History) - 1
-	} else if e.histIdx > 0 {
-		e.histIdx--
-	}
-	e.SetValue(e.History[e.histIdx])
-	// SetValue resets histIdx; restore.
-	e.histIdx = e.findInHistory()
-}
-
-func (e *Editor) historyNext() {
-	if e.histIdx == -1 {
-		return
-	}
-	if e.histIdx == len(e.History)-1 {
-		e.histIdx = -1
-		e.SetValue(e.savedDraft)
-		e.histIdx = -1
-		return
-	}
-	e.histIdx++
-	e.SetValue(e.History[e.histIdx])
-	e.histIdx = e.findInHistory()
-}
-
-func (e *Editor) findInHistory() int {
-	v := e.Value()
-	for i, h := range e.History {
-		if h == v {
-			return i
-		}
-	}
-	return -1
-}
-
 // ---- rendering ----
 
 // Render returns the editor's visible lines (wrapped to width).
 // visualRow/visualCol describe where the cursor lands within the returned lines.
 func (e *Editor) Render(width int) (lines []string, visualRow, visualCol int) {
+	e.lastRenderWidth = width
 	promptLen := visibleWidth(e.Prompt)
 	indent := strings.Repeat(" ", promptLen)
 

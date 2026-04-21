@@ -1168,7 +1168,6 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			// clear the editor so the command doesn't linger after the
 			// dialog opens/closes.
 			if name := i.suggest.Selection(i.ed.Value()); name != "" {
-				i.ed.PushHistory(name)
 				i.ed.Clear()
 				i.suggest.Reset()
 				return i.runSlash(ctx, name)
@@ -1181,17 +1180,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	}
 
 	if submit := i.ed.HandleKey(k); submit {
-		// SubmitValue() expands any [paste #N +L lines] placeholders
-		// back into the pasted bodies; Value() is what the user
-		// sees on screen. History stores the visible text so the
-		// up-arrow recall shows the placeholder, not a 500-line
-		// replay.
-		visible := strings.TrimRight(i.ed.Value(), "\n")
+		// SubmitValue() expands any [pasted text #N +L lines]
+		// placeholders back into their bodies; the raw Value()
+		// is only what the user sees on screen.
 		text := strings.TrimRight(i.ed.SubmitValue(), "\n")
 		if text == "" {
 			return false
 		}
-		i.ed.PushHistory(visible)
 		i.ed.Clear()
 		i.suggest.Reset()
 
