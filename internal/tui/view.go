@@ -841,7 +841,11 @@ func (v *View) renderDiffRow(line string, width, color int, lineNo int, mark byt
 func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
 	w, h := ImageDimensions(b.Data)
 	kb := len(b.Data) / 1024
-	info := fmt.Sprintf("  image - %s - %dx%d - %d KB", b.MimeType, w, h, kb)
+	// Four-space indent matches every other tool-output row
+	// (renderRawFile, renderBashResult, diff rows, "... N more
+	// lines" footers). Keeps the image's metadata line vertically
+	// aligned with the file content above / below it.
+	info := fmt.Sprintf("    image - %s - %dx%d - %d KB", b.MimeType, w, h, kb)
 
 	if v.ImageProto != ImageProtocolNone {
 		// Clamp rendered width so the image never overflows the chat
@@ -860,18 +864,29 @@ func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
 			if rows < 1 {
 				rows = 1
 			}
-			out := make([]string, 0, rows+1)
+			out := make([]string, 0, rows+3)
 			out = append(out, "    "+seq)
-			// Reserve blank rows matching the image's on-screen height.
-			for i := 1; i < rows; i++ {
+			// Reserve blank rows matching the image's on-screen
+			// height, plus one extra. RowsForInlineImage estimates
+			// the height from a fixed cell aspect ratio; real
+			// terminals differ enough that the image often spills
+			// one row past the estimate and repaints over the info
+			// line below. The extra row absorbs that spillover.
+			for i := 1; i < rows+1; i++ {
 				out = append(out, "")
 			}
 			out = append(out, v.Theme.FG256(v.Theme.Muted, info))
+			// Trailing blank so the closing rule / next block has
+			// some breathing room under the info line instead of
+			// sitting flush against it.
+			out = append(out, "")
 			return out
 		}
 	}
-	// Text fallback.
-	return []string{v.Theme.FG256(v.Theme.Muted, info)}
+	// Text fallback: same trailing blank for symmetry with the
+	// inline path, so a text-only image placeholder also gets
+	// a little space below before the next content.
+	return []string{v.Theme.FG256(v.Theme.Muted, info), ""}
 }
 
 // looksLikeNumberedFile returns true when text matches the `read`
