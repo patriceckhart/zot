@@ -62,6 +62,13 @@ func (r *Renderer) Clear() {
 	_, _ = io.WriteString(r.out, SeqClearScreen)
 }
 
+// Invalidate forces a full repaint on the next Draw without clearing the
+// whole terminal first. Useful when the cached diff is unreliable but a
+// visible full-screen flash would be too distracting.
+func (r *Renderer) Invalidate() {
+	r.prev = nil
+}
+
 // Draw updates the terminal so that the visible frame ends with the
 // given lines (bottom-aligned). cursorRow/cursorCol are offsets within
 // the lines slice indicating where to place the terminal cursor; use

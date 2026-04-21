@@ -530,6 +530,13 @@ func (i *Interactive) scrollBy(delta int) {
 		i.parkedTurn = 0
 		i.parkedTotal = 0
 	}
+	if i.rend != nil {
+		// VS Code's terminal is especially prone to leaving stray
+		// wrapped-character fragments behind during scroll-driven
+		// viewport changes. Force a full repaint on scroll, but
+		// avoid a whole-screen clear because that visibly flickers.
+		i.rend.Invalidate()
+	}
 	i.mu.Unlock()
 	i.invalidate()
 }
@@ -540,6 +547,9 @@ func (i *Interactive) scrollToBottom() {
 	i.scrollOffset = 0
 	i.parkedTurn = 0
 	i.parkedTotal = 0
+	if i.rend != nil {
+		i.rend.Invalidate()
+	}
 	i.mu.Unlock()
 	i.invalidate()
 }
