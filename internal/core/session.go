@@ -143,12 +143,103 @@ func OpenSession(path string) (*Session, []provider.Message, error) {
 	if err := sc.Err(); err != nil {
 		return nil, nil, err
 	}
+	messages = repairToolUseResultPairs(messages)
 	out, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, nil, err
 	}
 	s := &Session{ID: meta.ID, Path: path, Meta: meta, writer: out, buf: bufio.NewWriter(out)}
 	return s, messages, nil
+}
+
+// repairToolUseResultPairs walks a restored transcript and
+// synthesises stub tool_result blocks for any assistant
+// tool_use blocks that aren't paired with a matching result in
+// the next message. Anthropic (and OpenAI via the responses API)
+// reject any request whose transcript leaves a tool_use without
+// its matching tool_result immediately after, with errors like:
+//
+//	messages.8: `tool_use` ids were found without `tool_result`
+//	blocks immediately after
+//
+// Corruption gets into the transcript two ways we know of:
+//
+//   - Older zot builds that persisted the assistant tool_use row
+//     before the tool_result row, then crashed between the two.
+//   - Abort paths in older builds that didn't drop the mid-turn
+//     assistant message cleanly.
+//
+// Rather than change runtime semantics (which would risk hiding a
+// real bug), we scrub on load: any unmatched tool_use gets a stub
+// tool_result injected as a RoleTool message so the next
+// outbound request passes the provider's validity check. The stub
+// reads "tool call was aborted; no result recorded." so the
+// model can see what happened and decide whether to retry.
+//
+// Runs once per OpenSession call. No cost on the hot path.
+func repairToolUseResultPairs(msgs []provider.Message) []provider.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	out := make([]provider.Message, 0, len(msgs)+2)
+	for i, m := range msgs {
+		out = append(out, m)
+		if m.Role != provider.RoleAssistant {
+			continue
+		}
+		// Collect tool_use ids in this assistant message.
+		var ids []string
+		for _, c := range m.Content {
+			if tc, ok := c.(provider.ToolCallBlock); ok {
+				ids = append(ids, tc.ID)
+			}
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		// Look at the next message (if any) and collect tool_result
+		// CallIDs it covers.
+		have := map[string]bool{}
+		if i+1 < len(msgs) && msgs[i+1].Role == provider.RoleTool {
+			for _, c := range msgs[i+1].Content {
+				if tr, ok := c.(provider.ToolResultBlock); ok {
+					have[tr.CallID] = true
+				}
+			}
+		}
+		// Build stubs for any missing id.
+		var stubs []provider.Content
+		for _, id := range ids {
+			if have[id] {
+				continue
+			}
+			stubs = append(stubs, provider.ToolResultBlock{
+				CallID:  id,
+				Content: []provider.Content{provider.TextBlock{Text: "tool call was aborted; no result recorded."}},
+				IsError: true,
+			})
+		}
+		if len(stubs) == 0 {
+			continue
+		}
+		// Merge into the next tool-role message if present,
+		// otherwise insert a synthetic one right after the
+		// assistant message. Merging keeps the tool-role row
+		// count stable; inserting handles the common case where
+		// no tool message was persisted at all.
+		if i+1 < len(msgs) && msgs[i+1].Role == provider.RoleTool {
+			msgs[i+1].Content = append(msgs[i+1].Content, stubs...)
+			// We already appended m to out; the modified next
+			// message will be appended on the following iteration.
+			continue
+		}
+		out = append(out, provider.Message{
+			Role:    provider.RoleTool,
+			Content: stubs,
+			Time:    m.Time,
+		})
+	}
+	return out
 }
 
 // LatestSession returns the most recent session file for cwd, or "".
