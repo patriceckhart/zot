@@ -181,6 +181,18 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 			toolMsg, hadError := a.executeTools(ctx, assistantMsg, sink)
 			a.mu.Lock()
 			a.messages = append(a.messages, toolMsg)
+			// OpenAI's chat-completions tool message shape is text-centric.
+			// Vision models reliably consume images when they arrive as user
+			// content, so when a tool result contains images we mirror them
+			// into a synthetic user message immediately after the tool result.
+			// This keeps the transcript self-contained for providers that can
+			// see image blocks in tool messages while making OpenAI vision
+			// models actually receive the image bytes.
+			if a.Client != nil && a.Client.Name() == "openai" {
+				if mirror := mirrorToolImagesAsUser(toolMsg); len(mirror.Content) > 0 {
+					a.messages = append(a.messages, mirror)
+				}
+			}
 			a.mu.Unlock()
 			// If context was cancelled during tool execution, bail out.
 			if err := ctx.Err(); err != nil {
@@ -388,6 +400,35 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, sink 
 // extractText concatenates all TextBlock content in a message. Used
 // by BeforeAssistantMessage so guards see a single string instead of
 // having to walk provider.Content themselves.
+func mirrorToolImagesAsUser(msg provider.Message) provider.Message {
+	var content []provider.Content
+	for _, c := range msg.Content {
+		tr, ok := c.(provider.ToolResultBlock)
+		if !ok {
+			continue
+		}
+		for _, inner := range tr.Content {
+			switch v := inner.(type) {
+			case provider.TextBlock:
+				// Keep short textual context so the model understands why
+				// the images appeared, but don't duplicate giant read
+				// outputs verbatim.
+				if len(v.Text) > 0 && len(v.Text) <= 500 {
+					content = append(content, v)
+				}
+			case provider.ImageBlock:
+				content = append(content, v)
+			}
+		}
+	}
+	if len(content) == 0 {
+		return provider.Message{}
+	}
+	prefix := provider.TextBlock{Text: "Tool output included the following image content:"}
+	content = append([]provider.Content{prefix}, content...)
+	return provider.Message{Role: provider.RoleUser, Content: content, Time: time.Now()}
+}
+
 func extractText(msg provider.Message) string {
 	var out string
 	for _, c := range msg.Content {

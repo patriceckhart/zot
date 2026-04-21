@@ -174,25 +174,16 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 			}
 			out.Messages = append(out.Messages, am)
 		case RoleTool:
-			// Each ToolResultBlock becomes its own tool message.
+			// Each ToolResultBlock becomes its own tool message. Preserve
+			// image blocks for vision-capable OpenAI models instead of
+			// flattening the tool output to plain text.
 			for _, b := range msg.Content {
 				if tr, ok := b.(ToolResultBlock); ok {
-					var text strings.Builder
-					for _, inner := range tr.Content {
-						if tb, ok := inner.(TextBlock); ok {
-							if text.Len() > 0 {
-								text.WriteString("\n")
-							}
-							text.WriteString(tb.Text)
-						}
-					}
-					if tr.IsError && text.Len() > 0 {
-						text.WriteString(" [error]")
-					}
+					content := buildOAIToolContent(tr.Content, tr.IsError)
 					out.Messages = append(out.Messages, oaiMessage{
 						Role:       "tool",
 						ToolCallID: tr.CallID,
-						Content:    text.String(),
+						Content:    content,
 					})
 				}
 			}
@@ -234,6 +225,36 @@ func buildOAIUserContent(blocks []Content) interface{} {
 		}
 		return sb.String()
 	}
+	return buildOAIContentBlocks(blocks, false)
+}
+
+func buildOAIToolContent(blocks []Content, isError bool) interface{} {
+	hasImage := false
+	for _, b := range blocks {
+		if _, ok := b.(ImageBlock); ok {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		var sb strings.Builder
+		for _, b := range blocks {
+			if tb, ok := b.(TextBlock); ok {
+				if sb.Len() > 0 {
+					sb.WriteString("\n")
+				}
+				sb.WriteString(tb.Text)
+			}
+		}
+		if isError && sb.Len() > 0 {
+			sb.WriteString(" [error]")
+		}
+		return sb.String()
+	}
+	return buildOAIContentBlocks(blocks, isError)
+}
+
+func buildOAIContentBlocks(blocks []Content, isError bool) []interface{} {
 	var arr []interface{}
 	for _, b := range blocks {
 		switch v := b.(type) {
@@ -245,6 +266,9 @@ func buildOAIUserContent(blocks []Content) interface{} {
 			img.ImageURL.URL = "data:" + v.MimeType + ";base64," + base64.StdEncoding.EncodeToString(v.Data)
 			arr = append(arr, img)
 		}
+	}
+	if isError {
+		arr = append(arr, oaiContentText{Type: "text", Text: "[error]"})
 	}
 	return arr
 }

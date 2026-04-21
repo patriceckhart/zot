@@ -560,7 +560,7 @@ func (i *Interactive) redraw() {
 
 	cols, _ := i.cfg.Terminal.Size()
 	if i.agent != nil {
-		i.view.Messages = i.agent.Messages()
+		i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
 	} else {
 		i.view.Messages = nil
 	}
@@ -894,6 +894,33 @@ func alignSliceStartToImageBlock(chat []string, start, end int) int {
 		}
 	}
 	return start
+}
+
+const hiddenOpenAIImageMirrorPrefix = "Tool output included the following image content:"
+
+func filterHiddenTranscriptMessages(msgs []provider.Message) []provider.Message {
+	if len(msgs) == 0 {
+		return nil
+	}
+	out := make([]provider.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if isHiddenTranscriptMessage(m) {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func isHiddenTranscriptMessage(m provider.Message) bool {
+	if m.Role != provider.RoleUser || len(m.Content) == 0 {
+		return false
+	}
+	tb, ok := m.Content[0].(provider.TextBlock)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(tb.Text) == hiddenOpenAIImageMirrorPrefix
 }
 
 func clipBottomClippedImages(lines []string) []string {
