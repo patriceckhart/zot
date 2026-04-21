@@ -1,20 +1,32 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
 
-// TestPasteCollapseInsertsPlaceholder verifies that a multi-line
-// paste gets collapsed to the "[paste #N +L lines]" placeholder
-// in the editor buffer, leaving the full body behind the scenes.
-func TestPasteCollapseInsertsPlaceholder(t *testing.T) {
+// makeLines returns a body with n lines of short text — useful for
+// exercising the line-count trigger without also tripping the
+// character-count one.
+func makeLines(n int) string {
+	parts := make([]string, n)
+	for i := range parts {
+		parts[i] = fmt.Sprintf("line %d", i+1)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// TestPasteCollapseLineTrigger verifies that a paste with more than
+// ten lines gets collapsed to the "+L lines" placeholder shape.
+// The full body is preserved and expanded back by SubmitValue.
+func TestPasteCollapseLineTrigger(t *testing.T) {
 	e := NewEditor("▌ ")
-	body := "line1\nline2\nline3\nline4"
+	body := makeLines(11)
 	e.HandleKey(Key{Kind: KeyPaste, Paste: body})
 
 	got := e.Value()
-	want := "[pasted text #1 +4 lines]"
+	want := "[pasted text #1 +11 lines]"
 	if got != want {
 		t.Fatalf("editor Value: want %q, got %q", want, got)
 	}
@@ -23,38 +35,79 @@ func TestPasteCollapseInsertsPlaceholder(t *testing.T) {
 	}
 }
 
-// TestPasteCollapseSingleLineFallthrough ensures short pastes are
-// NOT collapsed — single-line drag-drop file paths and short
-// two-line snippets should appear inline so the user can edit
-// them in place.
-func TestPasteCollapseSingleLineFallthrough(t *testing.T) {
+// TestPasteCollapseCharTrigger verifies that a paste with more than
+// 1000 characters but few enough lines collapses to the "C chars"
+// placeholder shape (long single-line / near-single-line dumps).
+func TestPasteCollapseCharTrigger(t *testing.T) {
 	e := NewEditor("▌ ")
-	e.HandleKey(Key{Kind: KeyPaste, Paste: "hello world"})
-	if strings.Contains(e.Value(), "[pasted text #") {
-		t.Errorf("single-line paste should not collapse, got %q", e.Value())
-	}
+	body := strings.Repeat("a", 1500) // 1 line, 1500 chars
+	e.HandleKey(Key{Kind: KeyPaste, Paste: body})
 
-	e2 := NewEditor("▌ ")
-	e2.HandleKey(Key{Kind: KeyPaste, Paste: "line1\nline2"})
-	if strings.Contains(e2.Value(), "[pasted text #") {
-		t.Errorf("two-line paste should not collapse, got %q", e2.Value())
+	got := e.Value()
+	want := "[pasted text #1 1500 chars]"
+	if got != want {
+		t.Fatalf("editor Value: want %q, got %q", want, got)
+	}
+	if e.SubmitValue() != body {
+		t.Fatalf("SubmitValue didn't expand placeholder: got %q", e.SubmitValue())
 	}
 }
 
-// TestPasteCollapseSequentialIDs makes sure two separate pastes get
-// distinct ids and both expand correctly in SubmitValue.
+// TestPasteCollapseLinePrecedence verifies that when a paste trips
+// both thresholds, the line-count marker wins. "12 lines, 4000
+// chars" should read as "+12 lines", not "4000 chars".
+func TestPasteCollapseLinePrecedence(t *testing.T) {
+	e := NewEditor("▌ ")
+	// 12 lines, each 400 chars = 12 lines, ~4800 chars.
+	parts := make([]string, 12)
+	for i := range parts {
+		parts[i] = strings.Repeat("x", 400)
+	}
+	body := strings.Join(parts, "\n")
+	e.HandleKey(Key{Kind: KeyPaste, Paste: body})
+
+	if !strings.HasPrefix(e.Value(), "[pasted text #1 +12 lines") {
+		t.Errorf("want line-trigger placeholder, got %q", e.Value())
+	}
+}
+
+// TestPasteCollapseFallthrough ensures short pastes (under both
+// thresholds) are NOT collapsed — 1-10 lines with < 1000 chars
+// should appear inline so the user can edit them in place.
+func TestPasteCollapseFallthrough(t *testing.T) {
+	cases := map[string]string{
+		"single line":          "hello world",
+		"two lines":            "line1\nline2",
+		"ten lines (at limit)": makeLines(10),
+		"exactly 1000 chars":   strings.Repeat("a", 1000),
+		"multiline under caps": "aaa\nbbb\nccc\nddd\neee",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := NewEditor("▌ ")
+			e.HandleKey(Key{Kind: KeyPaste, Paste: body})
+			if strings.Contains(e.Value(), "[pasted text #") {
+				t.Errorf("%s should NOT collapse, got %q", name, e.Value())
+			}
+		})
+	}
+}
+
+// TestPasteCollapseSequentialIDs makes sure two separate large
+// pastes get distinct ids and both expand correctly in
+// SubmitValue, even when they use different placeholder shapes.
 func TestPasteCollapseSequentialIDs(t *testing.T) {
 	e := NewEditor("▌ ")
-	a := "aaa\nbbb\nccc"
-	b := "xxx\nyyy\nzzz"
+	a := makeLines(12)             // line trigger
+	b := strings.Repeat("y", 1500) // char trigger, single line
 	e.HandleKey(Key{Kind: KeyPaste, Paste: a})
 	e.Insert(" ")
 	e.HandleKey(Key{Kind: KeyPaste, Paste: b})
 
 	visible := e.Value()
-	if !strings.Contains(visible, "[pasted text #1 +3 lines]") ||
-		!strings.Contains(visible, "[pasted text #2 +3 lines]") {
-		t.Fatalf("expected two placeholders in %q", visible)
+	if !strings.Contains(visible, "[pasted text #1 +12 lines]") ||
+		!strings.Contains(visible, "[pasted text #2 1500 chars]") {
+		t.Fatalf("expected mixed-shape placeholders in %q", visible)
 	}
 
 	full := e.SubmitValue()
@@ -69,11 +122,11 @@ func TestPasteCollapseSequentialIDs(t *testing.T) {
 // the wrong body).
 func TestPasteCollapseClearResetsMap(t *testing.T) {
 	e := NewEditor("▌ ")
-	e.HandleKey(Key{Kind: KeyPaste, Paste: "a\nb\nc"})
+	e.HandleKey(Key{Kind: KeyPaste, Paste: makeLines(11)})
 	e.Clear()
 
 	// A fresh paste must start at id #1 again.
-	e.HandleKey(Key{Kind: KeyPaste, Paste: "d\ne\nf"})
+	e.HandleKey(Key{Kind: KeyPaste, Paste: makeLines(11)})
 	if !strings.Contains(e.Value(), "[pasted text #1 ") {
 		t.Errorf("Clear didn't reset pasteSeq: %q", e.Value())
 	}

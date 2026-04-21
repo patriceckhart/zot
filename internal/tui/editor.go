@@ -172,8 +172,7 @@ func (e *Editor) HandleKey(k Key) (submit bool) {
 			e.pasteSeq++
 			id := e.pasteSeq
 			e.pastes[id] = k.Paste
-			placeholder := fmt.Sprintf("[pasted text #%d +%d lines]", id, countLines(k.Paste))
-			e.insert(placeholder)
+			e.insert(formatPastePlaceholder(id, k.Paste))
 		} else {
 			// macOS Terminal / iTerm / Ghostty deliver drag-dropped
 			// files as bracketed-paste text. Detect that pattern
@@ -958,13 +957,41 @@ func max(a, b int) int {
 	return b
 }
 
+// pasteCollapseLineThreshold and pasteCollapseCharThreshold govern
+// when a bracketed paste gets collapsed to a [pasted text #N …]
+// placeholder instead of being inserted inline. Either trigger
+// alone is enough — a 500-line log dump and a 1200-character
+// one-line log entry both bloat the editor in ways the user
+// doesn't want to scroll through while composing a prompt.
+const (
+	pasteCollapseLineThreshold = 10
+	pasteCollapseCharThreshold = 1000
+)
+
 // pasteShouldCollapse reports whether a pasted chunk is big enough
 // to deserve a placeholder token instead of being inserted verbatim.
-// Two or more newlines (i.e. three-plus lines) is the cutoff: that
-// covers real multi-line code/log pastes while leaving single-line
-// file-drop paths and two-line copy-pastes of a sentence alone.
+// Collapse on > 10 lines OR > 1000 characters, whichever fires
+// first.
 func pasteShouldCollapse(s string) bool {
-	return strings.Count(s, "\n") >= 2
+	return countLines(s) > pasteCollapseLineThreshold || len(s) > pasteCollapseCharThreshold
+}
+
+// formatPastePlaceholder builds the visible marker for a
+// collapsed paste. Two shapes:
+//
+//	[pasted text #N +L lines]  — used when the line count is the
+//	                             trigger (multi-line dumps)
+//	[pasted text #N C chars]   — used when the character count is
+//	                             the trigger (long single-line
+//	                             or near-single-line pastes)
+//
+// Line-triggered takes precedence so a 12-line 4000-char paste
+// reads as "+12 lines", not "4000 chars".
+func formatPastePlaceholder(id int, body string) string {
+	if countLines(body) > pasteCollapseLineThreshold {
+		return fmt.Sprintf("[pasted text #%d +%d lines]", id, countLines(body))
+	}
+	return fmt.Sprintf("[pasted text #%d %d chars]", id, len(body))
 }
 
 // countLines returns the number of visual lines in s. A trailing
@@ -982,10 +1009,16 @@ func countLines(s string) int {
 	return n
 }
 
-// pastePlaceholderRE matches the "[pasted text #N +L lines]" token
-// that collapsed pastes leave in the editor. Capture group 1 is
-// the numeric id used to look up the full body in e.pastes.
-var pastePlaceholderRE = regexp.MustCompile(`\[pasted text #(\d+) \+\d+ lines?\]`)
+// pastePlaceholderRE matches both placeholder shapes the editor
+// emits for a collapsed paste:
+//
+//	[pasted text #N +L lines]   — multi-line trigger
+//	[pasted text #N C chars]    — long-char trigger
+//
+// Capture group 1 is the numeric id used to look up the full
+// body in e.pastes; the rest of the token is free-form and gets
+// discarded during expansion.
+var pastePlaceholderRE = regexp.MustCompile(`\[pasted text #(\d+) (?:\+\d+ lines?|\d+ chars?)\]`)
 
 // expandPastePlaceholders returns raw with every paste token
 // swapped for the body stored under its id in pastes. Tokens
