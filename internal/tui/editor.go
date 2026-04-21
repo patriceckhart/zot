@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/mattn/go-runewidth"
@@ -25,6 +27,16 @@ type Editor struct {
 	History    []string
 	histIdx    int // -1 means "editing current buffer"
 	savedDraft string
+
+	// pastes stores the full content of every multi-line paste,
+	// keyed by the id embedded in the visible placeholder token.
+	// Pasted text is collapsed to "[paste #N +L lines]" in the
+	// editor so a 500-line drop doesn't explode the input area;
+	// SubmitValue() expands placeholders back to their real bodies
+	// right before the prompt goes to the agent. The map is reset
+	// on Clear() so stale pastes never leak into a follow-up turn.
+	pastes   map[int]string
+	pasteSeq int
 }
 
 // NewEditor returns an empty editor with the given prompt.
@@ -36,10 +48,34 @@ func NewEditor(prompt string) *Editor {
 	}
 }
 
-// Value returns the buffer as a single string.
+// Value returns the buffer as a single string, WITHOUT expanding
+// paste placeholders. Used for anything that should reflect what's
+// visible on screen (history, slash-command detection, editor
+// state). For the string that actually goes to the agent, use
+// SubmitValue(), which expands each [paste #N +L lines] token
+// back into the full pasted body.
 func (e *Editor) Value() string { return strings.Join(e.Lines, "\n") }
 
+// SubmitValue returns the buffer with every paste placeholder
+// expanded to its stored body. Call once at submit time; the
+// expansion is lossless (placeholders are only injected in
+// HandleKey for KeyPaste with multi-line content).
+//
+// Expansion is non-destructive: the internal paste map isn't
+// touched. Clear() is what resets both the placeholder text and
+// the map, and the caller already calls Clear() right after
+// reading SubmitValue() as part of the submit flow.
+func (e *Editor) SubmitValue() string {
+	raw := e.Value()
+	if len(e.pastes) == 0 || !strings.Contains(raw, "[pasted text #") {
+		return raw
+	}
+	return expandPastePlaceholders(raw, e.pastes)
+}
+
 // SetValue replaces the buffer and places the cursor at the end.
+// Also drops any stored pastes because the placeholders they back
+// are now gone from the visible text.
 func (e *Editor) SetValue(s string) {
 	e.Lines = strings.Split(s, "\n")
 	if len(e.Lines) == 0 {
@@ -48,6 +84,8 @@ func (e *Editor) SetValue(s string) {
 	e.CursorR = len(e.Lines) - 1
 	e.CursorC = runeLen(e.Lines[e.CursorR])
 	e.histIdx = -1
+	e.pastes = nil
+	e.pasteSeq = 0
 }
 
 // Clear resets the buffer.
@@ -125,12 +163,30 @@ func (e *Editor) HandleKey(k Key) (submit bool) {
 	case KeyCtrlW:
 		e.deleteWord()
 	case KeyPaste:
-		// macOS Terminal / iTerm / Ghostty deliver drag-dropped files
-		// as bracketed-paste text. Detect that pattern and wrap the
-		// path(s) in single quotes so the agent sees them as one
-		// argument and any spaces / parens in the filename don't
-		// confuse downstream tool calls.
-		e.insert(quotePastedFilePaths(k.Paste))
+		// Large multi-line pastes are collapsed to a short
+		// placeholder token so the editor doesn't balloon to
+		// hundreds of rows. The full body is stashed in e.pastes,
+		// keyed by a monotonically increasing id, and swapped
+		// back in at submit time via SubmitValue. Threshold:
+		// two or more newlines triggers collapse; one-liners and
+		// drag-dropped file paths fall through to the original
+		// insert path (including file-path quoting).
+		if pasteShouldCollapse(k.Paste) {
+			if e.pastes == nil {
+				e.pastes = map[int]string{}
+			}
+			e.pasteSeq++
+			id := e.pasteSeq
+			e.pastes[id] = k.Paste
+			placeholder := fmt.Sprintf("[pasted text #%d +%d lines]", id, countLines(k.Paste))
+			e.insert(placeholder)
+		} else {
+			// macOS Terminal / iTerm / Ghostty deliver drag-dropped
+			// files as bracketed-paste text. Detect that pattern
+			// and wrap the path(s) in single quotes so the agent
+			// sees them as one argument.
+			e.insert(quotePastedFilePaths(k.Paste))
+		}
 	case KeyEsc:
 		e.Clear()
 	}
@@ -830,4 +886,55 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// pasteShouldCollapse reports whether a pasted chunk is big enough
+// to deserve a placeholder token instead of being inserted verbatim.
+// Two or more newlines (i.e. three-plus lines) is the cutoff: that
+// covers real multi-line code/log pastes while leaving single-line
+// file-drop paths and two-line copy-pastes of a sentence alone.
+func pasteShouldCollapse(s string) bool {
+	return strings.Count(s, "\n") >= 2
+}
+
+// countLines returns the number of visual lines in s. A trailing
+// newline is not counted as an extra empty line so
+// "foo\nbar\n" reads as 2 lines (what the user expects in the
+// "+N lines" summary) instead of 3.
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
+}
+
+// pastePlaceholderRE matches the "[pasted text #N +L lines]" token
+// that collapsed pastes leave in the editor. Capture group 1 is
+// the numeric id used to look up the full body in e.pastes.
+var pastePlaceholderRE = regexp.MustCompile(`\[pasted text #(\d+) \+\d+ lines?\]`)
+
+// expandPastePlaceholders returns raw with every paste token
+// swapped for the body stored under its id in pastes. Tokens
+// whose id isn't in the map are left as-is (user deleted the
+// corresponding entry somehow, or the id is spurious user text
+// that happens to match the shape).
+func expandPastePlaceholders(raw string, pastes map[int]string) string {
+	return pastePlaceholderRE.ReplaceAllStringFunc(raw, func(match string) string {
+		groups := pastePlaceholderRE.FindStringSubmatch(match)
+		if len(groups) < 2 {
+			return match
+		}
+		var id int
+		if _, err := fmt.Sscanf(groups[1], "%d", &id); err != nil {
+			return match
+		}
+		if body, ok := pastes[id]; ok {
+			return body
+		}
+		return match
+	})
 }

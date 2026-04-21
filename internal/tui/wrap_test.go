@@ -34,9 +34,13 @@ func TestWrapLineFirstContinuationHasIndent(t *testing.T) {
 // TestEditorCursorAfterMultilinePaste is the downstream test: the
 // rendered editor cursor must land at the logical end of the paste,
 // with its visual column equal to leadW + runewidth(last-line).
+//
+// Uses Insert directly to bypass the KeyPaste collapse path (which
+// would turn this into a placeholder token); the test's concern is
+// wrap / cursor math, not paste behaviour.
 func TestEditorCursorAfterMultilinePaste(t *testing.T) {
 	e := NewEditor("▌ ")
-	e.HandleKey(Key{Kind: KeyPaste, Paste: "aaa\nbbb\nccccc"})
+	e.Insert("aaa\nbbb\nccccc")
 
 	// Logical end: last line "ccccc", cursor past its 5 runes.
 	if e.CursorR != 2 || e.CursorC != 5 {
@@ -64,7 +68,9 @@ func TestEditorCursorAfterMultilinePaste(t *testing.T) {
 // terminal cursor drifted when typed after pasting a wrapped path.
 func TestEditorCursorAfterLongPasteWithWrap(t *testing.T) {
 	e := NewEditor("▌ ")
-	e.HandleKey(Key{Kind: KeyPaste, Paste: "this is a very long line that should wrap\nshort"})
+	// Direct Insert bypasses the multi-line collapse path; the
+	// concern here is wrap-column math, not the collapse logic.
+	e.Insert("this is a very long line that should wrap\nshort")
 
 	lines, row, col := e.Render(30)
 
