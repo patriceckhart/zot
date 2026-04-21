@@ -120,7 +120,7 @@ func (d *modelDialog) Render(th tui.Theme, width int) []string {
 			hint = fmt.Sprintf("filter: %s (%d matches)", d.query, len(d.view))
 		}
 	} else {
-		hint += " · type to filter"
+		hint += " - type to filter"
 	}
 	lines = append(lines, th.FG256(th.Muted, hint))
 

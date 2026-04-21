@@ -841,7 +841,7 @@ func (v *View) renderDiffRow(line string, width, color int, lineNo int, mark byt
 func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
 	w, h := ImageDimensions(b.Data)
 	kb := len(b.Data) / 1024
-	info := fmt.Sprintf("  image · %s · %dx%d · %d KB", b.MimeType, w, h, kb)
+	info := fmt.Sprintf("  image - %s - %dx%d - %d KB", b.MimeType, w, h, kb)
 
 	if v.ImageProto != ImageProtocolNone {
 		// Clamp rendered width so the image never overflows the chat
@@ -1293,7 +1293,7 @@ type StatusBarParams struct {
 	AutoCompacting bool
 
 	// Telegram true when the telegram bridge is connected. Adds a
-	// small "· tg ·" tag to the cwd line so the user can tell at a
+	// small "- tg -" tag to the cwd line so the user can tell at a
 	// glance that dms are being mirrored into this session.
 	Telegram bool
 
@@ -1387,13 +1387,13 @@ func StatusBar(p StatusBarParams) []string {
 	cwd := shortenHome(p.CWD)
 	tags := ""
 	if p.Locked {
-		tags += "· jailed "
+		tags += "- jailed "
 	}
 	if p.Telegram {
-		tags += "· tg "
+		tags += "- tg "
 	}
 	if tags != "" && cwd != "" {
-		cwd = tags + "· " + cwd
+		cwd = tags + "- " + cwd
 	}
 
 	primary := leftBuilder.String()

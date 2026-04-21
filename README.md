@@ -357,7 +357,7 @@ Type `/telegram` in the running TUI to open a picker with **connect**, **disconn
 - DMs from the paired user become prompts in the **same** session you're typing in, so you can continue a conversation from the terminal on your phone and back again.
 - Messages you type in the TUI are mirrored into the Telegram thread prefixed `you: …` and the assistant's replies come back prefixed `zot: …`, so the Telegram chat stays a complete record of both sides of the conversation.
 - Messages sent from Telegram show up as your own bubble in Telegram (no mirror) and the assistant's reply to them comes back bare (no prefix).
-- The status bar shows a `· tg ·` tag while the bridge is active.
+- The status bar shows a `- tg -` tag while the bridge is active.
 - `/telegram connect` / `/telegram disconnect` / `/telegram status` (or `/tg`) also work as direct commands without the picker.
 
 The in-TUI bridge refuses to start while the standalone daemon (below) is running, since two concurrent long-poll consumers of the same bot race on every update and silently drop messages.

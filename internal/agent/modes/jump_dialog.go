@@ -111,9 +111,9 @@ func (d *jumpDialog) Render(th tui.Theme, width int) []string {
 	}
 
 	// Status line: shows the active filter, visible count, and hints.
-	hint := "↑/↓ pick · enter jump · esc cancel · type to filter"
+	hint := "↑/↓ pick - enter jump - esc cancel - type to filter"
 	if d.filter != "" {
-		hint = fmt.Sprintf("filter: %q · %d match · ", d.filter, len(d.visible)) + hint
+		hint = fmt.Sprintf("filter: %q - %d match - ", d.filter, len(d.visible)) + hint
 	}
 	lines = append(lines, th.FG256(th.Muted, hint))
 
@@ -266,7 +266,7 @@ func firstLineOfUserMessage(m provider.Message) string {
 				}
 			}
 		case provider.ImageBlock:
-			return fmt.Sprintf("[image · %s · %d bytes]", b.MimeType, len(b.Data))
+			return fmt.Sprintf("[image - %s - %d bytes]", b.MimeType, len(b.Data))
 		}
 	}
 	return "(empty)"

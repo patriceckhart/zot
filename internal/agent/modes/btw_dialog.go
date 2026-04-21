@@ -297,7 +297,7 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 		// Match the main chat busy prefix shape: spinner glyph,
 		// rotating funny-line, elapsed seconds, then a muted hint
 		// that esc cancels.
-		prefix := fmt.Sprintf("%s %s · %s",
+		prefix := fmt.Sprintf("%s %s - %s",
 			th.FG256(th.Assistant, d.spin.Frame()),
 			th.FG256(th.Assistant, d.spin.Message()),
 			th.FG256(th.Muted, d.spin.Elapsed().String()),

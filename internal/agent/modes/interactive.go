@@ -719,7 +719,7 @@ func (i *Interactive) redraw() {
 	// drifts every second and shouldn't grab focus.
 	var busyPrefix string
 	if i.busy {
-		busyPrefix = fmt.Sprintf("%s %s · %s",
+		busyPrefix = fmt.Sprintf("%s %s - %s",
 			i.cfg.Theme.FG256(i.cfg.Theme.Assistant, i.spin.Frame()),
 			i.cfg.Theme.FG256(i.cfg.Theme.Assistant, i.spin.Message()),
 			i.cfg.Theme.FG256(i.cfg.Theme.Muted, i.spin.Elapsed().String()),
@@ -805,7 +805,7 @@ func (i *Interactive) redraw() {
 	if i.scrollOffset > 0 && len(visibleChat) > 0 {
 		var text string
 		if i.parkedTurn > 0 && i.parkedTotal > 0 {
-			text = fmt.Sprintf("  ↑ viewing turn %d of %d · %d lines more below (pgdn / end)",
+			text = fmt.Sprintf("  ↑ viewing turn %d of %d - %d lines more below (pgdn / end)",
 				i.parkedTurn, i.parkedTotal, i.scrollOffset)
 		} else {
 			text = fmt.Sprintf("  ↑ %d lines more below (end to jump)", i.scrollOffset)
@@ -1929,7 +1929,7 @@ func (i *Interactive) scrollToLastTurn(msgs []provider.Message) {
 	i.mu.Lock()
 	i.scrollOffset = offset
 	// Mark the parked-turn footer so the user sees "viewing turn N of
-	// M · pgdn to catch up" — same affordance as /jump. Tells them at
+	// M - pgdn to catch up" — same affordance as /jump. Tells them at
 	// a glance that they're looking at history, not the live tail.
 	if offset > 0 {
 		i.parkedTurn = turnNo
@@ -2603,12 +2603,12 @@ func (i *Interactive) telegramStatus() {
 			msg += " as @" + s.Username
 		}
 		if s.PairedID != 0 {
-			msg += fmt.Sprintf(" · paired with user %d", s.PairedID)
+			msg += fmt.Sprintf(" - paired with user %d", s.PairedID)
 		} else {
-			msg += " · awaiting pairing"
+			msg += " - awaiting pairing"
 		}
 	} else if pid, alive, _ := telegram.IsRunning(i.cfg.ZotHome); alive && pid > 0 {
-		msg = fmt.Sprintf("telegram: background daemon running (pid %d) · /telegram connect won't work until you stop it", pid)
+		msg = fmt.Sprintf("telegram: background daemon running (pid %d) - /telegram connect won't work until you stop it", pid)
 	} else {
 		cfg, _ := telegram.LoadConfig(i.cfg.ZotHome)
 		if cfg.BotToken == "" {

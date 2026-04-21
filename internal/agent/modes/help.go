@@ -13,8 +13,8 @@ var helpKeyRows = [][2]string{
 	{"enter", "submit the current input"},
 	{"alt+enter", "insert a newline"},
 	{"tab", "complete the highlighted slash command"},
-	{"esc", "cancel the current turn (while busy) · clear the input (while idle)"},
-	{"ctrl+c", "exit (while idle) · cancel the current turn (while busy)"},
+	{"esc", "cancel the current turn (while busy) - clear the input (while idle)"},
+	{"ctrl+c", "exit (while idle) - cancel the current turn (while busy)"},
 	{"ctrl+w", "delete previous word"},
 	{"alt+backspace", "delete previous word (same as ctrl+w)"},
 	{"ctrl+u / ctrl+k", "delete to start / end of line"},
@@ -23,7 +23,7 @@ var helpKeyRows = [][2]string{
 	{"ctrl+l", "redraw the screen"},
 	{"ctrl+o", "expand / collapse long tool results"},
 	{"pgup / pgdn", "scroll the chat one page up / down"},
-	{"up / down", "scroll by 3 lines (when input is empty) · prompt history (otherwise)"},
+	{"up / down", "scroll by 3 lines (when input is empty) - prompt history (otherwise)"},
 }
 
 // renderHelpBlock builds the friendly /help view. Uses the shared
@@ -42,7 +42,7 @@ func renderHelpBlock(th tui.Theme, width int) []string {
 	}
 
 	// Label column width uses display cells, not byte length, so
-	// single-cell multibyte runes (← → · …) don't over-count and leave
+	// single-cell multibyte runes (← → - …) don't over-count and leave
 	// a raggedy right edge. `len("alt+← / alt+→")` is 17 bytes but
 	// only 13 cells; padding off byte length would either overshoot
 	// (setting labelWidth too high and wasting space on every row)

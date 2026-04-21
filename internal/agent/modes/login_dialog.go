@@ -91,7 +91,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 	case loginStepMethod:
 		opts := []string{
 			"api key",
-			"subscription (claude pro/max · chatgpt plus/pro)",
+			"subscription (claude pro/max - chatgpt plus/pro)",
 		}
 		lines = append(lines, frameHeader(th, "login", width))
 		for _, l := range d.renderStatusLines(th) {
@@ -109,7 +109,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, frameRule(th, width))
 	case loginStepProvider:
 		opts := []string{"anthropic", "openai"}
-		lines = append(lines, frameHeader(th, "login · "+d.method, width))
+		lines = append(lines, frameHeader(th, "login - "+d.method, width))
 		for _, l := range d.renderStatusLines(th) {
 			lines = append(lines, l)
 		}
@@ -134,17 +134,17 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		}
 		lines = append(lines, frameRule(th, width))
 	case loginStepWaiting:
-		lines = append(lines, frameHeader(th, "login · "+d.method+" · "+d.provider, width))
+		lines = append(lines, frameHeader(th, "login - "+d.method+" - "+d.provider, width))
 		lines = append(lines, th.FG256(th.FG, "opening browser..."))
 		lines = append(lines, th.FG256(th.Muted, d.url))
 		lines = append(lines, "")
 		lines = append(lines, th.FG256(th.Muted, "waiting for callback. press esc to cancel."))
 		lines = append(lines, frameRule(th, width))
 	case loginStepDone:
-		title := "login · failed"
+		title := "login - failed"
 		body := th.FG256(th.Error, d.message)
 		if d.success {
-			title = "login · success"
+			title = "login - success"
 			body = th.FG256(th.Tool, fmt.Sprintf("logged in to %s via %s", d.provider, d.method))
 		}
 		lines = append(lines, frameHeader(th, title, width))
