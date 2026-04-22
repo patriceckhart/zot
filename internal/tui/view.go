@@ -435,7 +435,9 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 			case provider.TextBlock:
 				md := RenderMarkdown(b.Text, v.Theme, inner)
 				for _, l := range strings.Split(md, "\n") {
-					lines = append(lines, indent+l)
+					for _, w := range wrapANSILine(l, inner) {
+						lines = append(lines, indent+w)
+					}
 				}
 			case provider.ToolCallBlock:
 				// Rule above the tool header frames the call as a

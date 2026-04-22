@@ -829,6 +829,117 @@ func stripANSI(s string) string {
 	return string(out)
 }
 
+// wrapANSILine folds a string that may contain ANSI CSI escapes so that
+// the visible width of each line stays within limit. Breaks happen on
+// spaces when possible, falling back to mid-token splits for very long
+// unbroken runs. Escape sequences are preserved verbatim and never
+// counted toward the visible column.
+func wrapANSILine(s string, limit int) []string {
+	if limit <= 0 {
+		return []string{s}
+	}
+	if visibleWidth(s) <= limit {
+		return []string{s}
+	}
+	runes := []rune(s)
+	var out []string
+	var line strings.Builder
+	var word strings.Builder
+	lineW := 0
+	wordW := 0
+
+	flushLine := func() {
+		out = append(out, line.String())
+		line.Reset()
+		lineW = 0
+	}
+	flushWord := func() {
+		if word.Len() == 0 {
+			return
+		}
+		if lineW+wordW > limit && lineW > 0 {
+			flushLine()
+		}
+		// If the word alone is bigger than the limit, split it by runes.
+		if wordW > limit {
+			wr := []rune(word.String())
+			for i := 0; i < len(wr); {
+				r := wr[i]
+				if r == 0x1b && i+1 < len(wr) && wr[i+1] == '[' {
+					line.WriteRune(r)
+					line.WriteRune(wr[i+1])
+					i += 2
+					for i < len(wr) {
+						c := wr[i]
+						line.WriteRune(c)
+						i++
+						if c >= 0x40 && c <= 0x7e {
+							break
+						}
+					}
+					continue
+				}
+				rw := runewidth.RuneWidth(r)
+				if lineW+rw > limit && lineW > 0 {
+					flushLine()
+				}
+				line.WriteRune(r)
+				lineW += rw
+				i++
+			}
+			word.Reset()
+			wordW = 0
+			return
+		}
+		line.WriteString(word.String())
+		lineW += wordW
+		word.Reset()
+		wordW = 0
+	}
+
+	for i := 0; i < len(runes); {
+		r := runes[i]
+		if r == 0x1b && i+1 < len(runes) && runes[i+1] == '[' {
+			word.WriteRune(r)
+			word.WriteRune(runes[i+1])
+			i += 2
+			for i < len(runes) {
+				c := runes[i]
+				word.WriteRune(c)
+				i++
+				if c >= 0x40 && c <= 0x7e {
+					break
+				}
+			}
+			continue
+		}
+		if r == ' ' || r == '\t' {
+			flushWord()
+			rw := runewidth.RuneWidth(r)
+			if lineW+rw > limit && lineW > 0 {
+				flushLine()
+				i++
+				continue
+			}
+			line.WriteRune(r)
+			lineW += rw
+			i++
+			continue
+		}
+		word.WriteRune(r)
+		wordW += runewidth.RuneWidth(r)
+		i++
+	}
+	flushWord()
+	if line.Len() > 0 {
+		flushLine()
+	}
+	if len(out) == 0 {
+		out = []string{""}
+	}
+	return out
+}
+
 func wrapLine(s string, width int, cont string) []string {
 	if width <= 0 {
 		return []string{s}
