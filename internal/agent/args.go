@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/patriceckhart/zot/internal/tui"
+	"golang.org/x/term"
 )
 
 // Mode is the CLI run mode.
@@ -238,73 +241,116 @@ func ParseArgs(in []string) (Args, error) {
 	return a, nil
 }
 
-// PrintHelp writes the help text to w (stderr by default).
+// PrintHelp writes the help text to stderr. When stderr is a TTY it
+// uses the same palette as zot's TUI; when redirected it falls back to
+// plain text with no ANSI escapes.
 func PrintHelp(version string) {
-	fmt.Fprintf(os.Stderr, `zot %s — Yet another coding agent harness.
+	th := tui.Dark
+	fd := int(os.Stderr.Fd())
+	useColor := term.IsTerminal(fd)
+	style := func(c int, s string) string {
+		if !useColor {
+			return s
+		}
+		return th.FG256(c, s)
+	}
+	assistant := func(s string) string { return style(th.Assistant, s) }
+	muted := func(s string) string { return style(th.Muted, s) }
+	fg := func(s string) string { return style(th.FG, s) }
+	width := 96
+	if useColor {
+		if w, _, err := term.GetSize(fd); err == nil && w > 20 {
+			width = w
+		}
+	}
+	ruleWidth := width
+	if ruleWidth < 40 {
+		ruleWidth = 40
+	}
+	rule := strings.Repeat("─", ruleWidth)
+	if useColor {
+		rule = muted(rule)
+	}
+	leftW := 34
+	if width >= 120 {
+		leftW = 40
+	}
+	if width >= 140 {
+		leftW = 46
+	}
+	type row struct{ left, right string }
+	section := func(title string, rows ...row) {
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, assistant(title))
+		fmt.Fprintln(os.Stderr, rule)
+		for _, r := range rows {
+			left := r.left
+			if len([]rune(left)) < leftW {
+				left += strings.Repeat(" ", leftW-len([]rune(left)))
+			}
+			fmt.Fprintf(os.Stderr, "  %s    %s\n", fg(left), muted(r.right))
+		}
+	}
 
-usage:
-  zot                          interactive tui
-  zot "prompt"                 interactive, pre-filled prompt
-  zot -p "prompt"              print final text, exit
-  zot --json "prompt"          newline-delimited json events, exit
-  zot rpc                      json-rpc loop on stdin/stdout (see docs/rpc.md)
-  zot ext help                 extension manager help
-  zot ext list                 list installed extensions
-  zot ext install <path|url>   install an extension into $ZOT_HOME/extensions/
-  zot telegram-bot setup       configure a telegram bot (from BotFather)
-  zot telegram-bot run         foreground bridge (ctrl+c to stop)
-  zot telegram-bot start       background bridge (detached)
-  zot telegram-bot stop        stop the background bridge
-  zot telegram-bot logs [-f]   tail the background bridge's log
-  zot telegram-bot status      config + running state
-  zot telegram-bot reset       forget saved token
-  (short alias: zot tg ...)
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, assistant(tui.Bold("▌ i'm zot. yet another coding agent harness.")))
+	fmt.Fprintln(os.Stderr, muted("ask anything, or type /help inside the tui to see commands."))
+	fmt.Fprintf(os.Stderr, "%s %s\n", muted("version:"), fg(version))
 
-flags:
-  --provider  anthropic|openai
-  --model     model id (see --list-models)
-  --api-key   api key for this run (falls back to env and auth.json)
-  --base-url  override provider api base url (for testing/self-hosted)
-
-  --system-prompt TEXT         replace the default system prompt
-  --append-system-prompt TEXT  append to the system prompt (repeatable)
-  --reasoning low|medium|high  enable reasoning on supported models
-
-  -c, --continue               continue the most recent session for this cwd
-  -r, --resume                 pick a session to resume
-  --session PATH               resume a specific session file
-  --no-session                 do not read or write a session file
-
-  --cwd PATH                   treat PATH as the working directory
-  --no-tools                   disable all tools
-  --tools csv                  only enable the listed tools
-  -e, --ext PATH               load an extension from PATH for this run
-                               (repeatable; takes precedence over
-                               installed extensions of the same name)
-  --no-ext                     skip extension discovery for this run
-                               (--ext PATH still works on top, so
-                               --no-ext --ext ./x runs only x)
-  --no-skill                   skip skill discovery for this run,
-                               including built-in skills (no skill
-                               tool, no Available skills manifest)
-  --with-skills                load user-installed skills from
-                               $ZOT_HOME/skills/ + .zot/skills/ +
-                               .claude/skills/ + .agents/skills/.
-                               default: only built-in skills load
-
-  --no-yolo                    ask before running every tool call
-                               (interactive tui only; ignored with
-                               a stderr warning in -p / --json / rpc)
-
-  --max-steps N                agent loop iteration cap (default 50)
-  --list-models                print known models and exit
-  -h, --help                   this message
-  -v, --version                version info
-
-extensions:
-  zot ext install ./path/to/ext    install a local extension
-  zot ext install https://...git   clone + install from git
-  zot --ext ./path/to/ext          load an extension for this run only
-  zot ext help                     show all extension subcommands
-`, version)
+	section("modes",
+		row{"zot", "interactive tui"},
+		row{"zot \"prompt\"", "interactive, pre-filled prompt"},
+		row{"zot -p \"prompt\"", "print final text, exit"},
+		row{"zot --json \"prompt\"", "newline-delimited json events, exit"},
+		row{"zot rpc", "json-rpc loop on stdin/stdout (see docs/rpc.md)"},
+	)
+	section("extensions",
+		row{"zot ext list", "list installed extensions"},
+		row{"zot ext install <path|url>", "install into $ZOT_HOME/extensions/"},
+		row{"zot --ext ./path/to/ext", "load an extension for this run only"},
+		row{"zot ext help", "show all extension subcommands"},
+	)
+	section("telegram",
+		row{"zot telegram-bot setup", "configure a telegram bot (from BotFather)"},
+		row{"zot telegram-bot run", "foreground bridge (ctrl+c to stop)"},
+		row{"zot telegram-bot start", "background bridge (detached)"},
+		row{"zot telegram-bot stop", "stop the background bridge"},
+		row{"zot telegram-bot logs [-f]", "tail the background bridge log"},
+		row{"zot telegram-bot status", "config + running state"},
+		row{"zot telegram-bot reset", "forget saved token"},
+		row{"zot tg ...", "short alias for telegram-bot"},
+	)
+	section("provider and model flags",
+		row{"--provider", "provider to use (anthropic|openai)"},
+		row{"--model ID", "model id (see --list-models)"},
+		row{"--api-key KEY", "api key for this run (env / auth.json fallback)"},
+		row{"--base-url URL", "override provider api base url"},
+		row{"--reasoning low|medium|high", "enable reasoning on supported models"},
+	)
+	section("prompt and session flags",
+		row{"--system-prompt TEXT", "replace the default system prompt"},
+		row{"--append-system-prompt TEXT", "append to the system prompt (repeatable)"},
+		row{"-c, --continue", "continue the most recent session for this cwd"},
+		row{"-r, --resume", "pick a session to resume"},
+		row{"--session PATH", "resume a specific session file"},
+		row{"--no-session", "do not read or write a session file"},
+	)
+	section("workspace, tools, skills",
+		row{"--cwd PATH", "treat PATH as the working directory"},
+		row{"--no-tools", "disable all tools"},
+		row{"--tools csv", "only enable the listed tools"},
+		row{"--no-yolo", "ask before running every tool call"},
+		row{"--no-ext", "skip extension discovery for this run"},
+		row{"--no-skill", "skip all skill discovery for this run"},
+		row{"--with-skills", "load user-installed skills in addition to built-ins"},
+	)
+	section("misc",
+		row{"--max-steps N", "agent loop iteration cap (default 50)"},
+		row{"--list-models", "print known models and exit"},
+		row{"-h, --help", "show this help"},
+		row{"-v, --version", "show version info"},
+	)
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, assistant("see also: docs/extensions.md, docs/rpc.md, docs/skills.md"))
+	fmt.Fprintln(os.Stderr)
 }
