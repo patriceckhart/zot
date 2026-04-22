@@ -866,6 +866,12 @@ func (i *Interactive) redraw() {
 			cursorCol = c
 		}
 	}
+	if i.dialog.Active() {
+		if r, c := i.dialog.CursorPos(cols); r >= 0 {
+			cursorRow = len(visibleChat) + r
+			cursorCol = c
+		}
+	}
 	if i.extPanel.Active() {
 		cursorRow = -1
 		cursorCol = 0
@@ -1086,6 +1092,12 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 		if act.StartOAuth {
 			i.startOAuthFlow(act.Provider)
+		}
+		if act.StartManual {
+			i.startManualOAuthFlow(act.Provider)
+		}
+		if act.SubmitCode != "" {
+			i.submitManualOAuthCode(act.SubmitCode)
 		}
 		return false
 	}
@@ -1916,12 +1928,46 @@ func (i *Interactive) startAPIKeyFlow(provider string) {
 }
 
 func (i *Interactive) startOAuthFlow(provider string) {
-	url, err := i.cfg.AuthManager.StartOAuth(provider)
+	// Always run the manual/copy-code flow in parallel with the local
+	// callback server so headless environments (docker, SSH) can paste
+	// the authorization code directly without first pressing 'p'.
+	_, err := i.cfg.AuthManager.StartOAuth(provider)
 	if err != nil {
 		i.dialog.ShowResult(false, err.Error())
 		return
 	}
-	i.dialog.ShowWaiting(url)
+	manualURL, mErr := i.cfg.AuthManager.StartManualOAuth(provider)
+	if mErr == nil {
+		i.dialog.ShowWaiting(manualURL)
+	} else {
+		i.dialog.ShowResult(false, mErr.Error())
+	}
+}
+
+func (i *Interactive) startManualOAuthFlow(provider string) {
+	if i.cfg.AuthManager == nil {
+		return
+	}
+	i.cfg.AuthManager.CancelOAuth()
+	url, err := i.cfg.AuthManager.StartManualOAuth(provider)
+	if err != nil {
+		i.dialog.ShowResult(false, err.Error())
+		return
+	}
+	i.dialog.url = url
+	i.invalidate()
+}
+
+func (i *Interactive) submitManualOAuthCode(code string) {
+	if i.cfg.AuthManager == nil {
+		return
+	}
+	go func() {
+		if err := i.cfg.AuthManager.CompleteManualOAuth(i.runCtx, code); err != nil {
+			i.dialog.ShowResult(false, err.Error())
+			i.invalidate()
+		}
+	}()
 }
 
 // applyModelSelection switches the active model (and provider, if the

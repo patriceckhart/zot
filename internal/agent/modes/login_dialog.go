@@ -15,11 +15,12 @@ type loginStep int
 // dialog must default to closed so nothing shows up until Open() is
 // explicitly called.
 const (
-	loginStepClosed   loginStep = iota
-	loginStepMethod             // pick apikey vs subscription
-	loginStepProvider           // pick anthropic vs openai
-	loginStepWaiting            // browser open, waiting for callback
-	loginStepDone               // success or error, waiting for key to dismiss
+	loginStepClosed    loginStep = iota
+	loginStepMethod              // pick apikey vs subscription
+	loginStepProvider            // pick anthropic vs openai
+	loginStepWaiting             // browser open, waiting for callback
+	loginStepPasteCode           // user pastes the auth code here
+	loginStepDone                // success or error, waiting for key to dismiss
 )
 
 // loginDialog is a tiny inline dialog rendered above the editor while
@@ -32,6 +33,7 @@ type loginDialog struct {
 	success  bool
 	url      string
 	cursor   int
+	codeEd   *tui.Editor
 
 	// status is a snapshot of the current login state for each
 	// provider, captured when Open() runs. Rendered above the
@@ -135,10 +137,47 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, frameRule(th, width))
 	case loginStepWaiting:
 		lines = append(lines, frameHeader(th, "login - "+d.method+" - "+d.provider, width))
-		lines = append(lines, th.FG256(th.FG, "opening browser..."))
-		lines = append(lines, th.FG256(th.Muted, d.url))
+		lines = append(lines, th.FG256(th.Muted, "open this URL in a browser:"))
+		wrapW := width - 2
+		if wrapW < 20 {
+			wrapW = 20
+		}
+		for _, seg := range tui.WrapANSILine(d.url, wrapW) {
+			lines = append(lines, th.FG256(th.Accent, seg))
+		}
 		lines = append(lines, "")
-		lines = append(lines, th.FG256(th.Muted, "waiting for callback. press esc to cancel."))
+		lines = append(lines, th.FG256(th.Muted, "paste the authorization code (or full redirect URL / code#state):"))
+		if d.codeEd == nil {
+			d.codeEd = tui.NewEditor(th.FG256(th.Accent, "▌ "))
+		}
+		edLines, _, _ := d.codeEd.Render(width - 2)
+		for _, l := range edLines {
+			lines = append(lines, l)
+		}
+		lines = append(lines, "")
+		lines = append(lines, th.FG256(th.Muted, "enter submits - esc cancels - waiting for browser callback in background"))
+		lines = append(lines, frameRule(th, width))
+	case loginStepPasteCode:
+		lines = append(lines, frameHeader(th, "login - "+d.method+" - "+d.provider+" - paste code", width))
+		lines = append(lines, th.FG256(th.Muted, "open this URL in any browser:"))
+		wrapW := width - 2
+		if wrapW < 20 {
+			wrapW = 20
+		}
+		for _, seg := range tui.WrapANSILine(d.url, wrapW) {
+			lines = append(lines, th.FG256(th.Accent, seg))
+		}
+		lines = append(lines, "")
+		lines = append(lines, th.FG256(th.Muted, "paste the authorization code (or full redirect URL / code#state):"))
+		if d.codeEd == nil {
+			d.codeEd = tui.NewEditor(th.FG256(th.Accent, "▌ "))
+		}
+		edLines, _, _ := d.codeEd.Render(width - 2)
+		for _, l := range edLines {
+			lines = append(lines, l)
+		}
+		lines = append(lines, "")
+		lines = append(lines, th.FG256(th.Muted, "enter submits - esc cancels"))
 		lines = append(lines, frameRule(th, width))
 	case loginStepDone:
 		title := "login - failed"
@@ -197,8 +236,10 @@ func (d *loginDialog) renderStatusLines(th tui.Theme) []string {
 type loginDialogAction struct {
 	StartAPIKey bool
 	StartOAuth  bool
+	StartManual bool
 	Provider    string
 	Close       bool
+	SubmitCode  string
 }
 
 // HandleKey advances the dialog and returns an action to apply, if any.
@@ -209,10 +250,9 @@ func (d *loginDialog) HandleKey(k tui.Key) loginDialogAction {
 	case loginStepProvider:
 		return d.handleProviderKey(k)
 	case loginStepWaiting:
-		if k.Kind == tui.KeyEsc {
-			d.Close()
-			return loginDialogAction{Close: true}
-		}
+		return d.handleWaitingKey(k)
+	case loginStepPasteCode:
+		return d.handlePasteCodeKey(k)
 	case loginStepDone:
 		d.Close()
 		return loginDialogAction{Close: true}
@@ -290,6 +330,59 @@ func (d *loginDialog) ShowResult(success bool, message string) {
 	d.step = loginStepDone
 	d.success = success
 	d.message = message
+}
+
+func (d *loginDialog) handleWaitingKey(k tui.Key) loginDialogAction {
+	if k.Kind == tui.KeyEsc {
+		d.Close()
+		return loginDialogAction{Close: true}
+	}
+	if d.codeEd == nil {
+		return loginDialogAction{}
+	}
+	if submit := d.codeEd.HandleKey(k); submit {
+		code := d.codeEd.SubmitValue()
+		d.codeEd.Clear()
+		return loginDialogAction{SubmitCode: code}
+	}
+	return loginDialogAction{}
+}
+
+func (d *loginDialog) handlePasteCodeKey(k tui.Key) loginDialogAction {
+	if k.Kind == tui.KeyEsc {
+		d.Close()
+		return loginDialogAction{Close: true}
+	}
+	if d.codeEd == nil {
+		return loginDialogAction{}
+	}
+	if submit := d.codeEd.HandleKey(k); submit {
+		code := d.codeEd.SubmitValue()
+		d.codeEd.Clear()
+		return loginDialogAction{SubmitCode: code}
+	}
+	return loginDialogAction{}
+}
+
+// CursorPos returns the absolute row/col inside the dialog where the
+// terminal cursor should sit (paste-code step). Returns -1, -1 if the
+// dialog is not in an input-expecting state. The host uses this to
+// place the real blinking cursor on the code input.
+func (d *loginDialog) CursorPos(width int) (row, col int) {
+	if d.codeEd == nil {
+		return -1, -1
+	}
+	if d.step != loginStepPasteCode && d.step != loginStepWaiting {
+		return -1, -1
+	}
+	_, eRow, eCol := d.codeEd.Render(width - 2)
+	wrapW := width - 2
+	if wrapW < 20 {
+		wrapW = 20
+	}
+	urlLines := len(tui.WrapANSILine(d.url, wrapW))
+	baseOffset := 1 /*frameHeader*/ + 1 /*hint*/ + urlLines + 1 /*blank*/ + 1 /*prompt*/
+	return baseOffset + eRow, eCol
 }
 
 func max0(x int) int {

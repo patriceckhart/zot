@@ -3,8 +3,11 @@ package auth
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -30,6 +33,10 @@ type Manager struct {
 
 	oauthCtx    context.Context
 	oauthCancel context.CancelFunc
+
+	manualOp    *OAuthProvider
+	manualPKCE  PKCE
+	manualState string
 }
 
 // NewManager returns a Manager bound to store.
@@ -194,6 +201,130 @@ func (m *Manager) awaitOAuth(ctx context.Context, op OAuthProvider, cs *Callback
 		return
 	}
 	m.emit(Event{Kind: "success", Provider: op.Name, Method: "oauth"})
+}
+
+// StartManualOAuth begins an OAuth flow but does NOT start a local
+// callback server or open a browser. The returned URL is shown to the
+// user so they can complete the authorization on another device; the
+// resulting code is pasted back via CompleteManualOAuth.
+func (m *Manager) StartManualOAuth(provider string) (string, error) {
+	var op OAuthProvider
+	switch provider {
+	case "anthropic":
+		op = AnthropicManualOAuth
+	case "openai":
+		op = OpenAIOAuth
+	default:
+		return "", fmt.Errorf("provider must be anthropic or openai")
+	}
+
+	pkce, err := NewPKCE()
+	if err != nil {
+		return "", err
+	}
+	authURL, state, err := op.AuthorizeURL(pkce)
+	if err != nil {
+		return "", err
+	}
+
+	m.mu.Lock()
+	m.manualOp = &op
+	m.manualPKCE = pkce
+	m.manualState = state
+	m.mu.Unlock()
+
+	m.emit(Event{Kind: "started", Provider: provider, Method: "oauth", URL: authURL})
+	return authURL, nil
+}
+
+// CompleteManualOAuth exchanges the user-pasted authorization code for
+// a token and stores it. Accepts either a raw code or a "code#state"
+// token shown by providers like Anthropic when code=true is set.
+func (m *Manager) CompleteManualOAuth(ctx context.Context, input string) error {
+	m.mu.Lock()
+	op := m.manualOp
+	pkce := m.manualPKCE
+	state := m.manualState
+	m.mu.Unlock()
+	if op == nil {
+		return fmt.Errorf("no manual oauth flow in progress")
+	}
+	code, pastedState := parseManualCodeInput(strings.TrimSpace(input))
+	if pastedState != "" {
+		state = pastedState
+	}
+	if code == "" {
+		return fmt.Errorf("empty code")
+	}
+	exCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	tok, err := op.Exchange(exCtx, code, state, pkce)
+	if err != nil {
+		m.emit(Event{Kind: "error", Provider: op.Name, Method: "oauth", Message: err.Error()})
+		return err
+	}
+	if err := m.store.SetOAuth(op.Name, *tok); err != nil {
+		m.emit(Event{Kind: "error", Provider: op.Name, Method: "oauth", Message: err.Error()})
+		return err
+	}
+	m.mu.Lock()
+	m.manualOp = nil
+	m.manualPKCE = PKCE{}
+	m.manualState = ""
+	m.mu.Unlock()
+	m.emit(Event{Kind: "success", Provider: op.Name, Method: "oauth"})
+	return nil
+}
+
+// parseManualCodeInput accepts any of:
+//   - a bare authorization code
+//   - a "code#state" pair
+//   - a full redirect URL like http(s)://host:port/callback?code=X&state=Y
+//
+// and returns the extracted code and (if any) state.
+func parseManualCodeInput(s string) (code, state string) {
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		if u, err := url.Parse(s); err == nil {
+			q := u.Query()
+			return q.Get("code"), q.Get("state")
+		}
+	}
+	if idx := strings.IndexByte(s, '#'); idx >= 0 {
+		return s[:idx], s[idx+1:]
+	}
+	return s, ""
+}
+
+// HasBrowser reports whether the current environment probably has a
+// working interactive browser reachable from localhost. Used by the
+// login flow to auto-switch to paste-code mode on headless boxes
+// (containers, SSH without display forwarding, etc.) instead of
+// trying to bind a callback port the user can never reach.
+func HasBrowser() bool {
+	if os.Getenv("ZOT_NO_BROWSER") != "" {
+		return false
+	}
+	if os.Getenv("ZOT_FORCE_BROWSER") != "" {
+		return true
+	}
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return false
+	}
+	if b, err := os.ReadFile("/proc/1/cgroup"); err == nil {
+		txt := string(b)
+		if strings.Contains(txt, "docker") || strings.Contains(txt, "kubepods") || strings.Contains(txt, "containerd") {
+			return false
+		}
+	}
+	switch runtime.GOOS {
+	case "darwin", "windows":
+		return true
+	default:
+		if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+			return false
+		}
+		return true
+	}
 }
 
 // CancelOAuth aborts any in-flight OAuth flow.

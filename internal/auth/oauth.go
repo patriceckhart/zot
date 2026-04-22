@@ -44,8 +44,13 @@ type OAuthProvider struct {
 	IncludeStateInTokenRequest bool
 }
 
-// RedirectURI returns the full redirect URI for this provider.
+// RedirectURI returns the full redirect URI for this provider. For the
+// manual variants (no local callback server) RedirectPath is already an
+// absolute https URL, in which case it's returned as-is.
 func (p OAuthProvider) RedirectURI() string {
+	if p.RedirectHost == "" && (strings.HasPrefix(p.RedirectPath, "http://") || strings.HasPrefix(p.RedirectPath, "https://")) {
+		return p.RedirectPath
+	}
 	return fmt.Sprintf("http://%s:%d%s", p.RedirectHost, p.RedirectPort, p.RedirectPath)
 }
 
@@ -63,6 +68,25 @@ var (
 		RedirectHost: "localhost",
 		RedirectPort: 53692,
 		RedirectPath: "/callback",
+		ExtraAuthArgs: map[string]string{
+			"code": "true",
+		},
+		TokenBodyJSON:              true,
+		StateEqualsVerifier:        true,
+		IncludeStateInTokenRequest: true,
+	}
+
+	// Anthropic manual / headless variant: redirects to Anthropic's
+	// copy-code page instead of a local loopback port, used when there
+	// is no browser on the machine running zot (e.g. inside a Docker
+	// container or over plain SSH).
+	AnthropicManualOAuth = OAuthProvider{
+		Name:         "anthropic",
+		AuthURL:      "https://claude.ai/oauth/authorize",
+		TokenURL:     "https://console.anthropic.com/v1/oauth/token",
+		ClientID:     "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+		Scopes:       []string{"org:create_api_key", "user:profile", "user:inference"},
+		RedirectPath: "https://console.anthropic.com/oauth/code/callback",
 		ExtraAuthArgs: map[string]string{
 			"code": "true",
 		},

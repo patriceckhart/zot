@@ -829,6 +829,10 @@ func stripANSI(s string) string {
 	return string(out)
 }
 
+// WrapANSILine is the exported form of wrapANSILine so other modes /
+// dialogs can reuse the same visible-width-aware wrap behavior.
+func WrapANSILine(s string, limit int) []string { return wrapANSILine(s, limit) }
+
 // wrapANSILine folds a string that may contain ANSI CSI escapes so that
 // the visible width of each line stays within limit. Breaks happen on
 // spaces when possible, falling back to mid-token splits for very long
