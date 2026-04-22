@@ -214,7 +214,7 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 		inner := assistantBodyWidth(width - len(indent))
 		md := RenderMarkdown(v.Streaming, v.Theme, inner)
 		for _, l := range strings.Split(md, "\n") {
-			for _, w := range wrapLine(l, inner, "") {
+			for _, w := range wrapANSILine(l, inner) {
 				out = append(out, indent+w)
 			}
 		}
