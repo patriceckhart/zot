@@ -257,9 +257,26 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 	}
 
 	// Append assistant message to transcript. Aborted turns (Esc / Ctrl+C)
-	// produce partial, mid-sentence content that would confuse subsequent
-	// turns if it stayed in the transcript, drop it instead.
-	if len(finalMsg.Content) > 0 && stop != provider.StopAborted {
+	// produce partial content. When the partial message is text only we
+	// keep whatever was streamed up to the cancel so the user does not
+	// lose visible work (a cut-off summary is still useful). If the
+	// partial message already contained tool-call blocks we drop the
+	// whole thing, because an unmatched tool_use would fail the next
+	// turn with a tool_result mismatch error.
+	keep := len(finalMsg.Content) > 0
+	if stop == provider.StopAborted && keep {
+		hasToolCall := false
+		for _, c := range finalMsg.Content {
+			if _, ok := c.(provider.ToolCallBlock); ok {
+				hasToolCall = true
+				break
+			}
+		}
+		if hasToolCall {
+			keep = false
+		}
+	}
+	if keep {
 		emit := finalMsg
 		suppress := false
 
