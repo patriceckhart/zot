@@ -60,9 +60,16 @@ jobs:
           echo "latest tag: $latest"
 
           # Strip the v prefix, split on dots, bump the patch.
+          # After .99 roll over to the next minor (e.g. 0.0.99 -> 0.1.0,
+          # 0.1.99 -> 0.2.0). Keep major fixed at 0 for now.
           ver="${latest#v}"
           IFS=. read -r major minor patch <<<"$ver"
-          patch=$((patch + 1))
+          if [ "$patch" -ge 99 ]; then
+            minor=$((minor + 1))
+            patch=0
+          else
+            patch=$((patch + 1))
+          fi
           next="v${major}.${minor}.${patch}"
           echo "next tag:   $next"
 
