@@ -1,0 +1,9 @@
+{
+  "name": "todo-panel",
+  "version": "0.3.0",
+  "exec": "go",
+  "args": ["run", "."],
+  "language": "go",
+  "description": "persistent interactive todo panel",
+  "enabled": true
+}

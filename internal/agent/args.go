@@ -248,6 +248,9 @@ usage:
   zot -p "prompt"              print final text, exit
   zot --json "prompt"          newline-delimited json events, exit
   zot rpc                      json-rpc loop on stdin/stdout (see docs/rpc.md)
+  zot ext help                 extension manager help
+  zot ext list                 list installed extensions
+  zot ext install <path|url>   install an extension into $ZOT_HOME/extensions/
   zot telegram-bot setup       configure a telegram bot (from BotFather)
   zot telegram-bot run         foreground bridge (ctrl+c to stop)
   zot telegram-bot start       background bridge (detached)
@@ -297,5 +300,11 @@ flags:
   --list-models                print known models and exit
   -h, --help                   this message
   -v, --version                version info
+
+extensions:
+  zot ext install ./path/to/ext    install a local extension
+  zot ext install https://...git   clone + install from git
+  zot --ext ./path/to/ext          load an extension for this run only
+  zot ext help                     show all extension subcommands
 `, version)
 }

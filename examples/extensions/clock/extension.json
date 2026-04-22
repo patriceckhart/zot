@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "exec": "node",
   "args": ["index.js"],
-  "language": "typescript",
+  "language": "javascript",
   "description": "registers /now and /uptime — a tiny time toolkit",
   "enabled": true
 }

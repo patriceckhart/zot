@@ -549,6 +549,8 @@ See:
 - `examples/extensions/weather/` — LLM-callable tool
 - `examples/extensions/guard/` — event subscriptions + tool-call
   interception (refuses dangerous bash patterns)
+- `examples/extensions/todo/` — interactive persistent panel + tool
+- `examples/extensions/scratchpad/` — source-run TypeScript commands + tool
 
 ### Hot reload
 

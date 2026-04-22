@@ -1,8 +1,8 @@
-# scratchpad — TypeScript extension example
+# scratchpad — example zot extension (TypeScript, source-run)
 
-Real `.ts` (not `.js`), no build step, no SDK. Runs via `npx tsx`,
-which downloads itself into the npm cache on first invocation and
-runs from cache on every subsequent call.
+Real `.ts` (not `.js`), no build step, no SDK. Runs via `npx -y tsx
+./index.ts`, which downloads `tsx` into npm's cache on first
+invocation and then reuses the cached copy on subsequent runs.
 
 Demonstrates:
 
@@ -13,16 +13,7 @@ Demonstrates:
 
 ## Requirements
 
-Node 18+ and `tsx` on `$PATH`:
-
-```bash
-npm install -g tsx
-```
-
-This is what `extension.json` invokes (`exec: "tsx"`). Without the
-global install, swap to `"exec": "npx"` + `"args": ["--yes", "tsx",
-"index.ts"]` — functional but adds ~1 second to each zot startup
-because npm checks the registry on every invocation.
+Node 18+ and `npx` (bundled with npm).
 
 ## Install
 
@@ -31,6 +22,8 @@ From this directory:
 ```bash
 zot ext install .
 ```
+
+This copies the manifest + source into `$ZOT_HOME/extensions/scratchpad/`.
 
 ## Use
 
@@ -65,8 +58,9 @@ without any infrastructure beyond `tsx`. If you want richer ergonomics
 
 ## See also
 
-- `examples/extensions/clock` — JS sibling (no tsx required)
-- `examples/extensions/hello` — Go SDK
-- `examples/extensions/weather` — Go SDK, exposes one tool
-- `examples/extensions/guard` — Go SDK, demonstrates intercepts
+- `examples/extensions/clock` — JavaScript sibling (no build step)
+- `examples/extensions/hello` — Go SDK slash commands
+- `examples/extensions/weather` — Go SDK tool example
+- `examples/extensions/guard` — Go SDK intercept example
+- `examples/extensions/todo` — interactive panel example
 - `docs/extensions.md` — full protocol reference

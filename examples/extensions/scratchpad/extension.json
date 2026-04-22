@@ -1,8 +1,8 @@
 {
   "name": "scratchpad",
   "version": "1.0.0",
-  "exec": "tsx",
-  "args": ["index.ts"],
+  "exec": "npx",
+  "args": ["-y", "tsx", "./index.ts"],
   "language": "typescript",
   "description": "scratchpad notes (commands) + read_notes (tool) — written in plain .ts via tsx",
   "enabled": true

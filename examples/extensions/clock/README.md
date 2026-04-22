@@ -39,8 +39,8 @@ authoring works too — rename `index.js` → `index.ts`, install
 
 ```json
 {
-  "exec": "tsx",
-  "args": ["index.ts"]
+  "exec": "npx",
+  "args": ["-y", "tsx", "./index.ts"]
 }
 ```
 
