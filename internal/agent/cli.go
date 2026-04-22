@@ -55,6 +55,21 @@ func (h *interactiveExtHooks) Display(extName, text string) {
 		iv.Display(extName, text)
 	}
 }
+func (h *interactiveExtHooks) OpenPanel(extName string, spec extproto.PanelSpec) {
+	if iv := h.iv(); iv != nil {
+		iv.OpenPanel(extName, spec)
+	}
+}
+func (h *interactiveExtHooks) UpdatePanel(extName, panelID, title string, lines []string, footer string) {
+	if iv := h.iv(); iv != nil {
+		iv.UpdatePanel(extName, panelID, title, lines, footer)
+	}
+}
+func (h *interactiveExtHooks) ClosePanel(extName, panelID string) {
+	if iv := h.iv(); iv != nil {
+		iv.ClosePanel(extName, panelID)
+	}
+}
 
 // extToolAdapter bridges *extensions.Manager to the
 // ExtensionToolSource interface declared in build.go (kept narrow to
@@ -192,9 +207,12 @@ type nonInteractiveExtHooks struct{}
 func (nonInteractiveExtHooks) Notify(ext, level, message string) {
 	fmt.Fprintf(os.Stderr, "[%s] %s: %s\n", ext, level, message)
 }
-func (nonInteractiveExtHooks) Submit(string)          {}
-func (nonInteractiveExtHooks) Insert(string)          {}
-func (nonInteractiveExtHooks) Display(string, string) {}
+func (nonInteractiveExtHooks) Submit(string)                                        {}
+func (nonInteractiveExtHooks) Insert(string)                                        {}
+func (nonInteractiveExtHooks) Display(string, string)                               {}
+func (nonInteractiveExtHooks) OpenPanel(string, extproto.PanelSpec)                 {}
+func (nonInteractiveExtHooks) UpdatePanel(string, string, string, []string, string) {}
+func (nonInteractiveExtHooks) ClosePanel(string, string)                            {}
 
 // setupNonInteractiveExtensions loads --ext paths and (unless
 // --no-ext) runs discovery. Returns the manager so the caller can

@@ -142,8 +142,11 @@ func (h *rpcExtHooks) Display(extName, text string) {
 		})
 	}
 }
-func (h *rpcExtHooks) Submit(string) {} // ignored in rpc mode
-func (h *rpcExtHooks) Insert(string) {} // ignored in rpc mode
+func (h *rpcExtHooks) Submit(string)                                        {} // ignored in rpc mode
+func (h *rpcExtHooks) Insert(string)                                        {} // ignored in rpc mode
+func (h *rpcExtHooks) OpenPanel(string, extproto.PanelSpec)                 {}
+func (h *rpcExtHooks) UpdatePanel(string, string, string, []string, string) {}
+func (h *rpcExtHooks) ClosePanel(string, string)                            {}
 
 type rpcServer struct {
 	ctx      context.Context

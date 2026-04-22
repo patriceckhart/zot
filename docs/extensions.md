@@ -6,12 +6,13 @@ its stdin/stdout. Extensions can be written in **any language** that
 can read and write JSON lines from stdio — Go, TypeScript, Python,
 Rust, shell with `jq`, anything.
 
-Three phases shipped so far:
+Four phases shipped so far:
 
 - **Phase 1**: slash commands + chat notifications.
 - **Phase 2**: tools the LLM can call.
 - **Phase 3**: lifecycle event subscriptions + tool-call interception
   for guardrail extensions.
+- **Phase 4**: interactive extension-owned panels rendered inside zot.
 
 ## Quick start
 
@@ -91,6 +92,12 @@ A project-local extension with the same name wins over a global one.
 On macOS `$ZOT_HOME` defaults to `~/Library/Application Support/zot/`;
 on Linux it's `$XDG_STATE_HOME/zot` or `~/.local/state/zot`.
 
+Because each extension owns its own directory, the recommended place
+for extension state is inside that directory itself (for example
+`todos.json`, `settings.json`, or an auth/cache file used only by that
+extension). The host also passes this path back in `hello_ack` as
+`extension_dir` / `data_dir` so runtime code does not need to guess it.
+
 Each extension owns its own subdirectory. The `extension.json`
 manifest tells zot how to launch it:
 
@@ -123,8 +130,9 @@ manifest tells zot how to launch it:
    redirects to `$ZOT_HOME/logs/ext-<name>.log` (one file per
    extension, append-mode).
 3. **Hello handshake**: the extension sends a `hello` frame; zot
-   replies with `hello_ack` containing the protocol version and the
-   active provider/model/cwd.
+   replies with `hello_ack` containing the protocol version, the
+   active provider/model/cwd, and the extension's own data directory
+   so it can persist files beside its manifest.
 4. **Registration**: the extension sends `register_command` frames.
    First-come-first-served: a name already taken by a built-in or by
    a previously-loaded extension is silently shadowed (logged in the
@@ -132,7 +140,8 @@ manifest tells zot how to launch it:
 5. **Runtime**: zot dispatches `command_invoked` frames when the
    user runs a registered command; the extension responds with
    `command_response`. Extensions can also push `notify` frames at
-   any time.
+   any time. Panel-capable extensions may open an interactive panel,
+   receive key events, and push redraws while the panel is focused.
 6. **Shutdown**: when zot exits, it sends `shutdown` and waits up to
    2s for the extension to send `shutdown_ack`. Holdouts are
    SIGTERM'd, then SIGKILL'd.
@@ -153,7 +162,7 @@ responses.
 
 ```json
 {"type":"hello","name":"weather","version":"1.0.0",
- "capabilities":["commands","tools"]}
+ "capabilities":["commands","tools","panels"]}
 ```
 
 #### `register_command`
@@ -274,12 +283,45 @@ subsequent interceptor sees the previous one's output.
   submitting.
 - `"display"` — appends `display` to the chat as a one-shot styled
   note. No model call, nothing written to the transcript.
+- `"open_panel"` — opens an extension-owned interactive panel inside
+  zot. The panel content lives in `open_panel`.
 - `"noop"` — the extension handled it itself (e.g. it pushed
   `notify` frames or kicked off background work). zot doesn't change
   the UI in response.
 
+Example:
+
+```json
+{"type":"command_response","id":"...","action":"open_panel",
+ "open_panel":{
+   "id":"todos-main",
+   "title":"Todos",
+   "lines":["□ ship panel api","✓ persist state"],
+   "footer":"↑/↓ navigate - a add - x complete - esc close"
+ }}
+```
+
 If `error` is non-empty, zot renders it as a red status line
 regardless of `action`.
+
+#### `panel_render` (one-way, while a panel is open)
+
+Pushes a fresh frame for an already-open panel.
+
+```json
+{"type":"panel_render","panel_id":"todos-main",
+ "title":"Todos",
+ "lines":["□ ship panel api","✓ persist state"],
+ "footer":"↑/↓ navigate - a add - x complete - esc close"}
+```
+
+#### `panel_close`
+
+Closes a previously-open panel.
+
+```json
+{"type":"panel_close","panel_id":"todos-main"}
+```
 
 #### `notify` (one-way, any time)
 
@@ -302,12 +344,17 @@ Sent in response to `shutdown`. Extension should exit promptly after.
 ```json
 {"type":"hello_ack","protocol_version":1,
  "zot_version":"0.0.7","provider":"anthropic",
- "model":"claude-opus-4-7","cwd":"/Users/pat/Developer/zot"}
+ "model":"claude-opus-4-7","cwd":"/Users/pat/Developer/zot",
+ "extension_dir":"/Users/pat/Developer/zot/.zot/extensions/todos",
+ "data_dir":"/Users/pat/Developer/zot/.zot/extensions/todos"}
 ```
 
 Sent immediately after `hello`. The extension can use these fields to
 decide which commands to register (e.g. only register a Python tool
 on macOS, only register a model-specific shortcut for opus, etc.).
+`extension_dir` / `data_dir` are where the extension should persist
+its own state (for example `todos.json`, cached metadata, or auth
+tokens scoped to that extension).
 
 #### `command_invoked`
 
@@ -367,6 +414,28 @@ Payload fields depend on the event:
 // assistant_message: includes the assembled text
 {"type":"event_intercept","id":"...","event":"assistant_message",
  "text":"here is your api key: sk-ant-..."}
+```
+
+#### `panel_key`
+
+Sent while an extension-owned panel is focused. `key` is a normalized
+name (`up`, `down`, `left`, `right`, `enter`, `esc`, `tab`, `pageup`,
+`pagedown`, `home`, `end`, `backspace`, `delete`, `rune`). For
+`key:"rune"`, `text` carries the typed character.
+
+```json
+{"type":"panel_key","panel_id":"todos-main","key":"down"}
+{"type":"panel_key","panel_id":"todos-main","key":"rune","text":"x"}
+```
+
+#### `panel_close`
+
+Sent when the user closes the focused panel from zot (for example with
+Esc or Ctrl+C). The extension should treat this as the panel lifetime
+ending and stop sending `panel_render` updates for that `panel_id`.
+
+```json
+{"type":"panel_close","panel_id":"todos-main"}
 ```
 
 #### `shutdown`

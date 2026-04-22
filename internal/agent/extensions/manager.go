@@ -109,6 +109,10 @@ type HostHooks interface {
 	// Display appends a one-shot styled note to the chat without
 	// invoking the model and without writing to the transcript.
 	Display(extName, text string)
+
+	OpenPanel(extName string, spec extproto.PanelSpec)
+	UpdatePanel(extName, panelID, title string, lines []string, footer string)
+	ClosePanel(extName, panelID string)
 }
 
 // Manager owns every extension subprocess for the lifetime of zot.
@@ -549,6 +553,8 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 		Provider:        m.provider,
 		Model:           m.model,
 		CWD:             m.cwd,
+		ExtensionDir:    ext.Dir,
+		DataDir:         ext.Dir,
 	})
 	if _, err := stdin.Write(ack); err != nil {
 		return fmt.Errorf("send hello_ack: %w", err)
@@ -739,6 +745,16 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 					}
 				}
 			}
+		case "panel_render":
+			var pr extproto.PanelRenderFromExt
+			if err := json.Unmarshal(line, &pr); err == nil {
+				m.hooks.UpdatePanel(ext.Manifest.Name, pr.PanelID, pr.Title, pr.Lines, pr.Footer)
+			}
+		case "panel_close":
+			var pc extproto.PanelCloseFromExt
+			if err := json.Unmarshal(line, &pc); err == nil {
+				m.hooks.ClosePanel(ext.Manifest.Name, pc.PanelID)
+			}
 		case "shutdown_ack":
 			// Caller of Stop is waiting on the process exit, not this frame.
 		default:
@@ -864,6 +880,15 @@ func (m *Manager) HasCommand(name string) bool {
 	return ok
 }
 
+func (m *Manager) CommandOwner(name string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if ext, ok := m.commandIndex[name]; ok && ext != nil {
+		return ext.Manifest.Name
+	}
+	return ""
+}
+
 // Invoke fires the named slash command's handler in the owning
 // extension and waits up to timeout for the response. Returns the
 // extension's CommandResponse so the caller can act on the action
@@ -914,6 +939,30 @@ func (m *Manager) Invoke(ctx context.Context, name, args string, timeout time.Du
 // Stop cleanly terminates every extension. Sends ShutdownFromHost,
 // waits up to gracePeriod for each subprocess to exit, then SIGTERMs
 // (and SIGKILLs after another second) the holdouts.
+func (m *Manager) SendPanelKey(extName, panelID, key, text string) error {
+	m.mu.RLock()
+	ext, ok := m.ext[extName]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("no extension %q", extName)
+	}
+	frame, _ := extproto.Encode(extproto.PanelKeyFromHost{Type: "panel_key", PanelID: panelID, Key: key, Text: text})
+	_, err := ext.stdin.Write(frame)
+	return err
+}
+
+func (m *Manager) SendPanelClose(extName, panelID string) error {
+	m.mu.RLock()
+	ext, ok := m.ext[extName]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("no extension %q", extName)
+	}
+	frame, _ := extproto.Encode(extproto.PanelCloseFromHost{Type: "panel_close", PanelID: panelID})
+	_, err := ext.stdin.Write(frame)
+	return err
+}
+
 func (m *Manager) Stop(gracePeriod time.Duration) {
 	m.mu.RLock()
 	exts := make([]*Extension, 0, len(m.ext))

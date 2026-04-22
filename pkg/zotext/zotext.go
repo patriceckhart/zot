@@ -185,12 +185,20 @@ func TextErrorResult(s string) ToolResult {
 
 // Response tells zot how to react to a command invocation. Construct
 // one with Prompt(), Insert(), Display(), or Noop().
+type Panel struct {
+	ID     string
+	Title  string
+	Lines  []string
+	Footer string
+}
+
 type Response struct {
-	Action  string // "prompt", "insert", "display", "noop"
-	Prompt  string
-	Insert  string
-	Display string
-	Error   string
+	Action    string // "prompt", "insert", "display", "open_panel", "noop"
+	Prompt    string
+	Insert    string
+	Display   string
+	OpenPanel *Panel
+	Error     string
 }
 
 // Prompt returns a Response that submits text as a fresh user message
@@ -206,6 +214,12 @@ func Insert(text string) Response { return Response{Action: "insert", Insert: te
 // chat without invoking the model. Useful for showing a result without
 // burning tokens.
 func Display(text string) Response { return Response{Action: "display", Display: text} }
+
+// OpenPanel returns a Response that opens an interactive extension-owned
+// panel inside zot.
+func OpenPanel(id, title string, lines []string, footer string) Response {
+	return Response{Action: "open_panel", OpenPanel: &Panel{ID: id, Title: title, Lines: lines, Footer: footer}}
+}
 
 // Noop returns a Response that signals "I handled it, no UI change".
 // Use after pushing your own state or notifications.
@@ -241,6 +255,8 @@ type Extension struct {
 	interceptOn        bool
 	interceptTurn      TurnStartHandler
 	interceptAssistant AssistantMessageHandler
+	panelKeys          map[string]func(key, text string)
+	panelCloses        map[string]func()
 
 	// Caps reported in the hello frame.
 	caps []string
@@ -267,6 +283,8 @@ type HostInfo struct {
 	Provider        string
 	Model           string
 	CWD             string
+	ExtensionDir    string
+	DataDir         string
 }
 
 // New constructs an Extension with the given identifier. name should
@@ -281,7 +299,9 @@ func New(name, version string) *Extension {
 		commands:      map[string]CommandHandler{},
 		tools:         map[string]ToolHandler{},
 		eventHandlers: map[string]EventHandler{},
-		caps:          []string{"commands", "tools", "events"},
+		panelKeys:     map[string]func(key, text string){},
+		panelCloses:   map[string]func(){},
+		caps:          []string{"commands", "tools", "events", "panels"},
 	}
 }
 
@@ -294,6 +314,28 @@ func (e *Extension) Host() HostInfo { return e.host }
 // you print to stdout would corrupt the JSON wire protocol.
 func (e *Extension) Logf(format string, args ...any) {
 	fmt.Fprintf(e.stderr, "["+e.name+"] "+format+"\n", args...)
+}
+
+// OnPanelKey registers callbacks for panel key + close events.
+func (e *Extension) OnPanelKey(panelID string, onKey func(key, text string), onClose func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if onKey != nil {
+		e.panelKeys[panelID] = onKey
+	}
+	if onClose != nil {
+		e.panelCloses[panelID] = onClose
+	}
+}
+
+// RenderPanel pushes a fresh frame for panelID.
+func (e *Extension) RenderPanel(panelID, title string, lines []string, footer string) {
+	_ = e.send(extproto.PanelRenderFromExt{Type: "panel_render", PanelID: panelID, Title: title, Lines: lines, Footer: footer})
+}
+
+// ClosePanel tells zot to close panelID.
+func (e *Extension) ClosePanel(panelID string) {
+	_ = e.send(extproto.PanelCloseFromExt{Type: "panel_close", PanelID: panelID})
 }
 
 // Command registers a slash-command handler. Call this BEFORE Run().
@@ -474,6 +516,8 @@ func (e *Extension) Run() error {
 					Provider:        ack.Provider,
 					Model:           ack.Model,
 					CWD:             ack.CWD,
+					ExtensionDir:    ack.ExtensionDir,
+					DataDir:         ack.DataDir,
 				}
 			}
 		case "command_invoked":
@@ -548,6 +592,28 @@ func (e *Extension) Run() error {
 				continue
 			}
 			go e.dispatchIntercept(ei)
+		case "panel_key":
+			var pk extproto.PanelKeyFromHost
+			if err := json.Unmarshal(line, &pk); err != nil {
+				continue
+			}
+			e.mu.Lock()
+			h := e.panelKeys[pk.PanelID]
+			e.mu.Unlock()
+			if h != nil {
+				go h(pk.Key, pk.Text)
+			}
+		case "panel_close":
+			var pc extproto.PanelCloseFromHost
+			if err := json.Unmarshal(line, &pc); err != nil {
+				continue
+			}
+			e.mu.Lock()
+			h := e.panelCloses[pc.PanelID]
+			e.mu.Unlock()
+			if h != nil {
+				go h()
+			}
 		case "shutdown":
 			_ = e.send(extproto.ShutdownAckFromExt{Type: "shutdown_ack"})
 			return nil
@@ -563,14 +629,19 @@ func (e *Extension) respond(id string, r Response) {
 	if r.Action == "" {
 		r.Action = "noop"
 	}
+	var panel *extproto.PanelSpec
+	if r.OpenPanel != nil {
+		panel = &extproto.PanelSpec{ID: r.OpenPanel.ID, Title: r.OpenPanel.Title, Lines: r.OpenPanel.Lines, Footer: r.OpenPanel.Footer}
+	}
 	_ = e.send(extproto.CommandResponseFromExt{
-		Type:    "command_response",
-		ID:      id,
-		Action:  r.Action,
-		Prompt:  r.Prompt,
-		Insert:  r.Insert,
-		Display: r.Display,
-		Error:   r.Error,
+		Type:      "command_response",
+		ID:        id,
+		Action:    r.Action,
+		Prompt:    r.Prompt,
+		Insert:    r.Insert,
+		Display:   r.Display,
+		OpenPanel: panel,
+		Error:     r.Error,
 	})
 }
 

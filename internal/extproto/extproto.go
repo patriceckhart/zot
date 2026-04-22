@@ -19,94 +19,45 @@ package extproto
 
 import "encoding/json"
 
-// ProtocolVersion is the major version of this wire format. Bumped
-// for breaking changes; minor additions don't bump.
 const ProtocolVersion = 1
 
-// Frame is the lowest-common-denominator parse target so a reader can
-// peek at the type before unmarshalling the full payload.
 type Frame struct {
 	Type string `json:"type"`
 	ID   string `json:"id,omitempty"`
 }
 
-// ---- extension -> host ----
-
-// HelloFromExt is the first frame the extension sends after start.
-// Zot replies with HelloAckFromHost, then registration frames
-// (RegisterCommandFromExt, etc.) flow.
 type HelloFromExt struct {
-	Type         string   `json:"type"` // "hello"
+	Type         string   `json:"type"`
 	Name         string   `json:"name"`
 	Version      string   `json:"version"`
 	Capabilities []string `json:"capabilities,omitempty"`
 }
 
-// RegisterCommandFromExt asks zot to bind /name to this extension.
-// Description appears in the slash autocomplete + /help.
 type RegisterCommandFromExt struct {
-	Type        string `json:"type"` // "register_command"
+	Type        string `json:"type"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 }
 
-// RegisterToolFromExt asks zot to expose a tool to the LLM. The
-// schema is a JSON Schema object describing Args; zot doesn't validate
-// the model's arguments against it (the model providers do that), but
-// it must parse as valid JSON or registration is rejected.
-//
-// Tool names live in the same namespace as built-in tools (read,
-// write, edit, bash, skill). Conflicts are silently shadowed by the
-// built-in; check the extension's log for a warning.
 type RegisterToolFromExt struct {
-	Type        string          `json:"type"` // "register_tool"
+	Type        string          `json:"type"`
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Schema      json.RawMessage `json:"schema"`
 }
 
-// ReadyFromExt signals "all initial registrations sent". The host
-// waits for this (with a short timeout) before building the agent's
-// tool registry, so model calls don't race extension tool
-// registration.
 type ReadyFromExt struct {
-	Type string `json:"type"` // "ready"
+	Type string `json:"type"`
 }
 
-// SubscribeFromExt declares which lifecycle events the extension
-// wants to observe (one-way `event` frames) and which it wants to
-// intercept (round-trip `event_intercept` frames). Send once after
-// hello, before ready.
-//
-// Recognised event names: "session_start", "turn_start",
-// "turn_end", "tool_call", "assistant_message".
-//
-// Only "tool_call" supports interception in this version; values
-// listed in Intercept that aren't "tool_call" are ignored.
 type SubscribeFromExt struct {
-	Type      string   `json:"type"` // "subscribe"
+	Type      string   `json:"type"`
 	Events    []string `json:"events,omitempty"`
 	Intercept []string `json:"intercept,omitempty"`
 }
 
-// EventInterceptResponseFromExt is the extension's reply to an
-// EventInterceptFromHost. block=true refuses the underlying action;
-// reason is shown to the model (or the user) as the refusal text.
-// All fields default to "allow, pass through unmodified".
-//
-// Optional rewrite fields, their meaning depends on the event:
-//
-//   - ModifiedArgs: for event="tool_call", replaces the args the
-//     tool will see. Must be a JSON object literal or the rewrite is
-//     dropped and a warning logged.
-//   - ReplaceText: for event="assistant_message", replaces the user-
-//     visible text. The model's original text stays in the transcript
-//     (so the model can reference what it "said"); only the rendered
-//     output to the user is swapped.
-//
-// When block=true, rewrite fields are ignored.
 type EventInterceptResponseFromExt struct {
-	Type         string          `json:"type"` // "event_intercept_response"
+	Type         string          `json:"type"`
 	ID           string          `json:"id"`
 	Block        bool            `json:"block,omitempty"`
 	Reason       string          `json:"reason,omitempty"`
@@ -114,173 +65,132 @@ type EventInterceptResponseFromExt struct {
 	ReplaceText  string          `json:"replace_text,omitempty"`
 }
 
-// ToolResultFromExt is the extension's reply to a ToolCallFromHost.
-// Content[] follows the same shape as elsewhere in zot:
-//
-//	{"type":"text", "text":"..."}
-//	{"type":"image", "mime_type":"image/png", "data":"<base64>"}
-//
-// Set IsError true to mark the tool call as failed; the model sees
-// the content as the error explanation.
 type ToolResultFromExt struct {
-	Type    string         `json:"type"` // "tool_result"
+	Type    string         `json:"type"`
 	ID      string         `json:"id"`
 	Content []ContentBlock `json:"content"`
 	IsError bool           `json:"is_error,omitempty"`
 }
 
-// ContentBlock is one entry in a tool result's content array.
 type ContentBlock struct {
-	Type     string `json:"type"` // "text" | "image"
+	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`
 	MimeType string `json:"mime_type,omitempty"`
-	Data     string `json:"data,omitempty"` // base64
+	Data     string `json:"data,omitempty"`
 }
 
-// CommandResponseFromExt is the extension's answer to a
-// CommandInvokedFromHost. Action drives what zot does next:
-//
-//   - "prompt"  → submit Prompt as a fresh user message to the agent
-//   - "insert"  → insert Insert into the editor buffer at the cursor
-//   - "display" → append Display to the chat as a one-shot note
-//     (no model call, no transcript entry)
-//   - "noop"    → command handled internally, no UI change
 type CommandResponseFromExt struct {
-	Type    string `json:"type"` // "command_response"
-	ID      string `json:"id"`
-	Action  string `json:"action"`            // see above
-	Prompt  string `json:"prompt,omitempty"`  // for action=prompt
-	Insert  string `json:"insert,omitempty"`  // for action=insert
-	Display string `json:"display,omitempty"` // for action=display
-	Error   string `json:"error,omitempty"`   // command failed; render to user
+	Type      string     `json:"type"`
+	ID        string     `json:"id"`
+	Action    string     `json:"action"`
+	Prompt    string     `json:"prompt,omitempty"`
+	Insert    string     `json:"insert,omitempty"`
+	Display   string     `json:"display,omitempty"`
+	OpenPanel *PanelSpec `json:"open_panel,omitempty"`
+	Error     string     `json:"error,omitempty"`
 }
 
-// NotifyFromExt is a one-way status message the extension can push at
-// any time. Zot renders it in the chat as a styled note.
+type PanelSpec struct {
+	ID     string   `json:"id"`
+	Title  string   `json:"title,omitempty"`
+	Lines  []string `json:"lines,omitempty"`
+	Footer string   `json:"footer,omitempty"`
+}
+
+type PanelRenderFromExt struct {
+	Type    string   `json:"type"`
+	PanelID string   `json:"panel_id"`
+	Title   string   `json:"title,omitempty"`
+	Lines   []string `json:"lines,omitempty"`
+	Footer  string   `json:"footer,omitempty"`
+}
+
+type PanelCloseFromExt struct {
+	Type    string `json:"type"`
+	PanelID string `json:"panel_id"`
+}
+
 type NotifyFromExt struct {
-	Type    string `json:"type"`  // "notify"
-	Level   string `json:"level"` // "info" | "warn" | "error" | "success"
+	Type    string `json:"type"`
+	Level   string `json:"level"`
 	Message string `json:"message"`
 }
 
-// ShutdownAckFromExt acknowledges the host's shutdown request. The
-// extension should exit shortly after sending this; zot waits a few
-// seconds before SIGTERM.
 type ShutdownAckFromExt struct {
-	Type string `json:"type"` // "shutdown_ack"
+	Type string `json:"type"`
 }
 
-// ---- host -> extension ----
-
-// HelloAckFromHost is zot's reply to HelloFromExt. The extension may
-// inspect the host version + currently-active provider/model to decide
-// whether to register particular commands.
 type HelloAckFromHost struct {
-	Type            string `json:"type"` // "hello_ack"
+	Type            string `json:"type"`
 	ProtocolVersion int    `json:"protocol_version"`
 	ZotVersion      string `json:"zot_version"`
 	Provider        string `json:"provider"`
 	Model           string `json:"model"`
 	CWD             string `json:"cwd"`
+	ExtensionDir    string `json:"extension_dir,omitempty"`
+	DataDir         string `json:"data_dir,omitempty"`
 }
 
-// CommandInvokedFromHost is sent when the user runs a slash command
-// the extension previously registered. Args contains everything after
-// the command name (already trimmed).
 type CommandInvokedFromHost struct {
-	Type string `json:"type"` // "command_invoked"
+	Type string `json:"type"`
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Args string `json:"args,omitempty"`
 }
 
-// ToolCallFromHost is sent when the LLM invokes a tool the extension
-// registered. Args is the raw JSON object the model produced; the
-// extension is responsible for validating/coercing it. Reply with
-// ToolResultFromExt within the host's tool timeout (default 60s).
 type ToolCallFromHost struct {
-	Type string          `json:"type"` // "tool_call"
+	Type string          `json:"type"`
 	ID   string          `json:"id"`
 	Name string          `json:"name"`
 	Args json.RawMessage `json:"args"`
 }
 
-// EventFromHost is a one-way lifecycle notification. The payload
-// fields populated depend on Event:
-//
-//	session_start    : (no extra fields)
-//	turn_start       : Step
-//	turn_end         : Stop, optional Error
-//	tool_call        : ToolID, ToolName, ToolArgs
-//	assistant_message: Text
 type EventFromHost struct {
-	Type  string `json:"type"` // "event"
-	Event string `json:"event"`
-
-	Step  int    `json:"step,omitempty"`
-	Stop  string `json:"stop,omitempty"`
-	Error string `json:"error,omitempty"`
-
+	Type     string          `json:"type"`
+	Event    string          `json:"event"`
+	Step     int             `json:"step,omitempty"`
+	Stop     string          `json:"stop,omitempty"`
+	Error    string          `json:"error,omitempty"`
 	ToolID   string          `json:"tool_id,omitempty"`
 	ToolName string          `json:"tool_name,omitempty"`
 	ToolArgs json.RawMessage `json:"tool_args,omitempty"`
-
-	Text string `json:"text,omitempty"`
+	Text     string          `json:"text,omitempty"`
 }
 
-// EventInterceptFromHost is sent when zot wants to give the
-// extension a chance to block, modify, or annotate a lifecycle
-// event before it happens. Reply with EventInterceptResponseFromExt
-// within the host's intercept timeout (default 5s); missing the
-// deadline is treated as "allow".
-//
-// Supported events and their effect on block=true:
-//
-//   - tool_call:         cancel the tool; model sees reason as error.
-//     Can also modify args via ModifiedArgs.
-//   - turn_start:        cancel the turn before the model call.
-//     Reason is shown as a chat status line.
-//   - assistant_message: suppress the message. Can also rewrite
-//     the user-visible text via ReplaceText.
 type EventInterceptFromHost struct {
-	Type  string `json:"type"` // "event_intercept"
-	ID    string `json:"id"`
-	Event string `json:"event"`
-
-	// tool_call payload
+	Type     string          `json:"type"`
+	ID       string          `json:"id"`
+	Event    string          `json:"event"`
 	ToolID   string          `json:"tool_id,omitempty"`
 	ToolName string          `json:"tool_name,omitempty"`
 	ToolArgs json.RawMessage `json:"tool_args,omitempty"`
-
-	// turn_start payload
-	Step int `json:"step,omitempty"`
-
-	// assistant_message payload
-	Text string `json:"text,omitempty"`
+	Step     int             `json:"step,omitempty"`
+	Text     string          `json:"text,omitempty"`
 }
 
-// ShutdownFromHost asks the extension to clean up and exit. Zot
-// sends this when the user runs /reload-ext or zot itself is exiting
-// gracefully. Extensions that don't reply within a few seconds get
-// SIGTERM; SIGKILL after a few more.
+type PanelKeyFromHost struct {
+	Type    string `json:"type"`
+	PanelID string `json:"panel_id"`
+	Key     string `json:"key"`
+	Text    string `json:"text,omitempty"`
+}
+
+type PanelResizeFromHost struct {
+	Type    string `json:"type"`
+	PanelID string `json:"panel_id"`
+	Width   int    `json:"width"`
+	Height  int    `json:"height"`
+}
+
+type PanelCloseFromHost struct {
+	Type    string `json:"type"`
+	PanelID string `json:"panel_id"`
+}
+
 type ShutdownFromHost struct {
-	Type string `json:"type"` // "shutdown"
+	Type string `json:"type"`
 }
 
-// ---- error frame (either direction) ----
-
-// Error is a generic failure response. Used by either side when a
-// frame can't be processed (malformed JSON, unknown type, etc.).
-type Error struct {
-	Type    string `json:"type"` // "error"
-	ID      string `json:"id,omitempty"`
-	Message string `json:"message"`
-}
-
-// ---- helpers ----
-
-// Encode marshals v and appends a trailing LF, ready to write to the
-// peer's pipe. Returns the marshalling error, if any.
 func Encode(v any) ([]byte, error) {
 	b, err := json.Marshal(v)
 	if err != nil {

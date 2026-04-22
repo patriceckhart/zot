@@ -14,6 +14,7 @@ import (
 	"github.com/patriceckhart/zot/internal/agent/tools"
 	"github.com/patriceckhart/zot/internal/auth"
 	"github.com/patriceckhart/zot/internal/core"
+	"github.com/patriceckhart/zot/internal/extproto"
 	"github.com/patriceckhart/zot/internal/provider"
 	"github.com/patriceckhart/zot/internal/skills"
 	"github.com/patriceckhart/zot/internal/tui"
@@ -217,6 +218,7 @@ type Interactive struct {
 	telegramBridge    *telegram.Bridge
 	sessionOpsDialog  *sessionOpsDialog
 	sessionTreeDialog *sessionTreeDialog
+	extPanel          *extPanelDialog
 
 	// pendingFork is true when the user ran /session fork: the next
 	// jump-picker selection should branch off that message instead
@@ -278,6 +280,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		telegramDialog:    newTelegramDialog(),
 		sessionOpsDialog:  newSessionOpsDialog(),
 		sessionTreeDialog: newSessionTreeDialog(),
+		extPanel:          newExtPanelDialog(),
 		suggest:           newSlashSuggester(),
 		spin:              newSpinner(),
 	}
@@ -698,6 +701,8 @@ func (i *Interactive) redraw() {
 		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, cols)
 	case i.sessionTreeDialog.Active():
 		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, cols)
+	case i.extPanel.Active():
+		dialog = i.extPanel.Render(i.cfg.Theme, cols)
 	}
 
 	// Slash-command autocomplete: popup above the status line, only
@@ -861,6 +866,10 @@ func (i *Interactive) redraw() {
 			cursorCol = c
 		}
 	}
+	if i.extPanel.Active() {
+		cursorRow = -1
+		cursorCol = 0
+	}
 	i.rend.Draw(frame, cursorRow, cursorCol)
 }
 
@@ -957,6 +966,48 @@ func clipBottomClippedImages(lines []string) []string {
 // truncateLine shortens s so it fits within n display cells, with an
 // ellipsis if trimmed. Used by the "sliding in" chips so a pasted
 // novel doesn't blow past the status line.
+func panelKeyName(k tui.Key) string {
+	switch k.Kind {
+	case tui.KeyUp:
+		return "up"
+	case tui.KeyDown:
+		return "down"
+	case tui.KeyLeft:
+		return "left"
+	case tui.KeyRight:
+		return "right"
+	case tui.KeyEnter:
+		return "enter"
+	case tui.KeyEsc:
+		return "esc"
+	case tui.KeyTab:
+		return "tab"
+	case tui.KeyBackspace:
+		return "backspace"
+	case tui.KeyDelete:
+		return "delete"
+	case tui.KeyHome:
+		return "home"
+	case tui.KeyEnd:
+		return "end"
+	case tui.KeyPageUp:
+		return "pageup"
+	case tui.KeyPageDown:
+		return "pagedown"
+	case tui.KeyRune:
+		return "rune"
+	default:
+		return "unknown"
+	}
+}
+
+func panelKeyText(k tui.Key) string {
+	if k.Kind == tui.KeyRune {
+		return string(k.Rune)
+	}
+	return ""
+}
+
 func truncateLine(s string, n int) string {
 	if n <= 0 {
 		return ""
@@ -1110,6 +1161,20 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.applySessionTreeSelection(act.Path)
 		}
 		i.invalidate()
+		return false
+	}
+	if i.extPanel.Active() {
+		if k.Kind == tui.KeyCtrlC || k.Kind == tui.KeyEsc {
+			if i.cfg.Extensions != nil {
+				_ = i.cfg.Extensions.SendPanelClose(i.extPanel.ext, i.extPanel.id)
+			}
+			i.extPanel.Close()
+			i.invalidate()
+			return false
+		}
+		if i.cfg.Extensions != nil {
+			_ = i.cfg.Extensions.SendPanelKey(i.extPanel.ext, i.extPanel.id, panelKeyName(k), panelKeyText(k))
+		}
 		return false
 	}
 	if i.jumpDialog.Active() {
@@ -1428,6 +1493,16 @@ func (i *Interactive) invokeExtensionCommand(ctx context.Context, name, args str
 		return
 	}
 	switch resp.Action {
+	case "open_panel":
+		if resp.OpenPanel != nil {
+			extName := name
+			if i.cfg.Extensions != nil {
+				if owner := i.cfg.Extensions.CommandOwner(name); owner != "" {
+					extName = owner
+				}
+			}
+			i.OpenPanel(extName, *resp.OpenPanel)
+		}
 	case "prompt":
 		if strings.TrimSpace(resp.Prompt) == "" {
 			return
@@ -1537,6 +1612,36 @@ func (i *Interactive) Insert(text string) {
 func (i *Interactive) Display(extName, text string) {
 	i.appendExtensionNote(extName, text, "info")
 	i.invalidate()
+}
+
+func (i *Interactive) OpenPanel(extName string, spec extproto.PanelSpec) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.extPanel.Open(extName, spec.ID, spec.Title, spec.Lines, spec.Footer)
+	if i.cfg.Extensions != nil {
+		cols, rows := i.cfg.Terminal.Size()
+		_ = cols
+		_ = rows
+	}
+	i.invalidate()
+}
+
+func (i *Interactive) UpdatePanel(extName, panelID, title string, lines []string, footer string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.extPanel.Active() && i.extPanel.ext == extName && i.extPanel.id == panelID {
+		i.extPanel.Update(title, lines, footer)
+		i.invalidate()
+	}
+}
+
+func (i *Interactive) ClosePanel(extName, panelID string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.extPanel.Active() && i.extPanel.ext == extName && i.extPanel.id == panelID {
+		i.extPanel.Close()
+		i.invalidate()
+	}
 }
 
 func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {

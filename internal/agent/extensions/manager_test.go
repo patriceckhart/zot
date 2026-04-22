@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+
+	"github.com/patriceckhart/zot/internal/extproto"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -30,6 +32,9 @@ func (s *stubHooks) Display(name, text string) {
 	defer s.mu.Unlock()
 	s.displays = append(s.displays, name+":"+text)
 }
+func (s *stubHooks) OpenPanel(string, extproto.PanelSpec)                 {}
+func (s *stubHooks) UpdatePanel(string, string, string, []string, string) {}
+func (s *stubHooks) ClosePanel(string, string)                            {}
 
 // writeMockExtension creates a minimal extension on disk that uses a
 // shell script (or batch file on windows) to drive the protocol. The

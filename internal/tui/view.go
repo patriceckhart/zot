@@ -411,7 +411,7 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 			switch b := c.(type) {
 			case provider.TextBlock:
 				for _, l := range strings.Split(b.Text, "\n") {
-					for _, w := range wrapLine(l, width-2, "    ") {
+					for _, w := range wrapLine(l, width-4, "") {
 						lines = append(lines, "    "+v.Theme.FG256(v.Theme.Muted, w))
 					}
 				}
@@ -435,9 +435,7 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 			case provider.TextBlock:
 				md := RenderMarkdown(b.Text, v.Theme, inner)
 				for _, l := range strings.Split(md, "\n") {
-					for _, w := range wrapLine(l, inner, "") {
-						lines = append(lines, indent+w)
-					}
+					lines = append(lines, indent+l)
 				}
 			case provider.ToolCallBlock:
 				// Rule above the tool header frames the call as a
