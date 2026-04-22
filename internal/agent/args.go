@@ -283,7 +283,14 @@ func PrintHelp(version string) {
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, assistant(title))
 		fmt.Fprintln(os.Stderr, rule)
+		narrow := width < 100
 		for _, r := range rows {
+			if narrow {
+				fmt.Fprintf(os.Stderr, "  %s\n", fg(r.left))
+				fmt.Fprintf(os.Stderr, "    %s\n", muted(r.right))
+				fmt.Fprintln(os.Stderr)
+				continue
+			}
 			left := r.left
 			if len([]rune(left)) < leftW {
 				left += strings.Repeat(" ", leftW-len([]rune(left)))
