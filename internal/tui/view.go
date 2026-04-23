@@ -1420,6 +1420,26 @@ func StatusBar(p StatusBarParams) []string {
 	}
 
 	primary := leftBuilder.String()
+
+	// On narrow terminals the single line wraps badly. If the visible
+	// width exceeds cols and we have a busy prefix, split: keep the
+	// busy prefix on line 1, put model+stats on line 2.
+	if p.Cols > 0 && p.BusyPrefix != "" && visibleWidth(primary) > p.Cols {
+		busyLine := pad + p.BusyPrefix
+		var infoBuilder strings.Builder
+		infoBuilder.WriteString(pad)
+		infoBuilder.WriteString(th.FG256(th.Muted, left))
+		if middle != "" {
+			infoBuilder.WriteString(pad)
+			infoBuilder.WriteString(th.FG256(th.Muted, middle))
+		}
+		lines := []string{busyLine, infoBuilder.String()}
+		if cwd != "" {
+			lines = append(lines, pad+th.FG256(th.Muted, cwd))
+		}
+		return lines
+	}
+
 	if cwd == "" {
 		return []string{primary}
 	}

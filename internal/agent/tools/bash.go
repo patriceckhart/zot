@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/patriceckhart/zot/internal/core"
@@ -69,6 +68,7 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	cmd := newShellCmd(runCtx, a.Command)
 	cmd.Dir = cwd
 	cmd.Env = os.Environ()
+	setProcessGroup(cmd)
 
 	// Capture merged stdout+stderr with line-by-line streaming.
 	pr, pw := io.Pipe()
@@ -224,15 +224,4 @@ func newShellCmd(ctx context.Context, command string) *exec.Cmd {
 		return exec.CommandContext(ctx, "cmd", "/C", command)
 	}
 	return exec.CommandContext(ctx, "/bin/sh", "-c", command)
-}
-
-// killProcessGroup best-effort SIGTERM then SIGKILL.
-func killProcessGroup(cmd *exec.Cmd) {
-	if cmd.Process == nil {
-		return
-	}
-	_ = cmd.Process.Signal(syscall.SIGTERM)
-	time.AfterFunc(3*time.Second, func() {
-		_ = cmd.Process.Kill()
-	})
 }
