@@ -82,6 +82,20 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	// Writer to both the buffer (trimmed) and progress callback.
 	captured := &bytes.Buffer{}
 	done := make(chan struct{})
+
+	// Watch for context cancellation and kill the entire process
+	// group immediately. exec.CommandContext only kills the direct
+	// process, but child processes (e.g. grep spawned by the shell)
+	// keep the output pipe open and block cmd.Wait() indefinitely.
+	go func() {
+		select {
+		case <-runCtx.Done():
+			killProcessGroup(cmd)
+			// Close the write end so the reader goroutine unblocks.
+			pw.Close()
+		case <-done:
+		}
+	}()
 	go func() {
 		defer close(done)
 		buf := make([]byte, 4096)
@@ -110,11 +124,6 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	waitErr := cmd.Wait()
 	pw.Close()
 	<-done
-
-	// On hard cancel, try to kill the process group.
-	if ctx.Err() != nil && cmd.Process != nil {
-		killProcessGroup(cmd)
-	}
 
 	output := captured.String()
 	truncBytes := captured.Len() >= maxBashBytes
