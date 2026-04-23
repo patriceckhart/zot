@@ -451,7 +451,7 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 		for _, c := range m.Content {
 			switch b := c.(type) {
 			case provider.TextBlock:
-				md := RenderMarkdown(b.Text, v.Theme, inner)
+				md := RenderMarkdown(strings.TrimLeft(b.Text, "\n"), v.Theme, inner)
 				for _, l := range strings.Split(md, "\n") {
 					for _, w := range wrapANSILine(l, inner) {
 						lines = append(lines, indent+w)
