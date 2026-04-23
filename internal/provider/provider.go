@@ -62,9 +62,10 @@ func (ToolResultBlock) isContent() {}
 
 // Message is a single turn in the conversation.
 type Message struct {
-	Role    Role      `json:"role"`
-	Content []Content `json:"content"`
-	Time    time.Time `json:"time"`
+	Role    Role              `json:"role"`
+	Content []Content         `json:"content"`
+	Time    time.Time         `json:"time"`
+	Meta    map[string]string `json:"meta,omitempty"`
 }
 
 // Tool is a tool definition advertised to the LLM.

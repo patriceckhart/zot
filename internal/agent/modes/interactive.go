@@ -2363,33 +2363,36 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 	if auto {
 		i.spin.StartFixed("condensing history")
 		i.autoCompacting = true
-		i.statusOK = "condensing history… (esc to cancel)"
 	} else {
-		i.spin.Start()
-		i.statusOK = "compacting..."
+		i.spin.StartFixed("compacting")
 	}
 	i.cancelTurn = cancel
 	i.statusErr = ""
-	i.streaming.Reset()
-	i.streamOn = true
+	i.statusOK = ""
+	// Do NOT set streamOn: the summary text should not be visible
+	// in the chat while compacting. The user just sees the spinner
+	// and can keep typing / queue prompts.
 	i.scrollOffset = 0
 	i.helpBlock = nil
 	i.mu.Unlock()
 	i.invalidate()
 
 	go func() {
-		sink := func(delta string) {
-			i.mu.Lock()
-			i.streaming.WriteString(delta)
-			i.mu.Unlock()
-			i.invalidate()
-		}
+		// Sink discards deltas — we don't stream the summary to the UI.
+		sink := func(delta string) {}
 		summary, err := i.agent.Compact(ctx, 4, sink)
+		_ = summary
 		i.mu.Lock()
 		i.busy = false
 		i.resetStreamingStateLocked()
 		i.cancelTurn = nil
 		i.autoCompacting = false
+
+		// Drain the queue: if the user typed a prompt while compacting,
+		// fire it now that the transcript is clean.
+		var next string
+		var hasNext bool
+
 		switch {
 		case err != nil && ctx.Err() != nil:
 			i.statusErr = ""
@@ -2398,22 +2401,44 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 			} else {
 				i.statusOK = "compaction cancelled"
 			}
+			i.queued = nil // drop queue on cancel
 		case err != nil:
 			i.statusErr = "compaction failed: " + err.Error()
 			i.statusOK = ""
+			i.queued = nil // drop queue on error
 		default:
 			i.statusErr = ""
-			i.statusOK = fmt.Sprintf("compacted transcript (%d chars of summary)", len(summary))
-			i.lastCtxInput = 0 // reset; next turn will get a fresh measurement
+			// Read token count from the compaction message meta.
+			tokens := ""
+			msgs := i.agent.Messages()
+			if len(msgs) > 0 && msgs[0].Meta["compaction"] == "true" {
+				tokens = msgs[0].Meta["tokens_before"]
+			}
+			if tokens != "" {
+				i.statusOK = fmt.Sprintf("compacted from ~%s tokens (ctrl+o to expand)", tokens)
+			} else {
+				i.statusOK = "compacted (ctrl+o to expand)"
+			}
+			i.lastCtxInput = 0
 			i.toolCalls = map[string]*tui.ToolCallView{}
 			i.toolOrder = nil
-			// Transcript was rewritten in place — purge the per-message
-			// render cache so stale entries keyed on the old messages
-			// don't linger.
 			i.view.InvalidateRenderCache()
+			// Pop queued prompt if any.
+			if len(i.queued) > 0 {
+				next, i.queued = i.queued[0], i.queued[1:]
+				hasNext = true
+			}
 		}
 		i.mu.Unlock()
 		i.invalidate()
+
+		if hasNext {
+			p := i.runCtx
+			if p == nil {
+				p = context.Background()
+			}
+			i.startTurn(p, next)
+		}
 	}()
 }
 

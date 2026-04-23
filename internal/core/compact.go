@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,6 +83,9 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 		return "", fmt.Errorf("empty summary from model")
 	}
 
+	// Estimate token count before compaction (rough: 1 token ~ 4 chars).
+	tokensBefore := len(transcript) / 4
+
 	// Replace transcript: one synthetic user message with the summary,
 	// followed by the preserved tail (if any).
 	synthetic := provider.Message{
@@ -90,9 +94,19 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 			provider.TextBlock{Text: "## Context Summary (compacted)\n\n" + summary},
 		},
 		Time: time.Now(),
+		Meta: map[string]string{
+			"compaction":    "true",
+			"tokens_before": strconv.Itoa(tokensBefore),
+		},
 	}
 
 	tail := msgs[len(msgs)-keepTail:]
+	// Repair the tail: remove orphaned tool_result blocks whose
+	// matching tool_use was in the compacted (now-removed) portion.
+	// Anthropic rejects transcripts where a tool_result references
+	// a tool_use ID that doesn't exist.
+	tail = repairOrphanedToolResults(tail)
+
 	next := make([]provider.Message, 0, 1+len(tail))
 	next = append(next, synthetic)
 	next = append(next, tail...)
@@ -102,6 +116,44 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 	a.mu.Unlock()
 
 	return summary, nil
+}
+
+// repairOrphanedToolResults removes tool_result content blocks (and
+// entire messages that become empty) when the matching tool_use ID
+// does not appear anywhere in the given messages. This happens after
+// compaction when the tail preserves a tool_result but the tool_use
+// that produced it was summarized away.
+func repairOrphanedToolResults(msgs []provider.Message) []provider.Message {
+	// Collect all tool_use IDs present in the messages.
+	useIDs := map[string]bool{}
+	for _, m := range msgs {
+		for _, c := range m.Content {
+			if tc, ok := c.(provider.ToolCallBlock); ok {
+				useIDs[tc.ID] = true
+			}
+		}
+	}
+
+	// Filter out tool_result blocks referencing missing tool_use IDs.
+	out := make([]provider.Message, 0, len(msgs))
+	for _, m := range msgs {
+		var filtered []provider.Content
+		for _, c := range m.Content {
+			if tr, ok := c.(provider.ToolResultBlock); ok {
+				if !useIDs[tr.CallID] {
+					continue // orphaned
+				}
+			}
+			filtered = append(filtered, c)
+		}
+		if len(filtered) > 0 {
+			copy := m
+			copy.Content = filtered
+			out = append(out, copy)
+		}
+		// Drop messages that became empty after filtering.
+	}
+	return out
 }
 
 // serializeTranscript renders a list of provider.Message into a plain

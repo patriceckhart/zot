@@ -403,6 +403,17 @@ func fnv64aWrite(h uint64, p []byte) uint64 {
 
 func (v *View) renderMessage(m provider.Message, width int) []string {
 	var lines []string
+
+	// Compaction summary: render as a single muted line at the end
+	// of the chat instead of as a user message.
+	if m.Meta["compaction"] == "true" {
+		if v.ExpandAll {
+			return v.renderCompactionBlock(m, width)
+		}
+		// Collapsed: skip entirely. The status bar shows the info.
+		return nil
+	}
+
 	switch m.Role {
 	case provider.RoleUser:
 		header := v.Theme.FG256(v.Theme.User, "▍ you")
@@ -1277,6 +1288,44 @@ func truncateLines(s string, n int) string {
 		return s
 	}
 	return strings.Join(lines[:n], "\n") + "\n  … (" + fmt.Sprintf("%d", len(lines)-n) + " more)"
+}
+
+// renderCompactionBlock renders a compaction summary as a distinct
+// visual block in the chat. When collapsed it shows a one-line label
+// with the pre-compaction token count; when expanded (ctrl+o) it
+// shows the full summary text.
+func (v *View) renderCompactionBlock(m provider.Message, width int) []string {
+	th := v.Theme
+	const indent = "    "
+
+	tokens := m.Meta["tokens_before"]
+	if tokens == "" {
+		tokens = "?"
+	}
+
+	if v.ExpandAll {
+		var lines []string
+		header := th.FG256(th.Muted, fmt.Sprintf("compacted from ~%s tokens", tokens))
+		lines = append(lines, indent+header)
+		lines = append(lines, "")
+		for _, c := range m.Content {
+			if tb, ok := c.(provider.TextBlock); ok {
+				text := tb.Text
+				if idx := strings.Index(text, "\n\n"); idx >= 0 && strings.HasPrefix(text, "## Context Summary") {
+					text = text[idx+2:]
+				}
+				md := RenderMarkdown(text, th, width-4)
+				for _, l := range strings.Split(md, "\n") {
+					lines = append(lines, indent+l)
+				}
+			}
+		}
+		return lines
+	}
+
+	// Collapsed: single line, no banner.
+	line := th.FG256(th.Muted, fmt.Sprintf("compacted from ~%s tokens (ctrl+o to expand)", tokens))
+	return []string{indent + line}
 }
 
 // StatusBarParams groups the many bits of state the status bar needs.
