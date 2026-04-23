@@ -11,6 +11,13 @@ import (
 	"github.com/patriceckhart/zot/internal/provider"
 )
 
+// expandTabs replaces tab characters with 4 spaces so code from
+// tab-indented languages (Go, Makefiles, etc.) renders at a
+// consistent width instead of the terminal's default 8-column tabs.
+func expandTabs(s string) string {
+	return strings.ReplaceAll(s, "\t", "    ")
+}
+
 // pathFromToolArgs returns the "path" argument from a tool_call's
 // JSON arguments, or "" if the args aren't a JSON object or don't
 // include one. Used to pick a syntax language for rendering the
@@ -777,7 +784,7 @@ func (v *View) renderDiffRow(line string, width, color int, lineNo int, mark byt
 	if len(line) == 0 {
 		return ""
 	}
-	code := line[1:] // strip the leading marker; we re-emit it in colour
+	code := expandTabs(line[1:]) // strip the leading marker; expand tabs
 
 	// Syntax-highlight the code half when we know the language. Use
 	// the same HighlightCode pipeline as renderNumberedFile so the
@@ -805,11 +812,11 @@ func (v *View) renderDiffRow(line string, width, color int, lineNo int, mark byt
 	var gutterText string
 	switch mark {
 	case '+':
-		gutterText = fmt.Sprintf("+%5d\t", lineNo)
+		gutterText = fmt.Sprintf("+%3d ", lineNo)
 	case '-':
-		gutterText = fmt.Sprintf("-%5d\t", lineNo)
+		gutterText = fmt.Sprintf("-%3d ", lineNo)
 	default:
-		gutterText = fmt.Sprintf(" %5d\t", lineNo)
+		gutterText = fmt.Sprintf(" %3d ", lineNo)
 	}
 	var gutter string
 	if mark == ' ' {
@@ -943,8 +950,8 @@ func (v *View) renderNumberedFile(text, sourcePath string) []string {
 			codes = append(codes, l)
 			continue
 		}
-		gutter := l[:idx+1] // keep the tab so alignment is preserved
-		code := l[idx+1:]
+		gutter := l[:idx] + " " // replace tab with single space
+		code := expandTabs(l[idx+1:])
 		gutters = append(gutters, gutter)
 		codes = append(codes, code)
 	}
@@ -1135,6 +1142,12 @@ func (v *View) renderRawFile(text, sourcePath string, startLine int) []string {
 	code := lines[:codeEnd]
 	footer := lines[codeEnd:]
 
+	// Expand tabs to 4 spaces so Go / Makefile code renders
+	// at a consistent width.
+	for i, c := range code {
+		code[i] = expandTabs(c)
+	}
+
 	lang := LanguageFromPath(sourcePath)
 	var highlighted []string
 	if lang != "" {
@@ -1154,7 +1167,7 @@ func (v *View) renderRawFile(text, sourcePath string, startLine int) []string {
 
 	out := make([]string, 0, len(lines))
 	for i, c := range highlighted {
-		gutter := fmt.Sprintf("%6d\t", startLine+i)
+		gutter := fmt.Sprintf("%4d ", startLine+i)
 		out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, gutter)+c)
 	}
 	for _, f := range footer {
