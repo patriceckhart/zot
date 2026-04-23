@@ -260,6 +260,34 @@ Every interactive or print/json run (unless `--no-session`) writes a JSONL trans
 
 The context meter in the status line uses the model's advertised context window to show how much of it your last turn consumed.
 
+### Custom models
+
+Place a `models.json` in `$ZOT_HOME` (macOS: `~/Library/Application Support/zot/`, Linux: `~/.local/state/zot/`) to add models that aren't in the baked-in catalog or to override existing entries:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "models": [
+        {
+          "id": "gpt-5.5",
+          "name": "GPT-5.5",
+          "reasoning": true,
+          "contextWindow": 400000,
+          "maxTokens": 128000
+        }
+      ]
+    }
+  }
+}
+```
+
+Supported fields per model: `id` (required), `name`, `reasoning`, `contextWindow`, `maxTokens`, `priceInput`, `priceOutput`, `priceCacheRead`, `priceCacheWrite`.
+
+Provider keys are normalized: `openai-codex` and `openai-responses` map to `openai`, `anthropic-messages` maps to `anthropic`.
+
+User-defined models show `source: user` in `--list-models` and take precedence over both the baked-in catalog and live-discovered models. Missing or invalid files are silently ignored.
+
 ## Inline images
 
 When a tool returns an image (for example `read` on a PNG), zot renders it inline on terminals that support it: **iTerm2**, **WezTerm**, **Kitty**, **Ghostty**. On other terminals you see a text placeholder with MIME type, pixel dimensions, and byte size. Control with the `ZOT_INLINE_IMAGES` env var:

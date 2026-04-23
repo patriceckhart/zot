@@ -172,6 +172,7 @@ func Run(rawArgs []string, version string) error {
 	// Model catalog: load any cached discovery data before we inspect
 	// the model list (list-models, print/json, interactive).
 	LoadCachedModels()
+	LoadUserModels()
 
 	if args.ListModels {
 		printModels()

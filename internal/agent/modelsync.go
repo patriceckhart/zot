@@ -13,6 +13,11 @@ func ModelCachePath() string {
 	return filepath.Join(ZotHome(), "models-cache.json")
 }
 
+// UserModelsPath returns the path to the user's models.json override.
+func UserModelsPath() string {
+	return filepath.Join(ZotHome(), "models.json")
+}
+
 // LoadCachedModels loads the cache file and applies it to the provider
 // package so FindModel / ModelsForProvider see live ids immediately.
 // Safe to call before any credentials are known.
@@ -24,6 +29,13 @@ func LoadCachedModels() {
 	if len(c.Models) > 0 {
 		provider.SetLiveModels(c.Models)
 	}
+}
+
+// LoadUserModels reads $ZOT_HOME/models.json and merges any user-defined
+// models into the active catalog. User models take highest precedence.
+func LoadUserModels() {
+	models := provider.LoadUserModels(UserModelsPath())
+	provider.SetUserModels(models)
 }
 
 // RefreshModelsAsync kicks a background discovery for every provider
