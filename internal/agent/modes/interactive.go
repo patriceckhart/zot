@@ -2598,6 +2598,10 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			return
 		}
 		i.resetStreamingStateLocked()
+		// Force full repaint: assistant text committed, layout shifts.
+		if i.rend != nil {
+			i.rend.Invalidate()
+		}
 	case core.EvToolUseStart:
 		// Live streaming: pre-create the view so the user sees the
 		// tool call being composed in real time. Any subsequent
@@ -2657,6 +2661,12 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			}
 			tc.Result = text.String()
 		}
+		// Force full repaint: tool completion shifts the layout
+		// (collapsed body replaces streaming) and the diff renderer
+		// may leave stale code fragments on status bar rows.
+		if i.rend != nil {
+			i.rend.Invalidate()
+		}
 		if i.cfg.OnToolResult != nil {
 			i.cfg.OnToolResult(e.ID, e.Result)
 		}
@@ -2666,11 +2676,13 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			i.lastCtxInput = e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens
 		}
 	case core.EvTurnEnd:
+		// Force full repaint: the turn ending shifts layout (streaming
+		// buffer flushed, status bar updates) and the diff renderer
+		// may leave stale content on reused rows.
+		if i.rend != nil {
+			i.rend.Invalidate()
+		}
 		if e.Stop == provider.StopAborted {
-			// Aborted turn: discard the partial streaming text (it
-			// is not persisted in the transcript) and clear any
-			// transient error. Also drop anything still buffered in
-			// the pacer so nothing keeps drawing after the cancel.
 			i.resetStreamingStateLocked()
 			i.statusErr = ""
 			i.statusOK = "cancelled"
