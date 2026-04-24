@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -337,15 +338,45 @@ func (r Resolved) NewClient() provider.Client {
 		return provider.NewOpenAI(r.Credential, r.BaseURL)
 	case "openai":
 		if r.AuthMethod == "oauth" {
-			return provider.NewOpenAICodex(r.Credential, r.AccountID, r.BaseURL)
+			inner := provider.NewOpenAICodex(r.Credential, r.AccountID, r.BaseURL)
+			return r.wrapWithRefresh(inner)
 		}
 		return provider.NewOpenAI(r.Credential, r.BaseURL)
 	default:
 		if r.AuthMethod == "oauth" {
-			return provider.NewAnthropicOAuth(r.Credential, r.BaseURL)
+			inner := provider.NewAnthropicOAuth(r.Credential, r.BaseURL)
+			return r.wrapWithRefresh(inner)
 		}
 		return provider.NewAnthropic(r.Credential, r.BaseURL)
 	}
+}
+
+// wrapWithRefresh wraps an OAuth client so the access token is
+// refreshed automatically before each API call. Without this, long
+// sessions (hours) silently fail when the 1-hour token expires.
+func (r Resolved) wrapWithRefresh(inner provider.Client) provider.Client {
+	provName := r.Provider
+	baseURL := r.BaseURL
+	accountID := r.AccountID
+
+	refreshFn := func(ctx context.Context) (string, error) {
+		tok, err := refreshIfExpired(provName, loadOAuthToken(provName))
+		if err != nil {
+			return "", err
+		}
+		return tok.AccessToken, nil
+	}
+
+	factory := func(token string) provider.Client {
+		switch provName {
+		case "openai":
+			return provider.NewOpenAICodex(token, accountID, baseURL)
+		default:
+			return provider.NewAnthropicOAuth(token, baseURL)
+		}
+	}
+
+	return provider.NewRefreshingClient(inner, refreshFn, factory)
 }
 
 // UseSandbox replaces the sandbox pointer that every tool in r's

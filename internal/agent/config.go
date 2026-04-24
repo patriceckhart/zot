@@ -155,6 +155,26 @@ func ResolveCredentialFull(provider, explicit string) (cred, method, accountID s
 	return "", "", "", fmt.Errorf("no credential for %s", provider)
 }
 
+// loadOAuthToken reads the current OAuth token from auth.json for the
+// given provider. Returns nil if no token is stored.
+func loadOAuthToken(providerName string) *auth.OAuthToken {
+	c, err := AuthStoreFor().Load()
+	if err != nil {
+		return nil
+	}
+	switch providerName {
+	case "anthropic":
+		if c.Anthropic.OAuth != nil {
+			return c.Anthropic.OAuth
+		}
+	case "openai":
+		if c.OpenAI.OAuth != nil {
+			return c.OpenAI.OAuth
+		}
+	}
+	return nil
+}
+
 // refreshIfExpired returns a usable OAuth token for the given provider,
 // refreshing it synchronously when it's past (or near) expiry. The
 // refreshed token is persisted to auth.json.
