@@ -127,19 +127,32 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	// User-requested provider (explicit > config > default).
 	provName := firstNonEmpty(args.Provider, cfg.Provider, "anthropic")
-	if provName != "anthropic" && provName != "openai" {
-		return Resolved{}, fmt.Errorf("provider must be anthropic or openai (got %q)", provName)
+	if provName != "anthropic" && provName != "openai" && provName != "ollama" {
+		return Resolved{}, fmt.Errorf("provider must be anthropic, openai, or ollama (got %q)", provName)
 	}
 
-	// Try the requested provider first.
-	cred, method, accountID, credErr := ResolveCredentialFull(provName, args.APIKey)
+	var (
+		cred      string
+		method    string
+		accountID string
+		credErr   error
+	)
+	if provName == "ollama" {
+		if args.BaseURL == "" {
+			args.BaseURL = "http://localhost:11434"
+		}
+		cred = firstNonEmpty(args.APIKey, "ollama")
+		method = "apikey"
+	} else {
+		cred, method, accountID, credErr = ResolveCredentialFull(provName, args.APIKey)
+	}
 
 	// If the user did NOT explicitly pick a provider and the default one
 	// has no credentials, auto-fall-back to whichever provider is actually
 	// logged in. That way running plain `zot` after `/login` (any provider)
 	// never shows a "not logged in" banner.
 	userPickedProvider := args.Provider != ""
-	if credErr != nil && !userPickedProvider {
+	if credErr != nil && !userPickedProvider && provName != "ollama" {
 		other := "openai"
 		if provName == "openai" {
 			other = "anthropic"
@@ -152,24 +165,40 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	model := firstNonEmpty(args.Model, cfg.Model)
 	if model == "" {
-		if provName == "openai" {
+		switch provName {
+		case "openai":
 			model = "gpt-5"
-		} else {
+		case "ollama":
+			return Resolved{}, fmt.Errorf("ollama requires --model (e.g. --model llama3)")
+		default:
 			model = provider.DefaultModel.ID
 		}
 	}
 	// If the resolved model belongs to a different provider (e.g. config
 	// says gpt-5 but we fell back to anthropic), pick that provider's default.
-	if m, err := provider.FindModel("", model); err == nil && m.Provider != provName {
-		if provName == "openai" {
-			model = "gpt-5"
-		} else {
-			model = provider.DefaultModel.ID
+	if provName != "ollama" {
+		if m, err := provider.FindModel("", model); err == nil && m.Provider != provName {
+			if provName == "openai" {
+				model = "gpt-5"
+			} else {
+				model = provider.DefaultModel.ID
+			}
 		}
 	}
 	resolvedModel, err := provider.FindModel(provName, model)
-	if err != nil {
+	if err != nil && provName != "ollama" {
 		return Resolved{}, err
+	}
+	if err != nil && provName == "ollama" {
+		resolvedModel = provider.Model{
+			Provider:      "ollama",
+			ID:            model,
+			DisplayName:   model,
+			ContextWindow: 32768,
+			MaxOutput:     8192,
+			BaseURL:       args.BaseURL,
+			Source:        "ollama",
+		}
 	}
 
 	// If the model defines a base URL (e.g. local ollama) and the
@@ -303,16 +332,20 @@ func (r Resolved) NewClient() provider.Client {
 	if !r.HasCredential() {
 		panic("NewClient called without credential; check HasCredential first")
 	}
-	if r.Provider == "openai" {
+	switch r.Provider {
+	case "ollama":
+		return provider.NewOpenAI(r.Credential, r.BaseURL)
+	case "openai":
 		if r.AuthMethod == "oauth" {
 			return provider.NewOpenAICodex(r.Credential, r.AccountID, r.BaseURL)
 		}
 		return provider.NewOpenAI(r.Credential, r.BaseURL)
+	default:
+		if r.AuthMethod == "oauth" {
+			return provider.NewAnthropicOAuth(r.Credential, r.BaseURL)
+		}
+		return provider.NewAnthropic(r.Credential, r.BaseURL)
 	}
-	if r.AuthMethod == "oauth" {
-		return provider.NewAnthropicOAuth(r.Credential, r.BaseURL)
-	}
-	return provider.NewAnthropic(r.Credential, r.BaseURL)
 }
 
 // UseSandbox replaces the sandbox pointer that every tool in r's
@@ -395,6 +428,8 @@ func envVarName(provider string) string {
 	switch provider {
 	case "openai":
 		return "OPENAI"
+	case "ollama":
+		return "OLLAMA"
 	default:
 		return "ANTHROPIC"
 	}

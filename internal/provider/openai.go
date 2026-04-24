@@ -111,9 +111,18 @@ type oaiRequest struct {
 // ---- request building ----
 
 func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
-	m, err := FindModel("openai", req.Model)
+	// Look up the model by id across all providers (not just openai)
+	// because the OpenAI client is also used for ollama and other
+	// OpenAI-compatible backends.
+	m, err := FindModel("", req.Model)
 	if err != nil {
-		return nil, err
+		// Unknown model: use sensible defaults so local/custom
+		// models still work without a catalog entry.
+		m = Model{
+			ID:            req.Model,
+			ContextWindow: 32768,
+			MaxOutput:     8192,
+		}
 	}
 	out := &oaiRequest{
 		Model:         req.Model,
@@ -311,7 +320,7 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 	defer close(out)
 	defer resp.Body.Close()
 
-	model, _ := FindModel("openai", req.Model)
+	model, _ := FindModel("", req.Model)
 	out <- EventStart{Model: req.Model, Provider: "openai"}
 
 	raw := make(chan sseEvent, 16)

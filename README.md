@@ -282,15 +282,55 @@ Place a `models.json` in `$ZOT_HOME` (macOS: `~/Library/Application Support/zot/
 }
 ```
 
-Supported fields per model: `id` (required), `name`, `reasoning`, `contextWindow`, `maxTokens`, `priceInput`, `priceOutput`, `priceCacheRead`, `priceCacheWrite`.
+Supported fields per model: `id` (required), `name`, `reasoning`, `contextWindow`, `maxTokens`, `baseUrl`, `priceInput`, `priceOutput`, `priceCacheRead`, `priceCacheWrite`.
 
 Provider keys are normalized: `openai-codex` and `openai-responses` map to `openai`, `anthropic-messages` maps to `anthropic`.
 
 User-defined models show `source: user` in `--list-models` and take precedence over both the baked-in catalog and live-discovered models. Missing or invalid files are silently ignored.
 
+### Local models with ollama
+
+zot works with [ollama](https://ollama.com) out of the box. Ollama serves an OpenAI-compatible API locally, so any model you have pulled works with zot.
+
+Quick start:
+
+```bash
+ollama pull qwen3.5:4b
+zot --provider ollama --model qwen3.5:4b
+```
+
+That's it. No API key needed for local models. zot defaults to `http://localhost:11434`.
+
+For a remote ollama instance or one behind auth:
+
+```bash
+zot --provider ollama --model llama3 --base-url https://my-server.com/v1 --api-key my-token
+```
+
+You can also add models to your `models.json` so you don't need flags every time:
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "models": [
+        {
+          "id": "qwen3.5:4b",
+          "name": "Qwen 3.5 4B",
+          "contextWindow": 32768,
+          "maxTokens": 8192
+        }
+      ]
+    }
+  }
+}
+```
+
+The `ollama` provider uses the OpenAI chat completions protocol internally, so it also works with any OpenAI-compatible server (vLLM, LM Studio, LocalAI, etc.).
+
 ## Inline images
 
-When a tool returns an image (for example `read` on a PNG), zot renders it inline on terminals that support it: **iTerm2**, **WezTerm**, **Kitty**, **Ghostty**. On other terminals you see a text placeholder with MIME type, pixel dimensions, and byte size. Control with the `ZOT_INLINE_IMAGES` env var:
+When a tool returns an image (for example `read` on a PNG), zot renders it inline on terminals that support it: **Ghostty**, **Kitty**, **iTerm2**, **WezTerm**. On other terminals you see a text placeholder with MIME type, pixel dimensions, and byte size. Control with the `ZOT_INLINE_IMAGES` env var:
 
 | Value | Effect |
 |---|---|
