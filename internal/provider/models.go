@@ -226,6 +226,18 @@ var Catalog = []Model{
 		PriceInput: 0.75, PriceOutput: 4.50, PriceCacheRead: 0.075,
 		Speculative: true,
 	},
+	{
+		Provider: "openai", ID: "gpt-5.5", DisplayName: "GPT-5.5",
+		ContextWindow: 400000, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 2.50, PriceOutput: 15.00, PriceCacheRead: 0.25,
+		Speculative: true,
+	},
+	{
+		Provider: "openai", ID: "gpt-5.5-mini", DisplayName: "GPT-5.5 mini",
+		ContextWindow: 400000, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 0.75, PriceOutput: 4.50, PriceCacheRead: 0.075,
+		Speculative: true,
+	},
 }
 
 // DefaultModel is used when the user does not specify one.
