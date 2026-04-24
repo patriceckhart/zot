@@ -48,12 +48,12 @@ func renderUpdateBanner(th tui.Theme, info UpdateInfo, width int) []string {
 }
 
 // recommendedUpdateCommand returns the one-liner appropriate for the
-// user's platform. Points at zot.patriceckhart.com, which 301s to
+// user's platform. Points at www.zot.sh, which 301s to
 // the raw install scripts on github — same surface, stable short
 // URL that's safe to hard-code even if the scripts later move.
 func recommendedUpdateCommand() string {
 	if runtime.GOOS == "windows" {
-		return `iwr -useb https://zot.patriceckhart.com/install.ps1 | iex`
+		return `iwr -useb https://www.zot.sh/install.ps1 | iex`
 	}
-	return `curl -fsSL https://zot.patriceckhart.com/install.sh | bash`
+	return `curl -fsSL https://www.zot.sh/install.sh | bash`
 }

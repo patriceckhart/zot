@@ -49,6 +49,7 @@ type UserModel struct {
 	PriceOutput     float64  `json:"priceOutput"`
 	PriceCacheRead  float64  `json:"priceCacheRead"`
 	PriceCacheWrite float64  `json:"priceCacheWrite"`
+	BaseURL         string   `json:"baseUrl,omitempty"`
 	Input           []string `json:"input"` // informational only
 	API             string   `json:"api"`   // informational only
 }
@@ -91,6 +92,7 @@ func LoadUserModels(path string) []Model {
 				PriceOutput:     um.PriceOutput,
 				PriceCacheRead:  um.PriceCacheRead,
 				PriceCacheWrite: um.PriceCacheWrite,
+				BaseURL:         um.BaseURL,
 				Source:          "user",
 			}
 			if m.DisplayName == "" {
@@ -147,6 +149,9 @@ func SetUserModels(models []Model) {
 				existing.MaxOutput = um.MaxOutput
 			}
 			existing.Reasoning = um.Reasoning
+			if um.BaseURL != "" {
+				existing.BaseURL = um.BaseURL
+			}
 			existing.Source = "user"
 			existing.Speculative = false
 			active[idx] = existing

@@ -167,8 +167,23 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 			model = provider.DefaultModel.ID
 		}
 	}
-	if _, err := provider.FindModel(provName, model); err != nil {
+	resolvedModel, err := provider.FindModel(provName, model)
+	if err != nil {
 		return Resolved{}, err
+	}
+
+	// If the model defines a base URL (e.g. local ollama) and the
+	// user didn't pass --base-url, use the model's URL.
+	if args.BaseURL == "" && resolvedModel.BaseURL != "" {
+		args.BaseURL = resolvedModel.BaseURL
+	}
+
+	// If the model has a base URL, credentials are optional (local
+	// models like ollama don't need real API keys).
+	if resolvedModel.BaseURL != "" && credErr != nil {
+		cred = "ollama"
+		credErr = nil
+		requireCred = false
 	}
 
 	if credErr != nil && requireCred {

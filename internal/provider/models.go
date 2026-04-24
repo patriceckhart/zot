@@ -25,6 +25,12 @@ type Model struct {
 	// today but start working the moment the provider flips the switch.
 	Speculative bool
 
+	// BaseURL overrides the provider's default API endpoint for this
+	// model. Optional; when empty the provider's default (or the
+	// --base-url flag) is used. Useful for local models served by
+	// ollama, vLLM, LM Studio, etc.
+	BaseURL string
+
 	// Source is where this model entry came from: "catalog" (baked in),
 	// "live" (discovered via /v1/models), or "cache" (loaded from the
 	// on-disk cache). Informational.
