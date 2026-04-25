@@ -226,6 +226,7 @@ type Interactive struct {
 	// is dismissed, so repeated /jump calls don't turn into forks.
 	pendingFork bool
 	suggest     *slashSuggester
+	fileSuggest *fileSuggester
 	spin        *spinner
 
 	// parkedTurn is the 1-based turn number the viewport is currently
@@ -282,6 +283,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		sessionTreeDialog: newSessionTreeDialog(),
 		extPanel:          newExtPanelDialog(),
 		suggest:           newSlashSuggester(),
+		fileSuggest:       newFileSuggester(),
 		spin:              newSpinner(),
 	}
 	if cfg.Agent != nil {
@@ -736,8 +738,11 @@ func (i *Interactive) redraw() {
 	// without waiting for the current turn to finish. The dispatcher
 	// in runSlash already handles the busy case per-command: safe
 	// ones run immediately, destructive ones cancel the turn first.
+	i.fileSuggest.SetCWD(i.cfg.CWD)
 	if len(dialog) == 0 && i.suggest.Active(currentInput) {
 		suggest = i.suggest.Render(currentInput, i.cfg.Theme, cols)
+	} else if len(dialog) == 0 && i.fileSuggest.Active(currentInput) {
+		suggest = i.fileSuggest.Render(currentInput, i.cfg.Theme, cols)
 	}
 
 	// Busy prefix shown at the far left of the status bar. The
@@ -1297,7 +1302,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// notes should dismiss on Esc before we even consider the
 		// turn. Without these guards, a casual Esc press after
 		// running /help on a busy turn rips the turn away.
-		if i.suggest.Active(i.ed.Value()) {
+		if i.suggest.Active(i.ed.Value()) || i.fileSuggest.Active(i.ed.Value()) {
 			break
 		}
 		i.mu.Lock()
@@ -1350,12 +1355,12 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// a draft present at the cost of disabling vertical cursor
 		// motion inside the multi-line editor. Keep slash-popup
 		// navigation working by letting it intercept later when active.
-		if !i.suggest.Active(i.ed.Value()) {
+		if !i.suggest.Active(i.ed.Value()) && !i.fileSuggest.Active(i.ed.Value()) {
 			i.scrollBy(+3)
 			return false
 		}
 	case tui.KeyDown:
-		if !i.suggest.Active(i.ed.Value()) {
+		if !i.suggest.Active(i.ed.Value()) && !i.fileSuggest.Active(i.ed.Value()) {
 			if i.scrollOffset > 0 {
 				i.scrollBy(-3)
 			}
@@ -1407,16 +1412,62 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 	}
 
+	// File suggestions: intercept up/down/tab/enter when the @-popup is visible.
+	if i.fileSuggest.Active(i.ed.Value()) {
+		switch k.Kind {
+		case tui.KeyUp:
+			i.fileSuggest.Up()
+			return false
+		case tui.KeyDown:
+			i.fileSuggest.Down()
+			return false
+		case tui.KeyRight:
+			// Open selected directory.
+			i.fileSuggest.Right()
+			return false
+		case tui.KeyLeft:
+			// Go back to parent directory.
+			i.fileSuggest.Left()
+			return false
+		case tui.KeyEnter:
+			if entry, ok := i.fileSuggest.SelectedEntry(i.ed.Value()); ok {
+				var chip string
+				if entry.isDir {
+					chip = "[dir:" + entry.rel + "/]"
+				} else {
+					chip = "[file:" + entry.rel + "]"
+				}
+				val := i.ed.Value()
+				if idx := strings.LastIndex(val, "@"); idx >= 0 {
+					val = val[:idx]
+				}
+				i.ed.SetValue(val + chip + " ")
+				i.fileSuggest.Reset()
+			}
+			return false
+		case tui.KeyEsc:
+			val := i.ed.Value()
+			if idx := strings.LastIndex(val, "@"); idx >= 0 {
+				i.ed.SetValue(val[:idx])
+			}
+			i.fileSuggest.Reset()
+			return false
+		}
+	}
+
 	if submit := i.ed.HandleKey(k); submit {
 		// SubmitValue() expands any [pasted text #N +L lines]
 		// placeholders back into their bodies; the raw Value()
 		// is only what the user sees on screen.
 		text := strings.TrimRight(i.ed.SubmitValue(), "\n")
+		// Expand [file:name] and [dir:name/] chips to full paths.
+		text = expandFileChips(text, i.cfg.CWD)
 		if text == "" {
 			return false
 		}
 		i.ed.Clear()
 		i.suggest.Reset()
+		i.fileSuggest.Reset()
 
 		if looksLikeSlashCommand(text) {
 			head := text

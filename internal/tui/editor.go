@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -41,11 +42,14 @@ type Editor struct {
 	pastes   map[int]string
 	pasteSeq int
 
-	// files stores full paths of drag-dropped file paths, keyed by
-	// a sequence id. The editor shows a compact [file:basename] chip
-	// and SubmitValue() expands it back to the full path.
+	// files and dirs store full paths of drag-dropped items, keyed
+	// by separate sequence ids. The editor shows compact chips like
+	// [file:1:name] and [dir:1:name/] and SubmitValue() expands
+	// them back to the full path.
 	files   map[int]string
 	fileSeq int
+	dirs    map[int]string
+	dirSeq  int
 }
 
 // NewEditor returns an empty editor with the given prompt.
@@ -78,8 +82,8 @@ func (e *Editor) SubmitValue() string {
 	if len(e.pastes) > 0 && strings.Contains(raw, "[pasted text #") {
 		raw = expandPastePlaceholders(raw, e.pastes)
 	}
-	if len(e.files) > 0 && strings.Contains(raw, "[file:") {
-		raw = expandFilePlaceholders(raw, e.files)
+	if (len(e.files) > 0 || len(e.dirs) > 0) && (strings.Contains(raw, "[file:") || strings.Contains(raw, "[dir:")) {
+		raw = expandFilePlaceholders(raw, e.files, e.dirs)
 	}
 	return raw
 }
@@ -98,6 +102,8 @@ func (e *Editor) SetValue(s string) {
 	e.pasteSeq = 0
 	e.files = nil
 	e.fileSeq = 0
+	e.dirs = nil
+	e.dirSeq = 0
 }
 
 // Clear resets the buffer.
@@ -1146,7 +1152,7 @@ func countLines(s string) int {
 // body in e.pastes; the rest of the token is free-form and gets
 // discarded during expansion.
 var pastePlaceholderRE = regexp.MustCompile(`\[pasted text #(\d+) (?:\+\d+ lines?|\d+ chars?)\]`)
-var filePlaceholderRE = regexp.MustCompile(`\[file:(\d+):[^\]]+\]`)
+var filePlaceholderRE = regexp.MustCompile(`\[(file|dir):(\d+):[^\]]+\]`)
 
 // expandPastePlaceholders returns raw with every paste token
 // swapped for the body stored under its id in pastes. Tokens
@@ -1170,19 +1176,26 @@ func expandPastePlaceholders(raw string, pastes map[int]string) string {
 	})
 }
 
-// expandFilePlaceholders returns raw with every [file:N:name] token
-// swapped for the full path stored under its id.
-func expandFilePlaceholders(raw string, files map[int]string) string {
+// expandFilePlaceholders returns raw with every [file:N:name] and
+// [dir:N:name/] token swapped for the full path stored under its id.
+func expandFilePlaceholders(raw string, files, dirs map[int]string) string {
 	return filePlaceholderRE.ReplaceAllStringFunc(raw, func(match string) string {
 		groups := filePlaceholderRE.FindStringSubmatch(match)
-		if len(groups) < 2 {
+		if len(groups) < 3 {
 			return match
 		}
+		kind := groups[1] // "file" or "dir"
 		var id int
-		if _, err := fmt.Sscanf(groups[1], "%d", &id); err != nil {
+		if _, err := fmt.Sscanf(groups[2], "%d", &id); err != nil {
 			return match
 		}
-		if path, ok := files[id]; ok {
+		var m map[int]string
+		if kind == "dir" {
+			m = dirs
+		} else {
+			m = files
+		}
+		if path, ok := m[id]; ok {
 			return path
 		}
 		return match
@@ -1212,11 +1225,20 @@ func (e *Editor) collapseOrQuoteFilePaths(paste string) string {
 		// Short path like "./foo.txt" - just quote it.
 		return singleQuote(p)
 	}
+	// Check if it's a directory.
+	info, err := os.Stat(p)
+	if err == nil && info.IsDir() {
+		if e.dirs == nil {
+			e.dirs = map[int]string{}
+		}
+		e.dirSeq++
+		e.dirs[e.dirSeq] = singleQuote(p)
+		return fmt.Sprintf("[dir:%d:%s/]", e.dirSeq, base)
+	}
 	if e.files == nil {
 		e.files = map[int]string{}
 	}
 	e.fileSeq++
-	id := e.fileSeq
-	e.files[id] = singleQuote(p)
-	return fmt.Sprintf("[file:%d:%s]", id, base)
+	e.files[e.fileSeq] = singleQuote(p)
+	return fmt.Sprintf("[file:%d:%s]", e.fileSeq, base)
 }
