@@ -45,6 +45,7 @@ type SessionMeta struct {
 	Provider string    `json:"provider"`
 	Started  time.Time `json:"started"`
 	Version  string    `json:"version"`
+	Title    string    `json:"title,omitempty"`
 
 	// Parent is the ID of the session this one was forked from, or
 	// empty for top-level sessions. The tree picker walks parents
@@ -260,6 +261,25 @@ type SessionSummary struct {
 	MessageCount  int
 	FirstUserText string
 	TotalCost     float64
+	Title         string
+}
+
+// RenameSession updates the title field in the session's meta line.
+// It rewrites the first line of the file (the meta line) with the
+// updated title.
+// RenameSession appends a rename line to the session file. This is
+// safe even for the currently active session because it opens the
+// file independently and appends (doesn't rewrite).
+func RenameSession(path, title string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	line, _ := json.Marshal(map[string]string{"type": "rename", "title": title})
+	line = append(line, '\n')
+	_, err = f.Write(line)
+	return err
 }
 
 // DescribeSessions returns lightweight summaries for every session in
@@ -297,11 +317,19 @@ func describeSession(path string) SessionSummary {
 				s.Started = row.Meta.Started
 				s.Model = row.Meta.Model
 				s.Provider = row.Meta.Provider
+				s.Title = row.Meta.Title
 			}
 		case "message":
 			s.MessageCount++
 			if s.FirstUserText == "" {
 				s.FirstUserText = firstUserText(sc.Bytes())
+			}
+		case "rename":
+			var row struct {
+				Title string `json:"title"`
+			}
+			if err := json.Unmarshal(sc.Bytes(), &row); err == nil && row.Title != "" {
+				s.Title = row.Title
 			}
 		case "usage":
 			var row struct {

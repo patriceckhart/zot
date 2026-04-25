@@ -14,6 +14,8 @@ type sessionDialog struct {
 	active   bool
 	sessions []core.SessionSummary
 	cursor   int
+	renaming bool
+	rename   string
 
 	// MaxRows is the maximum number of session rows the dialog
 	// will render in a single frame. Set by the host right before
@@ -32,9 +34,10 @@ type sessionDialog struct {
 
 // sessionDialogAction is returned by HandleKey.
 type sessionDialogAction struct {
-	Select bool
-	Path   string
-	Close  bool
+	Select  bool
+	Path    string
+	Close   bool
+	Renamed bool
 }
 
 func newSessionDialog() *sessionDialog { return &sessionDialog{} }
@@ -59,6 +62,17 @@ func (d *sessionDialog) Open(root, cwd string) {
 	d.active = true
 }
 
+// CursorPos returns the row/col for the terminal cursor when in
+// rename mode. Returns -1, -1 otherwise.
+func (d *sessionDialog) CursorPos() (row, col int) {
+	if !d.renaming {
+		return -1, -1
+	}
+	// Row: frameHeader(1) + rename hint(1) = row 2 (0-indexed)
+	// Col: 2 spaces indent + text length
+	return 2, 2 + len([]rune(d.rename))
+}
+
 // Close hides the dialog.
 func (d *sessionDialog) Close() { d.active = false }
 
@@ -78,7 +92,13 @@ func (d *sessionDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, frameRule(th, width))
 		return lines
 	}
-	lines = append(lines, th.FG256(th.Muted, "pick a session to resume (↑/↓, pgup/pgdn, enter, esc to cancel)"))
+	if d.renaming {
+		lines = append(lines, th.FG256(th.Muted, "rename session (enter to save, esc to cancel):"))
+		lines = append(lines, "  "+th.FG256(th.FG, d.rename))
+		lines = append(lines, frameRule(th, width))
+		return lines
+	}
+	lines = append(lines, th.FG256(th.Muted, "pick a session (↑/↓, pgup/pgdn, enter resume, r rename, esc cancel)"))
 
 	// Viewport: windowed slice of d.sessions around d.cursor so a
 	// list taller than the terminal still scrolls. Caller sets
@@ -155,7 +175,10 @@ func clampViewTop(viewTop, cursor, window, total int) int {
 // full-row selection highlight.
 func formatSessionRowPlain(s core.SessionSummary, maxWidth int) string {
 	when := formatRelative(s.Started)
-	summary := strings.TrimSpace(s.FirstUserText)
+	summary := strings.TrimSpace(s.Title)
+	if summary == "" {
+		summary = strings.TrimSpace(s.FirstUserText)
+	}
 	if summary == "" {
 		summary = "(empty)"
 	}
@@ -193,6 +216,41 @@ func formatRelative(t time.Time) string {
 
 // HandleKey advances the dialog and returns an action to apply, if any.
 func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
+	// Rename mode: type the new name.
+	if d.renaming {
+		switch k.Kind {
+		case tui.KeyEnter:
+			title := strings.TrimSpace(d.rename)
+			if title != "" && d.cursor < len(d.sessions) {
+				path := d.sessions[d.cursor].Path
+				_ = core.RenameSession(path, title)
+				d.sessions[d.cursor].Title = title
+			}
+			d.renaming = false
+			d.rename = ""
+			return sessionDialogAction{Renamed: true}
+		case tui.KeyEsc:
+			d.renaming = false
+			d.rename = ""
+			return sessionDialogAction{}
+		case tui.KeyBackspace:
+			if len(d.rename) > 0 {
+				r := []rune(d.rename)
+				d.rename = string(r[:len(r)-1])
+			}
+			return sessionDialogAction{}
+		case tui.KeyPaste:
+			d.rename += k.Paste
+			return sessionDialogAction{}
+		case tui.KeyRune:
+			if k.Rune != 0 {
+				d.rename += string(k.Rune)
+			}
+			return sessionDialogAction{}
+		}
+		return sessionDialogAction{}
+	}
+
 	page := d.MaxRows
 	if page <= 0 {
 		page = 10
@@ -239,6 +297,17 @@ func (d *sessionDialog) HandleKey(k tui.Key) sessionDialogAction {
 		s := d.sessions[d.cursor]
 		d.Close()
 		return sessionDialogAction{Select: true, Path: s.Path}
+	case tui.KeyRune:
+		if k.Rune == 'r' && len(d.sessions) > 0 {
+			s := d.sessions[d.cursor]
+			d.renaming = true
+			if s.Title != "" {
+				d.rename = s.Title
+			} else {
+				d.rename = ""
+			}
+			return sessionDialogAction{}
+		}
 	}
 	return sessionDialogAction{}
 }

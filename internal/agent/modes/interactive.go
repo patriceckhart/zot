@@ -882,6 +882,12 @@ func (i *Interactive) redraw() {
 			cursorCol = c
 		}
 	}
+	if i.sessionDialog.Active() {
+		if r, c := i.sessionDialog.CursorPos(); r >= 0 {
+			cursorRow = len(visibleChat) + r
+			cursorCol = c
+		}
+	}
 	if i.extPanel.Active() {
 		cursorRow = -1
 		cursorCol = 0
