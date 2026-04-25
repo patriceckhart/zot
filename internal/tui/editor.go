@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -39,6 +40,12 @@ type Editor struct {
 	// on Clear() so stale pastes never leak into a follow-up turn.
 	pastes   map[int]string
 	pasteSeq int
+
+	// files stores full paths of drag-dropped file paths, keyed by
+	// a sequence id. The editor shows a compact [file:basename] chip
+	// and SubmitValue() expands it back to the full path.
+	files   map[int]string
+	fileSeq int
 }
 
 // NewEditor returns an empty editor with the given prompt.
@@ -68,10 +75,13 @@ func (e *Editor) Value() string { return strings.Join(e.Lines, "\n") }
 // reading SubmitValue() as part of the submit flow.
 func (e *Editor) SubmitValue() string {
 	raw := e.Value()
-	if len(e.pastes) == 0 || !strings.Contains(raw, "[pasted text #") {
-		return raw
+	if len(e.pastes) > 0 && strings.Contains(raw, "[pasted text #") {
+		raw = expandPastePlaceholders(raw, e.pastes)
 	}
-	return expandPastePlaceholders(raw, e.pastes)
+	if len(e.files) > 0 && strings.Contains(raw, "[file:") {
+		raw = expandFilePlaceholders(raw, e.files)
+	}
+	return raw
 }
 
 // SetValue replaces the buffer and places the cursor at the end.
@@ -86,6 +96,8 @@ func (e *Editor) SetValue(s string) {
 	e.CursorC = runeLen(e.Lines[e.CursorR])
 	e.pastes = nil
 	e.pasteSeq = 0
+	e.files = nil
+	e.fileSeq = 0
 }
 
 // Clear resets the buffer.
@@ -176,9 +188,9 @@ func (e *Editor) HandleKey(k Key) (submit bool) {
 		} else {
 			// macOS Terminal / iTerm / Ghostty deliver drag-dropped
 			// files as bracketed-paste text. Detect that pattern
-			// and wrap the path(s) in single quotes so the agent
-			// sees them as one argument.
-			e.insert(quotePastedFilePaths(k.Paste))
+			// and collapse long paths to a [file:basename] chip.
+			inserted := e.collapseOrQuoteFilePaths(k.Paste)
+			e.insert(inserted)
 		}
 	case KeyEsc:
 		e.Clear()
@@ -1134,6 +1146,7 @@ func countLines(s string) int {
 // body in e.pastes; the rest of the token is free-form and gets
 // discarded during expansion.
 var pastePlaceholderRE = regexp.MustCompile(`\[pasted text #(\d+) (?:\+\d+ lines?|\d+ chars?)\]`)
+var filePlaceholderRE = regexp.MustCompile(`\[file:(\d+):[^\]]+\]`)
 
 // expandPastePlaceholders returns raw with every paste token
 // swapped for the body stored under its id in pastes. Tokens
@@ -1155,4 +1168,55 @@ func expandPastePlaceholders(raw string, pastes map[int]string) string {
 		}
 		return match
 	})
+}
+
+// expandFilePlaceholders returns raw with every [file:N:name] token
+// swapped for the full path stored under its id.
+func expandFilePlaceholders(raw string, files map[int]string) string {
+	return filePlaceholderRE.ReplaceAllStringFunc(raw, func(match string) string {
+		groups := filePlaceholderRE.FindStringSubmatch(match)
+		if len(groups) < 2 {
+			return match
+		}
+		var id int
+		if _, err := fmt.Sscanf(groups[1], "%d", &id); err != nil {
+			return match
+		}
+		if path, ok := files[id]; ok {
+			return path
+		}
+		return match
+	})
+}
+
+// collapseOrQuoteFilePaths checks if the paste is a file path and
+// collapses it to a [file:basename] chip. URLs are left as-is.
+// Non-path pastes fall through to quotePastedFilePaths.
+func (e *Editor) collapseOrQuoteFilePaths(paste string) string {
+	if paste == "" || strings.ContainsRune(paste, '\n') {
+		return quotePastedFilePaths(paste)
+	}
+	trimmed := strings.TrimSpace(paste)
+	// Don't collapse URLs.
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
+		return paste
+	}
+	// Check if it's a single file path.
+	p, ok := normalisePathToken(trimmed)
+	if !ok {
+		return quotePastedFilePaths(paste)
+	}
+	// Only collapse if the path is long enough to benefit.
+	base := filepath.Base(p)
+	if len(p) <= len(base)+5 {
+		// Short path like "./foo.txt" - just quote it.
+		return singleQuote(p)
+	}
+	if e.files == nil {
+		e.files = map[int]string{}
+	}
+	e.fileSeq++
+	id := e.fileSeq
+	e.files[id] = singleQuote(p)
+	return fmt.Sprintf("[file:%d:%s]", id, base)
 }
