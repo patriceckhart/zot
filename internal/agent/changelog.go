@@ -26,7 +26,17 @@ type ChangelogInfo struct {
 //
 // Honours $GITHUB_TOKEN for private-repo access. Times out at 4s so
 // startup never blocks on a flaky network.
+// semverOnly strips commit hash and date suffixes from version strings
+// like "0.1.12 (25b2bd4, 2026-04-25T09:25:45Z)" to get just "0.1.12".
+func semverOnly(v string) string {
+	if i := strings.IndexByte(v, ' '); i > 0 {
+		return v[:i]
+	}
+	return v
+}
+
 func FetchChangelog(ctx context.Context, version string) (ChangelogInfo, error) {
+	version = semverOnly(version)
 	if version == "" || version == "dev" {
 		return ChangelogInfo{}, nil
 	}
@@ -153,30 +163,29 @@ func FetchChangelogAsync(version string) <-chan ChangelogInfo {
 // the first-ever launch (no LastChangelogShown stored — we don't
 // dump release notes at someone who just installed).
 func ShouldShowChangelog(currentVersion string, cfg Config) bool {
+	currentVersion = semverOnly(currentVersion)
 	if currentVersion == "" || currentVersion == "dev" {
 		return false
 	}
 	if cfg.LastChangelogShown == "" {
 		return false
 	}
-	// For local builds (0.0.0), always proceed to the fetch step.
-	// The caller compares the fetched release version against
-	// LastChangelogShown to decide whether to actually show.
 	if currentVersion == "0.0.0" {
 		return true
 	}
-	return cfg.LastChangelogShown != currentVersion
+	return semverOnly(cfg.LastChangelogShown) != currentVersion
 }
 
 // MarkChangelogShown persists the version whose changelog the user
 // just dismissed. Idempotent; safe to call when the dialog wasn't
 // actually shown (e.g. fetch failed) so we don't keep retrying.
 func MarkChangelogShown(version string) error {
+	v := semverOnly(version)
 	cfg, _ := LoadConfig()
-	if cfg.LastChangelogShown == version {
+	if semverOnly(cfg.LastChangelogShown) == v {
 		return nil
 	}
-	cfg.LastChangelogShown = version
+	cfg.LastChangelogShown = v
 	return SaveConfig(cfg)
 }
 
@@ -185,6 +194,7 @@ func MarkChangelogShown(version string) error {
 // correctly trigger the dialog while THIS launch (which is also
 // "first-ever") doesn't.
 func SeedChangelogVersion(version string) {
+	version = semverOnly(version)
 	if version == "" || version == "dev" {
 		return
 	}
