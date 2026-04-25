@@ -1655,6 +1655,16 @@ func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 
 // CancelTurn aborts the active turn if one is running. Used by the
 // telegram bridge when the paired user sends /stop.
+// ChangelogVersion returns the version string of the changelog
+// currently shown (or last shown). Used by the dismiss callback
+// to store the correct version for dev builds.
+func (i *Interactive) ChangelogVersion() string {
+	if i.changelogDialog != nil {
+		return i.changelogDialog.version
+	}
+	return ""
+}
+
 func (i *Interactive) CancelTurn() {
 	i.mu.Lock()
 	cancel := i.cancelTurn

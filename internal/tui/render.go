@@ -118,6 +118,25 @@ func truncateToWidth(s string, cols int) string {
 		}
 		rw := runewidthRune(r)
 		if seen+rw > cols {
+			// Flush any trailing ANSI escapes (resets, erase-to-EOL)
+			// so background colors and cleanup sequences survive.
+			for i < len(runes) {
+				if runes[i] == 0x1b && i+1 < len(runes) && runes[i+1] == '[' {
+					out.WriteRune(runes[i])
+					out.WriteRune(runes[i+1])
+					i += 2
+					for i < len(runes) {
+						c := runes[i]
+						out.WriteRune(c)
+						i++
+						if c >= 0x40 && c <= 0x7e {
+							break
+						}
+					}
+				} else {
+					break
+				}
+			}
 			break
 		}
 		out.WriteRune(r)

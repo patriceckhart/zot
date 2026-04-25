@@ -554,6 +554,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if info.Body == "" {
 			return
 		}
+		// For dev builds (0.0.0), skip if the latest release was
+		// already shown (stored by the dismiss callback).
+		if version == "0.0.0" && info.Version == cfg.LastChangelogShown {
+			return
+		}
 		changelogCh <- modes.ChangelogPayload{
 			Version: info.Version,
 			Body:    info.Body,
@@ -610,7 +615,16 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		Extensions:    extMgr,
 		ChangelogChan: changelogCh,
 		OnChangelogDismiss: func() {
-			_ = MarkChangelogShown(version)
+			// For dev builds (0.0.0) store the actual release version
+			// so the same changelog doesn't show again next launch.
+			// For real builds, store the binary version.
+			v := version
+			if v == "0.0.0" {
+				if iv != nil && iv.ChangelogVersion() != "" {
+					v = iv.ChangelogVersion()
+				}
+			}
+			_ = MarkChangelogShown(v)
 		},
 		SkillSnapshot: func() []*skills.Skill {
 			if args.NoSkill {

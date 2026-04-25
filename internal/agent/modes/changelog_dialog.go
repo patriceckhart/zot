@@ -83,8 +83,20 @@ func (d *changelogDialog) Render(th tui.Theme, width int) []string {
 		out = append(out, "")
 	}
 
-	rendered := tui.RenderMarkdown(d.body, th, width-4)
-	bodyLines := strings.Split(rendered, "\n")
+	var bodyLines []string
+	for _, l := range strings.Split(d.body, "\n") {
+		if strings.HasPrefix(l, "\x00H:") {
+			// Heading: render in accent color, bold.
+			heading := strings.TrimPrefix(l, "\x00H:")
+			bodyLines = append(bodyLines, th.FG256(th.Accent, tui.Bold(heading)))
+		} else {
+			// Regular line: render through markdown for bullet points etc.
+			rendered := tui.RenderMarkdown(l, th, width-4)
+			for _, rl := range strings.Split(rendered, "\n") {
+				bodyLines = append(bodyLines, rl)
+			}
+		}
+	}
 
 	const maxRows = 18
 	if d.scroll > len(bodyLines)-1 {

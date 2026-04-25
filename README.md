@@ -362,6 +362,20 @@ Slash commands also work while the agent is busy. Read-only ones (`/help`, `/jum
 | `ctrl+d` | Exit on empty input. |
 | `ctrl+l` | Redraw the screen. |
 | `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash outputs over ~12 lines). |
+| `@` | Open the file picker. Browse files and directories in the working directory. |
+
+### File picker (`@`)
+
+| Key | Action |
+|---|---|
+| `@` | Open the file picker (type after a space or at the start of input). |
+| `up`, `down` | Navigate the file list. |
+| `right` | Open the selected directory. |
+| `left` | Go back to the parent directory. |
+| `enter` | Select the file or directory and insert it as a chip (`[file:name]` or `[dir:name/]`). |
+| `esc` | Close the file picker. |
+
+Type `@` followed by a filter string to narrow the list (e.g. `@read` shows only entries containing "read"). Selected files are inserted as compact chips that expand to the full path on submit. Dragged-and-dropped files and directories also collapse to chips automatically.
 
 ### Editor line navigation
 
