@@ -53,6 +53,11 @@ type InteractiveConfig struct {
 	// If providerOverride is empty, the current provider is kept.
 	BuildAgentFor func(providerOverride, modelOverride string) (*core.Agent, string, string, error)
 
+	// LoggedInProviders returns the list of provider names that
+	// currently have credentials. Used by /model to filter the
+	// picker to only show reachable models.
+	LoggedInProviders func() []string
+
 	// ZotHome is the root directory for sessions/, used by /sessions
 	// and the update-check cache.
 	ZotHome string
@@ -1764,7 +1769,11 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		if len(parts) >= 2 {
 			i.applyModelSelection("", parts[1])
 		} else {
-			i.modelDialog.Open(i.cfg.Model)
+			var loggedIn []string
+			if i.cfg.LoggedInProviders != nil {
+				loggedIn = i.cfg.LoggedInProviders()
+			}
+			i.modelDialog.Open(i.cfg.Model, loggedIn)
 		}
 	case "/sessions":
 		i.sessionDialog.Open(i.cfg.ZotHome, i.cfg.CWD)
@@ -1892,10 +1901,14 @@ func (i *Interactive) openLogoutDialog() {
 	var items []logoutItem
 	for _, p := range []string{"anthropic", "openai"} {
 		if creds.Has(p) {
+			method := creds.Method(p)
+			if method == "oauth" {
+				method = "subscription"
+			}
 			items = append(items, logoutItem{
-				label:  p,
+				label:  providerLabel(p),
 				target: p,
-				method: creds.Method(p),
+				method: method,
 			})
 		}
 	}

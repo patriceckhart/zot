@@ -129,7 +129,19 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	// User-requested provider (explicit > config > default).
 	provName := firstNonEmpty(args.Provider, cfg.Provider, "anthropic")
 	if provName != "anthropic" && provName != "openai" && provName != "ollama" {
-		return Resolved{}, fmt.Errorf("provider must be anthropic, openai, or ollama (got %q)", provName)
+		// Unknown provider (maybe removed or renamed). Fall back to
+		// the first provider that has credentials, or anthropic.
+		provName = "anthropic"
+		if _, _, _, err := ResolveCredentialFull("openai", ""); err == nil {
+			provName = "openai"
+		}
+		if _, _, _, err := ResolveCredentialFull("anthropic", ""); err == nil {
+			provName = "anthropic"
+		}
+		// Reset the saved config so this doesn't keep happening.
+		cfg.Provider = provName
+		cfg.Model = ""
+		_ = SaveConfig(cfg)
 	}
 
 	var (

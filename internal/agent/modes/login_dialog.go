@@ -127,7 +127,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 			case "oauth":
 				tag = "  (subscription)"
 			}
-			plain := "  " + o + tag
+			plain := "  " + providerLabel(o) + tag
 			if i == d.cursor {
 				lines = append(lines, th.PadHighlight(plain, width))
 			} else {
@@ -136,7 +136,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		}
 		lines = append(lines, frameRule(th, width))
 	case loginStepWaiting:
-		lines = append(lines, frameHeader(th, "login - "+d.method+" - "+d.provider, width))
+		lines = append(lines, frameHeader(th, "login - "+d.method+" - "+providerLabel(d.provider), width))
 		lines = append(lines, th.FG256(th.Muted, "open this URL in a browser:"))
 		wrapW := width - 2
 		if wrapW < 20 {
@@ -158,7 +158,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, th.FG256(th.Muted, "enter submits - esc cancels - waiting for browser callback in background"))
 		lines = append(lines, frameRule(th, width))
 	case loginStepPasteCode:
-		lines = append(lines, frameHeader(th, "login - "+d.method+" - "+d.provider+" - paste code", width))
+		lines = append(lines, frameHeader(th, "login - "+d.method+" - "+providerLabel(d.provider)+" - paste code", width))
 		lines = append(lines, th.FG256(th.Muted, "open this URL in any browser:"))
 		wrapW := width - 2
 		if wrapW < 20 {
@@ -184,7 +184,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		body := th.FG256(th.Error, d.message)
 		if d.success {
 			title = "login - success"
-			body = th.FG256(th.Tool, fmt.Sprintf("logged in to %s via %s", d.provider, d.method))
+			body = th.FG256(th.Tool, fmt.Sprintf("logged in to %s via %s", providerLabel(d.provider), d.method))
 		}
 		lines = append(lines, frameHeader(th, title, width))
 		lines = append(lines, body)
@@ -192,6 +192,17 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, frameRule(th, width))
 	}
 	return lines
+}
+
+// providerLabel returns the user-facing label for a provider id.
+func providerLabel(id string) string {
+	switch id {
+	case "anthropic":
+		return "Anthropic (Claude Pro/Max)"
+	case "openai":
+		return "OpenAI (ChatGPT Plus/Pro)"
+	}
+	return id
 }
 
 // renderStatusLines returns an overview of the current login
@@ -210,18 +221,19 @@ func (d *loginDialog) renderStatusLines(th tui.Theme) []string {
 	if anth == "" && op == "" {
 		return nil
 	}
-	row := func(name, method string) string {
+	row := func(id, method string) string {
+		label := providerLabel(id)
 		var mark, body string
 		switch method {
 		case "apikey":
 			mark = th.FG256(th.Tool, "✓")
-			body = th.FG256(th.Muted, name+": api key")
+			body = th.FG256(th.Muted, label+": api key")
 		case "oauth":
 			mark = th.FG256(th.Tool, "✓")
-			body = th.FG256(th.Muted, name+": subscription")
+			body = th.FG256(th.Muted, label+": subscription")
 		default:
 			mark = th.FG256(th.Muted, "–")
-			body = th.FG256(th.Muted, name+": not logged in")
+			body = th.FG256(th.Muted, label+": not logged in")
 		}
 		return "  " + mark + " " + body
 	}

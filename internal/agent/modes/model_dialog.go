@@ -38,9 +38,23 @@ func newModelDialog() *modelDialog {
 
 // Open shows the dialog. current is the currently active model id so
 // it can be pre-selected.
-func (d *modelDialog) Open(current string) {
+func (d *modelDialog) Open(current string, loggedInProviders []string) {
 	d.active = true
-	d.all = sortedModels(provider.Active())
+	all := provider.Active()
+	if len(loggedInProviders) > 0 {
+		provSet := map[string]bool{}
+		for _, p := range loggedInProviders {
+			provSet[p] = true
+		}
+		var filtered []provider.Model
+		for _, m := range all {
+			if provSet[m.Provider] {
+				filtered = append(filtered, m)
+			}
+		}
+		all = filtered
+	}
+	d.all = sortedModels(all)
 	d.current = current
 	d.query = ""
 	d.refilter()

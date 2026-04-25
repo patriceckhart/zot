@@ -587,7 +587,18 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		AuthManager:    mgr,
 		BuildAgent:     buildAgent,
 		BuildAgentFor:  buildAgentFor,
-		LoadSession:    loadSession,
+		LoggedInProviders: func() []string {
+			var out []string
+			for _, p := range []string{"anthropic", "openai"} {
+				if _, _, err := ResolveCredential(p, ""); err == nil {
+					out = append(out, p)
+				}
+			}
+			// Ollama models are always available (no auth needed).
+			out = append(out, "ollama")
+			return out
+		},
+		LoadSession: loadSession,
 		CurrentSessionPath: func() string {
 			if sess == nil {
 				return ""
