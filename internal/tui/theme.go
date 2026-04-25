@@ -72,10 +72,7 @@ func (t Theme) PadHighlight(s string, width int) string {
 	if visible < width {
 		s += strings.Repeat(" ", width-visible)
 	}
-	// Emit the background color AFTER the reset via a trailing
-	// erase-to-end-of-line so the highlight extends to the terminal
-	// edge even if the cell count is slightly off.
-	return sgrFG(t.SelectionFG) + sgrBG(t.SelectionBG) + s + "\x1b[K" + reset
+	return sgrFG(t.SelectionFG) + sgrBG(t.SelectionBG) + s + reset
 }
 
 // Bold wraps s in bold SGR.

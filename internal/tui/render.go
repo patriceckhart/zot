@@ -198,10 +198,31 @@ func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 		}
 	}
 
+	// Detect selection highlights: if the current OR previous frame
+	// has selection-background rows, force full repaint. VS Code's
+	// terminal doesn't reliably clear background colors on row
+	// overwrites, leaving ghost highlights behind.
+	hasSelection := false
+	for _, l := range frame {
+		if strings.Contains(l, "\x1b[48;5;") {
+			hasSelection = true
+			break
+		}
+	}
+	if !hasSelection && r.prev != nil {
+		for _, l := range r.prev {
+			if strings.Contains(l, "\x1b[48;5;") {
+				hasSelection = true
+				break
+			}
+		}
+	}
+
 	full := r.prev == nil || len(r.prev) != r.rows
 	for i := 0; i < r.rows; i++ {
-		if full || forceAll || r.prev[i] != frame[i] {
+		if full || forceAll || hasSelection || r.prev[i] != frame[i] {
 			w.WriteString(MoveTo(i+1, 1))
+			w.WriteString("\x1b[0m") // reset all attributes first
 			w.WriteString(SeqClearLine)
 			w.WriteString(frame[i])
 		}
