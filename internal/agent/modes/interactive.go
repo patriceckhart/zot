@@ -1671,7 +1671,6 @@ func (i *Interactive) Submit(text string) {
 // forwarded — because the queued-prompt path is text-only; a
 // follow-up can expand the queue entry to carry images.
 func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
-	_ = images // reserved for future queued-with-images support
 	i.mu.Lock()
 	if i.agent == nil {
 		i.statusErr = "not logged in. type /login first."
@@ -1680,13 +1679,14 @@ func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 		return
 	}
 	if i.busy {
+		// Queue text only; images are dropped for queued prompts.
 		i.queued = append(i.queued, text)
 		i.mu.Unlock()
 		i.invalidate()
 		return
 	}
 	i.mu.Unlock()
-	i.startTurn(i.runCtx, text)
+	i.startTurnWithImages(i.runCtx, text, images)
 }
 
 // CancelTurn aborts the active turn if one is running. Used by the
@@ -2548,6 +2548,10 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 }
 
 func (i *Interactive) startTurn(parent context.Context, prompt string) {
+	i.startTurnWithImages(parent, prompt, nil)
+}
+
+func (i *Interactive) startTurnWithImages(parent context.Context, prompt string, images []provider.ImageBlock) {
 	if i.agent == nil {
 		return
 	}
@@ -2575,7 +2579,7 @@ func (i *Interactive) startTurn(parent context.Context, prompt string) {
 	}
 
 	go func() {
-		err := i.agent.Prompt(ctx, prompt, nil, sink)
+		err := i.agent.Prompt(ctx, prompt, images, sink)
 		i.mu.Lock()
 		i.busy = false
 		// Don't touch streamPending / streamFlushPending here — the
