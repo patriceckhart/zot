@@ -111,6 +111,13 @@ type msgCacheKey struct {
 	hash      uint64
 	width     int
 	expandAll bool
+	// turnOpen is true when the previous rendered message belongs to
+	// the same agent turn (assistant tool_use, or tool result). The
+	// header ("▍ zot") is suppressed in that case so a single turn
+	// — even one that spans many assistant/tool message round-trips
+	// in the underlying API — renders under one header instead of a
+	// new one per assistant message.
+	turnOpen bool
 }
 
 // InvalidateRenderCache drops all cached message renders. The tui
@@ -189,7 +196,28 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 	rendered := make([][]string, len(v.Messages))
 	total := 0
 	for idx, m := range v.Messages {
-		lines := v.renderMessageCached(m, width)
+		// A turn is "open" once the assistant has started responding
+		// to the most recent user prompt. Walk back over consecutive
+		// assistant/tool messages: if any non-user message precedes
+		// this one without a user message in between, we're inside
+		// the same turn and should not draw a new "▍ zot" header.
+		turnOpen := false
+		if m.Role == provider.RoleAssistant {
+			for j := idx - 1; j >= 0; j-- {
+				prev := v.Messages[j]
+				// Skip compaction summary messages — they're
+				// rendered as a muted footer line (or hidden
+				// entirely when collapsed) and don't open a turn.
+				if prev.Meta["compaction"] == "true" {
+					continue
+				}
+				if prev.Role == provider.RoleAssistant || prev.Role == provider.RoleTool {
+					turnOpen = true
+				}
+				break
+			}
+		}
+		lines := v.renderMessageCached(m, width, turnOpen)
 		rendered[idx] = lines
 		total += len(lines) + 1 // +1 for the blank separator row
 	}
@@ -208,7 +236,25 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 	// overlay below is the real content and a naked "zot" bar
 	// above it reads as a stray empty message.
 	if v.StreamingActive && strings.TrimSpace(v.Streaming) != "" {
-		out = append(out, v.Theme.FG256(v.Theme.Assistant, "▍ zot"))
+		// Suppress the streaming "▍ zot" header if the turn is
+		// already open (a previous assistant/tool message in this
+		// turn already rendered one). Otherwise the streaming text
+		// would jump from headerless to under a new header once it
+		// finalises into a transcript message.
+		turnOpen := false
+		for j := len(v.Messages) - 1; j >= 0; j-- {
+			prev := v.Messages[j]
+			if prev.Meta["compaction"] == "true" {
+				continue
+			}
+			if prev.Role == provider.RoleAssistant || prev.Role == provider.RoleTool {
+				turnOpen = true
+			}
+			break
+		}
+		if !turnOpen {
+			out = append(out, v.Theme.FG256(v.Theme.Assistant, "▍ zot"))
+		}
 		// Stream the partial assistant text through the same markdown
 		// renderer used for finalised messages so code fences, diffs,
 		// lists, and inline styles look the same while streaming and
@@ -287,18 +333,19 @@ func (v *View) refreshToolPaths() {
 // been rendered before. The slice returned is shared — callers must
 // not mutate it; Build() only ever appends to its own `out` so the
 // shared slice is safe.
-func (v *View) renderMessageCached(m provider.Message, width int) []string {
+func (v *View) renderMessageCached(m provider.Message, width int, turnOpen bool) []string {
 	key := msgCacheKey{
 		hash:      hashMessage(m),
 		width:     width,
 		expandAll: v.ExpandAll,
+		turnOpen:  turnOpen,
 	}
 	if v.renderCache != nil {
 		if lines, ok := v.renderCache[key]; ok {
 			return lines
 		}
 	}
-	lines := v.renderMessage(m, width)
+	lines := v.renderMessage(m, width, turnOpen)
 	if v.renderCache != nil {
 		// Bound the cache: 4x the current message count is enough to
 		// survive /compact churn without leaking memory across a very
@@ -408,7 +455,7 @@ func fnv64aWrite(h uint64, p []byte) uint64 {
 	return h
 }
 
-func (v *View) renderMessage(m provider.Message, width int) []string {
+func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []string {
 	var lines []string
 
 	// Compaction summary: render as a single muted line at the end
@@ -438,8 +485,12 @@ func (v *View) renderMessage(m provider.Message, width int) []string {
 			}
 		}
 	case provider.RoleAssistant:
-		header := v.Theme.FG256(v.Theme.Assistant, "▍ zot")
-		lines = append(lines, header)
+		// Only draw the agent header at the start of a turn. Mid-turn
+		// assistant messages (e.g. another tool_use round-trip after a
+		// tool result) reuse the header that's already on screen.
+		if !turnOpen {
+			lines = append(lines, v.Theme.FG256(v.Theme.Assistant, "▍ zot"))
+		}
 		// Indent assistant body the same 4 cells the user body uses,
 		// so the conversation column lines up vertically. The width
 		// passed into the markdown renderer / wrap is reduced by the
