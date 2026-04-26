@@ -511,7 +511,10 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	if arg == "" && tc.LivePath != "" {
 		arg = tc.LivePath
 	}
-	head := v.Theme.FG256(v.Theme.Tool, ""+tc.Name+" "+arg)
+	// Match the transcript-side framing: tool headers sit indented four
+	// cells under the assistant body column. The live overlay used to skip
+	// the indent which made streaming tools jump back to column 0.
+	head := "    " + v.Theme.FG256(v.Theme.Tool, ""+tc.Name+" "+arg)
 
 	// Live streaming body: pulled out of the partial JSON buffer for
 	// tools whose interesting content is a string field (currently
@@ -570,8 +573,8 @@ func (v *View) renderLiveToolBody(tc ToolCallView, width int) []string {
 		}
 		// Header line hints which edit is streaming and, when more
 		// than one has landed, how many the model is doing.
-		hint := fmt.Sprintf("  edit %d (streaming)", idx)
-		body := []string{v.Theme.FG256(v.Theme.Muted, hint), ""}
+		hint := fmt.Sprintf("edit %d (streaming)", idx)
+		body := []string{"    " + v.Theme.FG256(v.Theme.Muted, hint), ""}
 		body = append(body, v.renderRawFile(partial, tc.LivePath, 1)...)
 		return v.wrapLiveBody(body, width)
 	}
@@ -893,14 +896,10 @@ func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
 				out = append(out, "")
 			}
 			out = append(out, v.Theme.FG256(v.Theme.Muted, info))
-			out = append(out, "")
 			return out
 		}
 	}
-	// Text fallback: same trailing blank for symmetry with the
-	// inline path, so a text-only image placeholder also gets
-	// a little space below before the next content.
-	return []string{v.Theme.FG256(v.Theme.Muted, info), ""}
+	return []string{v.Theme.FG256(v.Theme.Muted, info)}
 }
 
 // looksLikeNumberedFile returns true when text matches the `read`

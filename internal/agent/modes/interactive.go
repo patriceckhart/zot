@@ -190,6 +190,7 @@ type Interactive struct {
 	dirty              chan struct{}
 	cancelTurn         context.CancelFunc
 	scrollOffset       int // rows from the bottom; 0 = pinned to latest
+	prevScrollOffset   int // last value redraw snapped against; tracks intent
 
 	// Messages typed while a turn is in flight. Each is delivered as
 	// its own follow-up turn once the current one finishes. Rendered
@@ -830,11 +831,28 @@ func (i *Interactive) redraw() {
 		visibleChat = chat
 	} else {
 		end := len(chat) - i.scrollOffset
-		start := end - chatRows
-		if start < 0 {
-			start = 0
+		rawStart := end - chatRows
+		if rawStart < 0 {
+			rawStart = 0
 		}
-		start = snapViewportStartToImageBlock(chat, start)
+		start := snapViewportStartToImageBlock(chat, rawStart)
+		// If the snap pulled start upward (an image-block was atomic) while
+		// the user is scrolling downward, the viewport would sit on the same
+		// image until the user mashes down past every reserved row. Bump
+		// scrollOffset past the image so one keypress always clears it.
+		if start < rawStart && i.scrollOffset < i.prevScrollOffset {
+			jump := rawStart - start
+			i.scrollOffset -= jump
+			if i.scrollOffset < 0 {
+				i.scrollOffset = 0
+			}
+			end = len(chat) - i.scrollOffset
+			rawStart = end - chatRows
+			if rawStart < 0 {
+				rawStart = 0
+			}
+			start = snapViewportStartToImageBlock(chat, rawStart)
+		}
 		end = start + chatRows
 		if end > len(chat) {
 			end = len(chat)
@@ -845,6 +863,7 @@ func (i *Interactive) redraw() {
 		}
 		visibleChat = chat[start:end]
 	}
+	i.prevScrollOffset = i.scrollOffset
 	visibleChat = clipBottomClippedImages(visibleChat)
 
 	// A tiny "scrolled up" indicator in the top-right of the chat pane
