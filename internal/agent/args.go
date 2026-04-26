@@ -89,7 +89,7 @@ type Args struct {
 
 // ParseArgs parses the process arguments (excluding argv[0]).
 func ParseArgs(in []string) (Args, error) {
-	a := Args{Mode: ModeInteractive, MaxSteps: 50}
+	a := Args{Mode: ModeInteractive, MaxSteps: 0}
 	positional := []string{}
 
 	want := func(i *int, flag string) (string, error) {
@@ -352,7 +352,7 @@ func PrintHelp(version string) {
 		row{"--with-skills", "load user-installed skills in addition to built-ins"},
 	)
 	section("misc",
-		row{"--max-steps N", "agent loop iteration cap (default 50)"},
+		row{"--max-steps N", "agent loop iteration cap (default: unlimited)"},
 		row{"--list-models", "print known models and exit"},
 		row{"-h, --help", "show this help"},
 		row{"-v, --version", "show version info"},

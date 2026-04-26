@@ -63,7 +63,7 @@ func NewAgent(client provider.Client, model, system string, tools Registry) *Age
 		Model:    model,
 		System:   system,
 		Tools:    tools,
-		MaxSteps: 50,
+		MaxSteps: 0, // 0 = unlimited
 	}
 }
 
@@ -158,7 +158,7 @@ func (a *Agent) wrapSink(sink func(AgentEvent)) func(AgentEvent) {
 }
 
 func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
-	for step := 1; step <= a.MaxSteps; step++ {
+	for step := 1; a.MaxSteps <= 0 || step <= a.MaxSteps; step++ {
 		sink(EvTurnStart{Step: step})
 		if a.BeforeTurn != nil {
 			if allowed, reason := a.BeforeTurn(step); !allowed {
@@ -207,8 +207,11 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 		sink(EvDone{})
 		return nil
 	}
-	sink(EvDone{})
-	return fmt.Errorf("max steps (%d) exceeded", a.MaxSteps)
+	if a.MaxSteps > 0 {
+		sink(EvDone{})
+		return fmt.Errorf("max steps (%d) exceeded", a.MaxSteps)
+	}
+	return nil
 }
 
 // oneTurn calls the LLM once, forwards events, returns the stop reason

@@ -285,10 +285,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	reasoning := firstNonEmpty(args.Reasoning, cfg.Reasoning)
 
-	max := args.MaxSteps
-	if max <= 0 {
-		max = 50
-	}
+	max := args.MaxSteps // 0 = unlimited
 
 	return Resolved{
 		Provider:         provName,
