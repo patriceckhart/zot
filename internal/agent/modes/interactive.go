@@ -834,7 +834,15 @@ func (i *Interactive) redraw() {
 		if start < 0 {
 			start = 0
 		}
-		start = alignSliceStartToImageBlock(chat, start, end)
+		start = snapViewportStartToImageBlock(chat, start)
+		end = start + chatRows
+		if end > len(chat) {
+			end = len(chat)
+			start = end - chatRows
+			if start < 0 {
+				start = 0
+			}
+		}
 		visibleChat = chat[start:end]
 	}
 	visibleChat = clipBottomClippedImages(visibleChat)
@@ -895,29 +903,26 @@ func (i *Interactive) redraw() {
 	i.rend.Draw(frame, cursorRow, cursorCol)
 }
 
-func alignSliceStartToImageBlock(chat []string, start, end int) int {
-	if start <= 0 || start >= len(chat) || start >= end {
+func hasImageEscape(line string) bool {
+	return strings.Contains(line, "\x1b]1337;File=") || strings.Contains(line, "\x1b_G")
+}
+
+// snapViewportStartToImageBlock treats inline images as atomic blocks for
+// scrolling. Terminal image protocols draw from a single escape row into a
+// separate graphics layer; the following blank rows are only zot's reserved
+// footprint. If the viewport starts on one of those blank rows, there is no
+// correct partial-image state to render. Snap back to the escape row instead
+// so the image is either shown from its beginning or skipped entirely.
+func snapViewportStartToImageBlock(chat []string, start int) int {
+	if start <= 0 || start >= len(chat) {
 		return start
 	}
-	// If the slice already starts on an image row, keep it.
-	if strings.Contains(chat[start], "\x1b]1337;File=") || strings.Contains(chat[start], "\x1b_G") {
-		return start
-	}
-	// When the viewport begins inside an image block, the image escape row
-	// sits just above a run of blank reservation rows, followed by an
-	// "image - ..." info line. In that case, snap the slice start up to the
-	// escape row so the image actually renders instead of showing only the
-	// reserved blank area and metadata.
-	j := start
-	for j < end && strings.TrimSpace(chat[j]) == "" {
-		j++
-	}
-	if j >= end || !strings.Contains(chat[j], "image - ") {
+	if hasImageEscape(chat[start]) || strings.TrimSpace(chat[start]) != "" {
 		return start
 	}
 	for k := start - 1; k >= 0; k-- {
 		line := chat[k]
-		if strings.Contains(line, "\x1b]1337;File=") || strings.Contains(line, "\x1b_G") {
+		if hasImageEscape(line) {
 			return k
 		}
 		if strings.TrimSpace(line) != "" {
@@ -960,7 +965,7 @@ func clipBottomClippedImages(lines []string) []string {
 	}
 	out := append([]string(nil), lines...)
 	for i, line := range out {
-		if !strings.Contains(line, "\x1b]1337;File=") && !strings.Contains(line, "\x1b_G") {
+		if !hasImageEscape(line) {
 			continue
 		}
 		// Image blocks render as: image escape, zero or more blank

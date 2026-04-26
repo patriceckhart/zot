@@ -8,7 +8,9 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -29,13 +31,14 @@ const (
 // Kitty-graphics support, we use it. The ZOT_INLINE_IMAGES env var
 // overrides the default:
 //
-//	ZOT_INLINE_IMAGES=off   -> force text fallback
-//	ZOT_INLINE_IMAGES=iterm -> force iTerm2 protocol
-//	ZOT_INLINE_IMAGES=kitty -> force Kitty protocol
-//	ZOT_INLINE_IMAGES=auto  -> explicit auto-detect (same as default)
+//	ZOT_INLINE_IMAGES=off         -> force text fallback
+//	ZOT_INLINE_IMAGES=placeholder -> force text fallback (alias for off)
+//	ZOT_INLINE_IMAGES=iterm       -> force iTerm2 protocol
+//	ZOT_INLINE_IMAGES=kitty       -> force Kitty protocol
+//	ZOT_INLINE_IMAGES=auto        -> explicit auto-detect (same as default)
 func DetectImageProtocol() ImageProtocol {
 	switch strings.ToLower(os.Getenv("ZOT_INLINE_IMAGES")) {
-	case "off", "none", "false", "0":
+	case "off", "none", "false", "0", "placeholder", "text":
 		return ImageProtocolNone
 	case "iterm", "iterm2":
 		return ImageProtocolITerm2
@@ -51,6 +54,14 @@ func detectImageProtocolAuto() ImageProtocol {
 	termProgram := os.Getenv("TERM_PROGRAM")
 	term := os.Getenv("TERM")
 	kittyWindow := os.Getenv("KITTY_WINDOW_ID")
+
+	// VS Code's integrated terminal exposes several protocol-ish env
+	// combinations depending on the underlying shell/pty, but its image
+	// layer is inconsistent enough that auto-enable is more annoying than
+	// useful. Users can still force a protocol via ZOT_INLINE_IMAGES.
+	if strings.EqualFold(termProgram, "vscode") {
+		return ImageProtocolNone
+	}
 
 	if kittyWindow != "" || strings.Contains(term, "kitty") || strings.Contains(term, "ghostty") {
 		return ImageProtocolKitty
@@ -128,8 +139,10 @@ func renderKitty(data []byte, maxCellsWide, maxCellsHigh int) string {
 	hdr := "a=T,f=100"
 	if maxCellsWide > 0 && maxCellsHigh > 0 {
 		if pxW, pxH := ImageDimensions(data); pxW > 0 && pxH > 0 {
-			// rows that the native width would produce at maxCellsWide
-			nativeRows := int(float64(pxH) * float64(maxCellsWide) / float64(pxW) / CellAspectRatio)
+			// rows that the native width would produce at maxCellsWide.
+			// Round up so we don't under-reserve and let following text
+			// paint over the image on terminals whose cell metrics differ.
+			nativeRows := int(math.Ceil(float64(pxH) * float64(maxCellsWide) / float64(pxW) / CellAspectRatio()))
 			if nativeRows > maxCellsHigh {
 				hdr += fmt.Sprintf(",r=%d", maxCellsHigh)
 			} else {
@@ -172,11 +185,27 @@ func ImageDimensions(data []byte) (int, int) {
 	return cfg.Width, cfg.Height
 }
 
-// CellAspectRatio approximates how many pixel-rows one terminal row
-// occupies. Typical monospace cells are ~2x tall as wide; we use 2.0
-// as a safe default. Used to compute the rendered row count when
-// scaling an image to fit a cell width.
-const CellAspectRatio = 2.0
+// defaultCellAspectRatio approximates how many pixel-rows one terminal
+// row occupies. Typical monospace cells are ~2x tall as wide; we use 2.0
+// as a safe default. Used to compute the rendered row count when scaling
+// an image to fit a cell width.
+const defaultCellAspectRatio = 2.0
+
+// CellAspectRatio returns the pixel-height / pixel-width ratio for one
+// terminal cell. ZOT_CELL_ASPECT lets users tune inline-image row
+// reservation for terminals/fonts where the default causes overlap or
+// excessive blank space. Values outside a sane range are ignored.
+func CellAspectRatio() float64 {
+	v := strings.TrimSpace(os.Getenv("ZOT_CELL_ASPECT"))
+	if v == "" {
+		return defaultCellAspectRatio
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f < 0.5 || f > 5 {
+		return defaultCellAspectRatio
+	}
+	return f
+}
 
 // RowsForInlineImage returns the number of terminal rows an image
 // rendered at cellsWide columns will occupy, preserving aspect ratio.
@@ -189,8 +218,10 @@ func RowsForInlineImage(data []byte, cellsWide, maxRows int) int {
 	// pixels per cell (horizontal)
 	// scaleX = imageWidthPx / cellsWide
 	// rendered height in cells = imageHeightPx / (scaleX * CellAspectRatio)
+	// Round up: under-reserving by even one row is much worse than one
+	// extra blank line, because following text can overwrite the image.
 	scaleX := float64(w) / float64(cellsWide)
-	rows := int(float64(h) / (scaleX * CellAspectRatio))
+	rows := int(math.Ceil(float64(h) / (scaleX * CellAspectRatio())))
 	if rows < 1 {
 		rows = 1
 	}

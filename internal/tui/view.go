@@ -882,21 +882,17 @@ func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
 			if rows < 1 {
 				rows = 1
 			}
+			// Reserve the image footprint first, then place the escape
+			// in the top-left of that blank rectangle. Keeping the
+			// metadata above the image made some terminals blend text and
+			// graphics layers during full-screen repaints; metadata below
+			// the reserved rectangle is more stable and easier to read.
 			out := make([]string, 0, rows+3)
 			out = append(out, "    "+seq)
-			// Reserve blank rows matching the image's on-screen
-			// height, plus one extra. RowsForInlineImage estimates
-			// the height from a fixed cell aspect ratio; real
-			// terminals differ enough that the image often spills
-			// one row past the estimate and repaints over the info
-			// line below. The extra row absorbs that spillover.
-			for i := 1; i < rows+1; i++ {
+			for i := 1; i < rows; i++ {
 				out = append(out, "")
 			}
 			out = append(out, v.Theme.FG256(v.Theme.Muted, info))
-			// Trailing blank so the closing rule / next block has
-			// some breathing room under the info line instead of
-			// sitting flush against it.
 			out = append(out, "")
 			return out
 		}
