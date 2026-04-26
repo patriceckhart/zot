@@ -534,16 +534,21 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	// Finished tool call: frame the whole block with opening +
 	// closing rules so it stands apart from surrounding assistant
 	// prose. Matches the transcript-side framing in renderMessage.
+	// When the result is empty, show just the header without rules
+	// to avoid blank spacing for no-output tool calls.
+	if tc.Result == "" {
+		lines = append(lines, toolBlockRule(v.Theme, width))
+		lines = append(lines, head)
+		return lines
+	}
 	lines = append(lines, toolBlockRule(v.Theme, width))
 	lines = append(lines, head)
-	if tc.Result != "" {
-		color := v.Theme.ToolOut
-		if tc.Error {
-			color = v.Theme.Error
-		}
-		body := toolResultBlock(v.Theme, tc.Result, width, color)
-		lines = append(lines, v.collapseToolBody(body, false)...)
+	color := v.Theme.ToolOut
+	if tc.Error {
+		color = v.Theme.Error
 	}
+	body := toolResultBlock(v.Theme, tc.Result, width, color)
+	lines = append(lines, v.collapseToolBody(body, false)...)
 	lines = append(lines, toolBlockRule(v.Theme, width))
 	return lines
 }
