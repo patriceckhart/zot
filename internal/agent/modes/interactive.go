@@ -2264,15 +2264,8 @@ func totalTurnsLocked(msgs []provider.Message) int {
 }
 
 // applySessionSelection loads the given session via the cli-provided
-// callback and parks the viewport on the last turn so the user lands
-// looking at where the conversation left off (their last prompt at the
-// top of the chat, the assistant's last reply right below). Older
-// history is one scroll up; pgdn or end snaps to the current tail.
-//
-// Without this, scrollOffset stayed at 0 (pinned to the live tail),
-// which on a long resumed session showed only the last few rows of
-// the final assistant message — the user read that as "only one liner
-// happened, the resume didn't work".
+// callback and snaps the viewport to the bottom (the latest message)
+// so the user lands at the live tail of the resumed conversation.
 func (i *Interactive) applySessionSelection(path string) {
 	if i.cfg.LoadSession == nil {
 		i.mu.Lock()
@@ -2293,17 +2286,12 @@ func (i *Interactive) applySessionSelection(path string) {
 	i.parkedTurn = 0
 	i.parkedTotal = 0
 	i.view.InvalidateRenderCache()
-	// Pull the freshly-loaded transcript into the view so the anchor
-	// math below sees the post-resume messages, not the empty pre-load
-	// state. redraw() does the same on its next pass; we just front-run
-	// it here to compute the scroll target.
 	if i.agent != nil {
 		i.view.Messages = i.agent.Messages()
 	}
-	msgs := i.view.Messages
 	i.mu.Unlock()
 
-	i.scrollToLastTurn(msgs)
+	i.scrollToBottom()
 }
 
 // scrollToLastTurn parks the viewport at the most recent user turn,
