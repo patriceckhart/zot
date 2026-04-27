@@ -79,7 +79,12 @@ type View struct {
 	// Used by renderNumberedFile to draw a line-number gutter over
 	// raw (unnumbered) file content the model receives. Rebuilt on
 	// each Build().
-	toolStartLines  map[string]int
+	toolStartLines map[string]int
+	// toolCallLabels maps tool_use_id to the box label (tool name +
+	// short args) for the call, so a tool_result message can render
+	// the box top edge without having to look back at the assistant
+	// message that originated the call. Rebuilt on each Build().
+	toolCallLabels map[string]string
 	Streaming       string // current assistant text delta
 	StreamingActive bool
 	ToolCalls       []ToolCallView // tool calls in flight or completed
@@ -314,6 +319,7 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 func (v *View) refreshToolPaths() {
 	v.toolPaths = map[string]string{}
 	v.toolStartLines = map[string]int{}
+	v.toolCallLabels = map[string]string{}
 	for _, m := range v.Messages {
 		for _, c := range m.Content {
 			if tc, ok := c.(provider.ToolCallBlock); ok {
@@ -323,6 +329,7 @@ func (v *View) refreshToolPaths() {
 				if off := offsetFromToolArgs(tc.Arguments); off >= 1 {
 					v.toolStartLines[tc.ID] = off
 				}
+				v.toolCallLabels[tc.ID] = tc.Name + " " + ShortArgs(tc.Name, tc.Arguments)
 			}
 		}
 	}
@@ -509,12 +516,12 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 					}
 				}
 			case provider.ToolCallBlock:
-				// Rule above the tool header frames the call as a
-				// self-contained block separating it from the
-				// assistant prose above. The matching closing rule
-				// is emitted at the end of the tool-role message.
-				lines = append(lines, toolBlockRule(v.Theme, width))
-				lines = append(lines, indent+v.Theme.FG256(v.Theme.Tool, ""+b.Name+" "+ShortArgs(b.Name, b.Arguments)))
+				// The whole box (top + body + bottom) is rendered by
+				// the matching tool_result message so a single
+				// assistant message that batches multiple tool_use
+				// blocks doesn't produce a stack of unclosed top
+				// edges. Each tool result owns its own box.
+				_ = b
 			}
 		}
 	case provider.RoleTool:
@@ -534,18 +541,33 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 						startLine = s
 					}
 				}
-				// Render the body directly under the tool-call
-				// header (no "result" sub-header). Errors keep a
-				// one-line header so they're distinguishable from
-				// successful output. A closing rule below the body
-				// pairs with the opening rule emitted above the
-				// tool-call header in the assistant message,
-				// framing the whole tool block.
-				if tr.IsError {
-					lines = append(lines, v.Theme.FG256(color, "  error"))
+				label := ""
+				if v.toolCallLabels != nil {
+					label = v.toolCallLabels[tr.CallID]
 				}
-				lines = append(lines, v.renderToolResultContent(tr.Content, width, color, path, startLine)...)
-				lines = append(lines, toolBlockRule(v.Theme, width))
+				// Each tool result owns a complete box: top edge with
+				// the call's label, body rows wrapped in vertical
+				// edges, bottom edge to close. The label is looked up
+				// from the matching ToolCallBlock so multiple calls
+				// in one assistant message render as N adjacent boxes
+				// instead of stacking unclosed top edges.
+				lines = append(lines, toolBoxTop(v.Theme, label, width))
+				if tr.IsError {
+					lines = append(lines, toolBoxSide(v.Theme, v.Theme.FG256(color, "  error"), width))
+				}
+				for _, body := range v.renderToolResultContent(tr.Content, width, color, path, startLine) {
+					// Image escapes paint into a graphics layer that
+					// doesn't share the text grid; wrapping such a row
+					// in │ … │ produces visible artefacts on iTerm /
+					// Kitty, so leave image rows un-bordered. The
+					// surrounding lines still close the box top + bottom.
+					if hasImageEscapeLine(body) {
+						lines = append(lines, body)
+						continue
+					}
+					lines = append(lines, toolBoxSide(v.Theme, body, width))
+				}
+				lines = append(lines, toolBoxBottom(v.Theme, width))
 			}
 		}
 	}
@@ -555,52 +577,63 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	var lines []string
 
-	// Header. While the call is still streaming, prefer the live path
-	// extracted from the partial args so the user sees the target
-	// file as soon as it's known, even before the full JSON arrived.
+	// Header label. While the call is still streaming, prefer the
+	// live path extracted from the partial args so the user sees
+	// the target file as soon as it's known, even before the full
+	// JSON arrived.
 	arg := tc.Args
 	if arg == "" && tc.LivePath != "" {
 		arg = tc.LivePath
 	}
-	// Match the transcript-side framing: tool headers sit indented four
-	// cells under the assistant body column. The live overlay used to skip
-	// the indent which made streaming tools jump back to column 0.
-	head := "    " + v.Theme.FG256(v.Theme.Tool, ""+tc.Name+" "+arg)
+	label := tc.Name + " " + arg
 
-	// Live streaming body: pulled out of the partial JSON buffer for
-	// tools whose interesting content is a string field (currently
-	// write's `content` and edit's `new_text` chunks). The body is
-	// already framed by wrapLiveBody with top+bottom rules, so we
-	// don't add the extra toolBlockRule around it — that would
-	// produce four rules per streaming block, with a visible doubled
-	// line at the bottom.
+	// Every box is preceded by a blank line so it doesn't sit
+	// flush against the prose / previous tool block above it.
+	// Matches the transcript-side framing in renderMessage.
+
+	// Streaming body (write/edit): top edge with the label, body
+	// rows wrapped with vertical edges, bottom edge to close the
+	// box. When the call finalises, the live overlay disappears
+	// the same frame the transcript renders the closed box, so
+	// there's no visible hop.
 	if tc.Streaming && tc.Result == "" {
-		lines = append(lines, head)
+		lines = append(lines, "")
+		lines = append(lines, toolBoxTop(v.Theme, label, width))
 		if body := v.renderLiveToolBody(tc, width); len(body) > 0 {
 			lines = append(lines, body...)
 		}
+		lines = append(lines, toolBoxBottom(v.Theme, width))
 		return lines
 	}
 
-	// Finished tool call: frame the whole block with opening +
-	// closing rules so it stands apart from surrounding assistant
-	// prose. Matches the transcript-side framing in renderMessage.
-	// When the result is empty, show just the header without rules
-	// to avoid blank spacing for no-output tool calls.
+	// Finished tool call with no body: just the labelled top edge
+	// directly closed by the bottom. Avoids a blank interior row
+	// for no-output tools.
 	if tc.Result == "" {
-		lines = append(lines, toolBlockRule(v.Theme, width))
-		lines = append(lines, head)
+		lines = append(lines, "")
+		lines = append(lines, toolBoxTop(v.Theme, label, width))
+		lines = append(lines, toolBoxBottom(v.Theme, width))
 		return lines
 	}
-	lines = append(lines, toolBlockRule(v.Theme, width))
-	lines = append(lines, head)
+
+	// Finished tool call with a result body. Top edge embeds the
+	// label; body lines go through toolBoxSide so each row gets
+	// vertical edges; bottom edge closes the box.
+	lines = append(lines, "")
+	lines = append(lines, toolBoxTop(v.Theme, label, width))
 	color := v.Theme.ToolOut
 	if tc.Error {
 		color = v.Theme.Error
 	}
 	body := toolResultBlock(v.Theme, tc.Result, width, color)
-	lines = append(lines, v.collapseToolBody(body, false)...)
-	lines = append(lines, toolBlockRule(v.Theme, width))
+	for _, l := range v.collapseToolBody(body, false) {
+		if hasImageEscapeLine(l) {
+			lines = append(lines, l)
+			continue
+		}
+		lines = append(lines, toolBoxSide(v.Theme, l, width))
+	}
+	lines = append(lines, toolBoxBottom(v.Theme, width))
 	return lines
 }
 
@@ -637,18 +670,21 @@ func (v *View) renderLiveToolBody(tc ToolCallView, width int) []string {
 	return nil
 }
 
-// wrapLiveBody wraps a list of content lines with the standard
-// wrapLiveBody wraps a list of content lines with the standard
-// tool-result rules (top + bottom), collapsing to the preview
-// height if the body is tall. Shared between write and edit
-// streaming.
+// wrapLiveBody returns the streaming body content as a list of
+// box-side rows: each line wrapped in │ … │ with right padding so
+// the closing edge sits at column width-1. The caller (renderToolCall)
+// supplies the surrounding top/bottom edges so the live overlay
+// renders as a closed box matching the finalised transcript form.
 func (v *View) wrapLiveBody(body []string, width int) []string {
 	body = v.collapseToolBody(body, false)
-	rule := v.Theme.FG256(v.Theme.Muted, strings.Repeat("─", width))
-	out := make([]string, 0, len(body)+2)
-	out = append(out, rule)
-	out = append(out, body...)
-	out = append(out, rule)
+	out := make([]string, 0, len(body))
+	for _, l := range body {
+		if hasImageEscapeLine(l) {
+			out = append(out, l)
+			continue
+		}
+		out = append(out, toolBoxSide(v.Theme, l, width))
+	}
 	return out
 }
 
@@ -664,6 +700,159 @@ func toolBlockRule(th Theme, width int) string {
 		w = 8
 	}
 	return th.FG256(th.Muted, strings.Repeat("─", w))
+}
+
+// toolBoxInnerPad is the number of blank cells kept between a box
+// edge (┌, │, └) and the content inside it. One cell of breathing
+// room makes the label read as part of the box rather than fused to
+// the corner, and gives body lines a tiny gutter from the left side.
+const toolBoxInnerPad = 1
+
+// toolBoxTop renders the labelled top edge of a tool block:
+//
+//	┌─  bash xcrun simctl list devices ─────────────────────────────┐
+//
+// The label is the tool name + short args (the same string previously
+// shown on its own row beneath the rule). Padding fills the remainder
+// of the line so the right corner sits at column width-1, matching the
+// closing edge.
+func toolBoxTop(th Theme, label string, width int) string {
+	w := width
+	if w < 12 {
+		w = 12
+	}
+	innerPad := strings.Repeat(" ", toolBoxInnerPad)
+	// "┌─" + innerPad + " " + label + " " + innerPad = used; pad
+	// with ─ to width-1, then "┐".
+	prefix := "┌─" + innerPad + " "
+	suffix := " " + innerPad
+	used := visibleWidth(prefix) + visibleWidth(label) + visibleWidth(suffix)
+	fill := w - used - 1 // -1 for the closing corner
+	if fill < 0 {
+		// Label overflows; truncate with an ellipsis so the right
+		// corner still lands on the right edge. Rare on real
+		// terminals (the chat column is usually wide enough).
+		over := -fill
+		runes := []rune(label)
+		if over+1 < len(runes) {
+			label = string(runes[:len(runes)-over-1]) + "…"
+		} else {
+			label = "…"
+		}
+		used = visibleWidth(prefix) + visibleWidth(label) + visibleWidth(suffix)
+		fill = w - used - 1
+		if fill < 0 {
+			fill = 0
+		}
+	}
+	line := prefix + label + suffix + strings.Repeat("─", fill) + "┐"
+	return th.FG256(th.Muted, line)
+}
+
+// toolBoxBottom renders the bottom edge of a tool block:
+//
+//	└─────────────────────────────────────────────────────────────────────────────┘
+//
+// Spans the same width as toolBoxTop so the corners line up.
+func toolBoxBottom(th Theme, width int) string {
+	w := width
+	if w < 12 {
+		w = 12
+	}
+	line := "└" + strings.Repeat("─", w-2) + "┘"
+	return th.FG256(th.Muted, line)
+}
+
+// hasImageEscapeLine reports whether s contains a Kitty (\x1b_G) or
+// iTerm2 (\x1b]1337;File=) inline-image escape. Such rows draw into
+// the terminal's graphics layer and shouldn't be wrapped with text
+// box edges.
+func hasImageEscapeLine(s string) bool {
+	return strings.Contains(s, "\x1b]1337;File=") || strings.Contains(s, "\x1b_G")
+}
+
+// toolBoxBodyTrimLeft is the number of leading literal spaces stripped
+// from each body line as it enters toolBoxSide. Body renderers
+// (renderToolText, renderRawFile, the diff/bash helpers, ...) all
+// emit a 4-cell indent so the content aligns with the assistant body
+// column when there's no box around it. Inside a box the box edge +
+// inner pad already supply most of that gutter, so we drop a couple
+// of cells from the body's own indent to keep the content from
+// drifting too far right.
+const toolBoxBodyTrimLeft = 2
+
+// toolBoxSide wraps a single body line with vertical box edges:
+//
+//	│  foo bar baz                                            │
+//
+// The middle preserves the line verbatim (including any ANSI escapes)
+// after stripping toolBoxBodyTrimLeft leading literal spaces. One cell
+// of inner padding sits on each side so the content breathes from the
+// edges; the right padding fills to column width-1.
+func toolBoxSide(th Theme, line string, width int) string {
+	w := width
+	if w < 12 {
+		w = 12
+	}
+	left := th.FG256(th.Muted, "│") + strings.Repeat(" ", toolBoxInnerPad)
+	right := strings.Repeat(" ", toolBoxInnerPad) + th.FG256(th.Muted, "│")
+	inner := w - 2 - 2*toolBoxInnerPad // available between the two pads
+	line = trimLeadingSpaces(line, toolBoxBodyTrimLeft)
+	cur := visibleWidth(line)
+	if cur > inner {
+		// Last-resort truncation. Strips ANSI styling at the cut
+		// point; rare path so the simpler implementation is fine.
+		line = stripANSI(line)
+		runes := []rune(line)
+		if len(runes) > inner {
+			line = string(runes[:inner])
+		}
+		cur = visibleWidth(line)
+	}
+	pad := inner - cur
+	if pad < 0 {
+		pad = 0
+	}
+	return left + line + strings.Repeat(" ", pad) + right
+}
+
+// trimLeadingSpaces removes up to n literal space characters from the
+// start of s without touching anything else. ANSI CSI escapes that
+// appear before the spaces are skipped over (so a coloured indent
+// like "\x1b[2m    text" still loses its first n cells of indent).
+// Stops as soon as it hits a non-space character.
+func trimLeadingSpaces(s string, n int) string {
+	if n <= 0 || s == "" {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	trimmed := 0
+	i := 0
+	for i < len(s) {
+		// Pass through any ANSI escape sequence verbatim.
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			end := i + 2
+			for end < len(s) {
+				c := s[end]
+				end++
+				if c >= 0x40 && c <= 0x7e {
+					break
+				}
+			}
+			b.WriteString(s[i:end])
+			i = end
+			continue
+		}
+		if trimmed < n && s[i] == ' ' {
+			trimmed++
+			i++
+			continue
+		}
+		b.WriteString(s[i:])
+		return b.String()
+	}
+	return b.String()
 }
 
 // renderToolResultContent renders the body of a tool result block.
