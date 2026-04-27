@@ -561,6 +561,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 				// in one assistant message render as N adjacent boxes
 				// instead of stacking unclosed top edges.
 				lines = append(lines, toolBoxTop(v.Theme, label, width))
+				lines = append(lines, toolBoxSide(v.Theme, "", width))
 				if tr.IsError {
 					lines = append(lines, toolBoxSide(v.Theme, v.Theme.FG256(color, "  error"), width))
 				}
@@ -576,6 +577,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 					}
 					lines = append(lines, toolBoxSide(v.Theme, body, width))
 				}
+				lines = append(lines, toolBoxSide(v.Theme, "", width))
 				lines = append(lines, toolBoxBottom(v.Theme, width))
 			}
 		}
@@ -608,9 +610,11 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	if tc.Streaming && tc.Result == "" {
 		lines = append(lines, "")
 		lines = append(lines, toolBoxTop(v.Theme, label, width))
+		lines = append(lines, toolBoxSide(v.Theme, "", width))
 		if body := v.renderLiveToolBody(tc, width); len(body) > 0 {
 			lines = append(lines, body...)
 		}
+		lines = append(lines, toolBoxSide(v.Theme, "", width))
 		lines = append(lines, toolBoxBottom(v.Theme, width))
 		return lines
 	}
@@ -627,9 +631,12 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 
 	// Finished tool call with a result body. Top edge embeds the
 	// label; body lines go through toolBoxSide so each row gets
-	// vertical edges; bottom edge closes the box.
+	// vertical edges; bottom edge closes the box. Blank interior
+	// rows after the top and before the bottom give the body a bit
+	// of breathing room from the corners.
 	lines = append(lines, "")
 	lines = append(lines, toolBoxTop(v.Theme, label, width))
+	lines = append(lines, toolBoxSide(v.Theme, "", width))
 	color := v.Theme.ToolOut
 	if tc.Error {
 		color = v.Theme.Error
@@ -642,6 +649,7 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 		}
 		lines = append(lines, toolBoxSide(v.Theme, l, width))
 	}
+	lines = append(lines, toolBoxSide(v.Theme, "", width))
 	lines = append(lines, toolBoxBottom(v.Theme, width))
 	return lines
 }
