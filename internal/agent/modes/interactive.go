@@ -192,6 +192,17 @@ type Interactive struct {
 	scrollOffset       int // rows from the bottom; 0 = pinned to latest
 	prevScrollOffset   int // last value redraw snapped against; tracks intent
 
+	// prevChatLen and prevChatCols track the chat buffer's size at the
+	// last redraw so that when content grows below the user's viewport
+	// while they're scrolled up reading history, we can bump
+	// scrollOffset by exactly the growth and keep the visible content
+	// pinned. Without this, every streamed line shifts the visible
+	// window down through the buffer (because scrollOffset is measured
+	// from the bottom) and the user's reading position drifts upward
+	// and off the top.
+	prevChatLen  int
+	prevChatCols int
+
 	// Messages typed while a turn is in flight. Each is delivered as
 	// its own follow-up turn once the current one finishes. Rendered
 	// above the status bar as "sliding in: ..." chips.
@@ -814,6 +825,30 @@ func (i *Interactive) redraw() {
 	if chatRows < 1 {
 		chatRows = 1
 	}
+
+	// Auto-follow guard: when the user has scrolled up (scrollOffset
+	// > 0) and the agent appends new content below the viewport while
+	// they're reading, compensate so the visible content stays
+	// anchored. scrollOffset is measured from the bottom of `chat`,
+	// so without compensation a growing buffer pushes the window
+	// downward through the content and the lines the user was
+	// reading scroll off the top.
+	//
+	// Skip compensation when the terminal width changed (a resize
+	// reflows the whole buffer and the line-count delta no longer
+	// corresponds to appended content) and when scrollOffset is 0
+	// (the user is following the tail and wants new content to push
+	// the view down as usual).
+	if i.scrollOffset > 0 && i.prevChatCols == cols && i.prevChatLen > 0 {
+		if delta := len(chat) - i.prevChatLen; delta != 0 {
+			i.scrollOffset += delta
+			if i.scrollOffset < 0 {
+				i.scrollOffset = 0
+			}
+		}
+	}
+	i.prevChatLen = len(chat)
+	i.prevChatCols = cols
 
 	// Apply scroll offset to the chat slice.
 	maxOffset := len(chat) - chatRows
