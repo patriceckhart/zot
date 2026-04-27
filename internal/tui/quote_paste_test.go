@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,15 @@ func makeFiles(t *testing.T, base string, rels ...string) string {
 }
 
 func TestQuotePastedFilePaths(t *testing.T) {
+	// normalisePathToken's heuristics target Unix-shaped paths
+	// (leading "/", "~", or "file://" with a "/" path component) —
+	// the same shapes drag-and-drop produces on macOS and Linux.
+	// Windows TempDir paths look like C:\Users\... which never
+	// match those prefixes, so the test fixtures wouldn't exercise
+	// any real code path on that platform.
+	if runtime.GOOS == "windows" {
+		t.Skip("path-quoting heuristics are unix-shaped")
+	}
 	dir := t.TempDir()
 	makeFiles(t, dir,
 		"foo bar.png",
@@ -106,6 +116,9 @@ func TestQuotePastedFilePaths(t *testing.T) {
 // when the home directory contains the candidate. We don't write
 // into the user's real home; instead, override HOME for the test.
 func TestTildePathExists(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("path-quoting heuristics are unix-shaped")
+	}
 	tmp := t.TempDir()
 	makeFiles(t, tmp, "tilde-test.png")
 	t.Setenv("HOME", tmp)
