@@ -267,7 +267,7 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 			break
 		}
 		if !turnOpen {
-			out = append(out, v.Theme.FG256(v.Theme.Assistant, "▍ zot"))
+			out = append(out, v.Theme.AccentBar(v.Theme.Assistant)+v.Theme.FG256(v.Theme.Assistant, "zot"))
 		}
 		// Stream the partial assistant text through the same markdown
 		// renderer used for finalised messages so code fences, diffs,
@@ -486,7 +486,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 
 	switch m.Role {
 	case provider.RoleUser:
-		header := v.Theme.FG256(v.Theme.User, "▍ you")
+		header := v.Theme.AccentBar(v.Theme.User) + v.Theme.FG256(v.Theme.User, "you")
 		lines = append(lines, header)
 		for _, c := range m.Content {
 			switch b := c.(type) {
@@ -505,7 +505,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 		// assistant messages (e.g. another tool_use round-trip after a
 		// tool result) reuse the header that's already on screen.
 		if !turnOpen {
-			lines = append(lines, v.Theme.FG256(v.Theme.Assistant, "▍ zot"))
+			lines = append(lines, v.Theme.AccentBar(v.Theme.Assistant)+v.Theme.FG256(v.Theme.Assistant, "zot"))
 		}
 		// Indent assistant body the same 4 cells the user body uses,
 		// so the conversation column lines up vertically. The width
@@ -1742,17 +1742,39 @@ func StatusBar(p StatusBarParams) []string {
 
 	// On narrow terminals the single line wraps badly. If the visible
 	// width exceeds cols and we have a busy prefix, split: keep the
-	// busy prefix on line 1, put model+stats on line 2.
+	// busy prefix on line 1, then put model and (if still needed)
+	// stats on their own rows. This mirrors the idle split below.
 	if p.Cols > 0 && p.BusyPrefix != "" && visibleWidth(primary) > p.Cols {
 		busyLine := pad + p.BusyPrefix
-		var infoBuilder strings.Builder
-		infoBuilder.WriteString(pad)
-		infoBuilder.WriteString(th.FG256(th.Muted, left))
-		if middle != "" {
-			infoBuilder.WriteString(pad)
-			infoBuilder.WriteString(th.FG256(th.Muted, middle))
+		modelLine := pad + th.FG256(th.Muted, left)
+		lines := []string{busyLine}
+		if middle != "" && visibleWidth(modelLine+pad+th.FG256(th.Muted, middle)) > p.Cols {
+			lines = append(lines, modelLine)
+			lines = append(lines, pad+th.FG256(th.Muted, middle))
+		} else {
+			var infoBuilder strings.Builder
+			infoBuilder.WriteString(modelLine)
+			if middle != "" {
+				infoBuilder.WriteString(pad)
+				infoBuilder.WriteString(th.FG256(th.Muted, middle))
+			}
+			lines = append(lines, infoBuilder.String())
 		}
-		lines := []string{busyLine, infoBuilder.String()}
+		if cwd != "" {
+			lines = append(lines, pad+th.FG256(th.Muted, cwd))
+		}
+		return lines
+	}
+
+	// Idle narrow split: keep provider/model on the first status line,
+	// move usage/cost/context stats to the next, then cwd below. This
+	// avoids the terminal's hard wrap cutting the stats or pushing cwd
+	// into an awkward position on small widths.
+	if p.Cols > 0 && p.BusyPrefix == "" && middle != "" && visibleWidth(primary) > p.Cols {
+		lines := []string{
+			pad + th.FG256(th.Muted, left),
+			pad + th.FG256(th.Muted, middle),
+		}
 		if cwd != "" {
 			lines = append(lines, pad+th.FG256(th.Muted, cwd))
 		}

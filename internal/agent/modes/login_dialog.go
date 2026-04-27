@@ -148,7 +148,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, "")
 		lines = append(lines, th.FG256(th.Muted, "paste the authorization code (or full redirect URL / code#state):"))
 		if d.codeEd == nil {
-			d.codeEd = tui.NewEditor(th.FG256(th.Accent, "▌ "))
+			d.codeEd = tui.NewEditor(th.AccentBar(th.Accent))
 		}
 		edLines, _, _ := d.codeEd.Render(width - 2)
 		for _, l := range edLines {
@@ -170,7 +170,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, "")
 		lines = append(lines, th.FG256(th.Muted, "paste the authorization code (or full redirect URL / code#state):"))
 		if d.codeEd == nil {
-			d.codeEd = tui.NewEditor(th.FG256(th.Accent, "▌ "))
+			d.codeEd = tui.NewEditor(th.AccentBar(th.Accent))
 		}
 		edLines, _, _ := d.codeEd.Render(width - 2)
 		for _, l := range edLines {

@@ -110,6 +110,38 @@ func NewSession(root, cwd, providerName, model, version string) (*Session, error
 	return s, nil
 }
 
+// SessionUsage returns the most recent cumulative usage row stored in
+// a session file. Sessions append one usage row per completed turn; the
+// latest row's cumulative field is the session total. Missing usage rows
+// are valid for old/empty sessions and return the zero value.
+func SessionUsage(path string) (provider.Usage, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return provider.Usage{}, err
+	}
+	defer f.Close()
+
+	var usage provider.Usage
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
+	for sc.Scan() {
+		var head sessionLineHead
+		if err := json.Unmarshal(sc.Bytes(), &head); err != nil || head.Type != "usage" {
+			continue
+		}
+		var row struct {
+			Cumulative provider.Usage `json:"cumulative"`
+		}
+		if err := json.Unmarshal(sc.Bytes(), &row); err == nil {
+			usage = row.Cumulative
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return provider.Usage{}, err
+	}
+	return usage, nil
+}
+
 // OpenSession opens an existing session for appending.
 func OpenSession(path string) (*Session, []provider.Message, error) {
 	f, err := os.Open(path)

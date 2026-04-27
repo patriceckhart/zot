@@ -300,7 +300,13 @@ func PrintHelp(version string) {
 	}
 
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, assistant(tui.Bold("▌ i'm zot. yet another coding agent harness.")))
+	var headline string
+	if useColor {
+		headline = th.AccentBar(th.Assistant) + assistant(tui.Bold("i'm zot. yet another coding agent harness."))
+	} else {
+		headline = "i'm zot. yet another coding agent harness."
+	}
+	fmt.Fprintln(os.Stderr, headline)
 	fmt.Fprintln(os.Stderr, muted("ask anything, or type /help inside the tui to see commands."))
 	fmt.Fprintf(os.Stderr, "%s %s\n", muted("version:"), fg(version))
 

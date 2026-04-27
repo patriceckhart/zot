@@ -512,6 +512,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 		sess = newSess
 		currentAg.SetMessages(msgs)
+		if usage, uerr := core.SessionUsage(path); uerr == nil {
+			currentAg.SeedCost(usage)
+		}
 		sessBaselineMsgs = len(msgs)
 		return nil
 	}
@@ -723,6 +726,9 @@ func openOrCreateSession(args Args, r Resolved, ag *core.Agent, version string) 
 	}
 	if s != nil {
 		ag.SetMessages(msgs)
+		if usage, uerr := core.SessionUsage(s.Path); uerr == nil {
+			ag.SeedCost(usage)
+		}
 		return s, nil
 	}
 	return core.NewSession(ZotHome(), args.CWD, r.Provider, r.Model, version)

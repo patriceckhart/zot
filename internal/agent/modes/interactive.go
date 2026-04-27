@@ -282,7 +282,10 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 			Theme:      cfg.Theme,
 			ImageProto: tui.DetectImageProtocol(),
 		},
-		ed:                tui.NewEditor(cfg.Theme.FG256(cfg.Theme.Accent, "▌ ")),
+		// Prompt is the standard half-block accent bar used by chat
+		// speaker labels too, so the input gutter matches the rest
+		// of the UI.
+		ed:                tui.NewEditor(cfg.Theme.AccentBar(cfg.Theme.Accent)),
 		rend:              tui.NewRenderer(cfg.Terminal),
 		toolCalls:         map[string]*tui.ToolCallView{},
 		dirty:             make(chan struct{}, 8),
@@ -306,6 +309,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
 		i.view.Messages = cfg.Agent.Messages()
+		i.cumUsage = cfg.Agent.Cost()
 	}
 	return i
 }
@@ -812,13 +816,19 @@ func (i *Interactive) redraw() {
 		queue = append(queue, "")
 	}
 
-	// Bottom-sticky sections (always visible, never scroll).
-	bottom := make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(edLines)+1)
+	// Bottom-sticky sections (always visible, never scroll). A blank
+	// row is inserted between the status bar and the editor, and a
+	// trailing blank row is added at the very bottom, so the input
+	// has breathing room from the surrounding chrome instead of
+	// sitting flush against the status line and the terminal edge.
+	bottom := make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(edLines)+3)
 	bottom = append(bottom, dialog...)
 	bottom = append(bottom, suggest...)
 	bottom = append(bottom, queue...)
 	bottom = append(bottom, statusLines...)
+	bottom = append(bottom, "")
 	bottom = append(bottom, edLines...)
+	bottom = append(bottom, "")
 
 	_, rows := i.cfg.Terminal.Size()
 	chatRows := rows - len(bottom)
@@ -931,7 +941,10 @@ func (i *Interactive) redraw() {
 	// the blinking cursor shows where the user is actually typing.
 	// Dialogs without a cursor (model picker, /help, /login, etc.)
 	// return -1 and the main editor keeps the cursor.
-	cursorRow := len(visibleChat) + len(dialog) + len(suggest) + len(queue) + len(statusLines) + curR
+	// +1 accounts for the blank row inserted between statusLines
+	// and edLines above. Without it the rendered cursor would land
+	// on the blank instead of inside the editor row.
+	cursorRow := len(visibleChat) + len(dialog) + len(suggest) + len(queue) + len(statusLines) + 1 + curR
 	cursorCol := curC
 	if i.btwDialog.Active() {
 		if r, c := i.btwDialog.CursorPos(cols); r >= 0 {
@@ -2288,6 +2301,7 @@ func (i *Interactive) applySessionSelection(path string) {
 	i.view.InvalidateRenderCache()
 	if i.agent != nil {
 		i.view.Messages = i.agent.Messages()
+		i.cumUsage = i.agent.Cost()
 	}
 	i.mu.Unlock()
 

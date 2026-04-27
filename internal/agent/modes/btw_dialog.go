@@ -100,7 +100,7 @@ func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, seed st
 	d.turns = nil
 	d.loading = false
 	d.cancel = nil
-	d.editor = tui.NewEditor(th.FG256(th.Accent, "▌ "))
+	d.editor = tui.NewEditor(th.AccentBar(th.Accent))
 	d.frozenSystem = system
 	d.frozenMsgs = agent.Messages()
 	d.client = agent.Client
@@ -300,13 +300,13 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 
 	for _, t := range d.turns {
 		out = append(out, "")
-		out = append(out, "  "+th.FG256(th.User, "▌ you"))
+		out = append(out, "  "+th.AccentBar(th.User)+th.FG256(th.User, "you"))
 		for _, line := range strings.Split(t.User, "\n") {
 			out = append(out, "    "+th.FG256(th.Muted, line))
 		}
 		if t.Assistant != "" {
 			out = append(out, "")
-			out = append(out, "  "+th.FG256(th.Assistant, "▌ zot"))
+			out = append(out, "  "+th.AccentBar(th.Assistant)+th.FG256(th.Assistant, "zot"))
 			md := tui.RenderMarkdown(t.Assistant, th, width-4)
 			for _, line := range strings.Split(md, "\n") {
 				out = append(out, "    "+line)

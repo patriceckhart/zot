@@ -10,12 +10,13 @@ import "github.com/patriceckhart/zot/internal/tui"
 // the moment zot starts. After welcomeVersionDuration the caller
 // flips showVersion off and the headline reverts to plain text.
 func welcomeBanner(th tui.Theme, version string, showVersion bool) []string {
-	headline := "▌ i'm zot. yet another coding agent harness."
+	text := "i'm zot. yet another coding agent harness."
 	if showVersion && version != "" {
-		headline = "▌ i'm zot (" + version + "). yet another coding agent harness."
+		text = "i'm zot (" + version + "). yet another coding agent harness."
 	}
+	headline := th.AccentBar(th.Assistant) + th.FG256(th.Assistant, tui.Bold(text))
 	return []string{
-		th.FG256(th.Assistant, tui.Bold(headline)),
+		headline,
 		th.FG256(th.Muted, "  ask anything, or type /help to see commands."),
 		"",
 	}

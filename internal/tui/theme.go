@@ -57,6 +57,22 @@ func (t Theme) FG256(c int, s string) string {
 	return sgrFG(c) + s + reset
 }
 
+// BG256 wraps s in background color c using ANSI 256-color SGR.
+// Useful when the visible cell needs a coloured fill but the
+// underlying character should be a regular space (so mouse-copy
+// from the terminal yields whitespace instead of a glyph).
+func (t Theme) BG256(c int, s string) string {
+	return sgrBG(c) + s + reset
+}
+
+// AccentBar returns a 2-cell-wide leader: a coloured half-block
+// glyph followed by a plain space gutter. Used as the speaker-label
+// prefix in the chat ("▌ you", "▌ zot") and as the editor prompt so
+// the bar reads consistently across the UI.
+func (t Theme) AccentBar(c int) string {
+	return t.FG256(c, "▌ ")
+}
+
 // Highlight paints s with the theme's selection colors (foreground +
 // background). The caller is responsible for padding s to the desired
 // width; styling alone does not extend the background past content.
