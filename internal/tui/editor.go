@@ -308,6 +308,13 @@ func splitPreservingSeparators(s string) []pasteToken {
 
 // normalisePathToken decides whether tk is a drag-dropped path and,
 // if so, returns the cleaned-up path string.
+//
+// To avoid mistaking URL path segments (e.g. "/de/downloads/foo"
+// pasted from a browser address bar) for filesystem paths, the
+// candidate must point to an entry that actually exists on disk.
+// Drag-and-drop from a file manager always satisfies this; a
+// hand-typed URL fragment doesn't, so it falls through to the
+// regular insert path untouched.
 func normalisePathToken(tk string) (string, bool) {
 	// Strip pre-existing surrounding quotes; we'll re-quote consistently.
 	if n := len(tk); n >= 2 {
@@ -323,6 +330,9 @@ func normalisePathToken(tk string) (string, bool) {
 			return "", false
 		}
 		if decoded == "" || decoded[0] != '/' {
+			return "", false
+		}
+		if !pathExists(decoded) {
 			return "", false
 		}
 		return decoded, true
@@ -341,7 +351,34 @@ func normalisePathToken(tk string) (string, bool) {
 	if strings.ContainsAny(unescaped, "|;&$`<>") {
 		return "", false
 	}
+	if !pathExists(unescaped) {
+		return "", false
+	}
 	return unescaped, true
+}
+
+// pathExists reports whether p resolves to an existing filesystem
+// entry (file, directory, or symlink target). "~" / "~/" prefixes
+// are expanded relative to the current user's home directory before
+// the check, mirroring how the agent will later read the path.
+func pathExists(p string) bool {
+	if p == "" {
+		return false
+	}
+	expanded := p
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return false
+		}
+		if p == "~" {
+			expanded = home
+		} else {
+			expanded = filepath.Join(home, p[2:])
+		}
+	}
+	_, err := os.Stat(expanded)
+	return err == nil
 }
 
 // unescapeBackslashes turns "foo\ bar" into "foo bar". Terminal
