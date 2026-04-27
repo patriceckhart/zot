@@ -598,9 +598,12 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	}
 	label := tc.Name + " " + arg
 
-	// Every box is preceded by a blank line so it doesn't sit
-	// flush against the prose / previous tool block above it.
-	// Matches the transcript-side framing in renderMessage.
+	// No leading blank: Build()'s inter-message separator already
+	// places one blank row between the previous transcript content
+	// and the live overlay, matching the spacing the same call has
+	// once it finalises into a transcript box. Adding another blank
+	// here would double the gap during streaming and visibly tighten
+	// when the overlay disappears.
 
 	// Streaming body (write/edit): top edge with the label, body
 	// rows wrapped with vertical edges, bottom edge to close the
@@ -608,7 +611,6 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	// the same frame the transcript renders the closed box, so
 	// there's no visible hop.
 	if tc.Streaming && tc.Result == "" {
-		lines = append(lines, "")
 		lines = append(lines, toolBoxTop(v.Theme, label, width))
 		lines = append(lines, toolBoxSide(v.Theme, "", width))
 		if body := v.renderLiveToolBody(tc, width); len(body) > 0 {
@@ -623,7 +625,6 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	// directly closed by the bottom. Avoids a blank interior row
 	// for no-output tools.
 	if tc.Result == "" {
-		lines = append(lines, "")
 		lines = append(lines, toolBoxTop(v.Theme, label, width))
 		lines = append(lines, toolBoxBottom(v.Theme, width))
 		return lines
@@ -634,7 +635,6 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	// vertical edges; bottom edge closes the box. Blank interior
 	// rows after the top and before the bottom give the body a bit
 	// of breathing room from the corners.
-	lines = append(lines, "")
 	lines = append(lines, toolBoxTop(v.Theme, label, width))
 	lines = append(lines, toolBoxSide(v.Theme, "", width))
 	color := v.Theme.ToolOut
