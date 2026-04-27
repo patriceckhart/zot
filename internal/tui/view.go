@@ -232,6 +232,15 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 	for idx := range v.Messages {
 		anchors = append(anchors, MessageAnchor{MessageIdx: idx, Row: len(out)})
 		out = append(out, rendered[idx]...)
+		// Skip the inter-message blank for messages that rendered
+		// to nothing. An assistant message whose only content is
+		// ToolCallBlock(s) has no rendered output of its own (each
+		// tool result owns its box now), so emitting a blank for it
+		// would compound with the blank from the next real message
+		// and produce two blank rows between adjacent tool boxes.
+		if len(rendered[idx]) == 0 {
+			continue
+		}
 		out = append(out, "")
 	}
 	// Only render the streaming header/body when there's actual
