@@ -84,7 +84,7 @@ type View struct {
 	// short args) for the call, so a tool_result message can render
 	// the box top edge without having to look back at the assistant
 	// message that originated the call. Rebuilt on each Build().
-	toolCallLabels map[string]string
+	toolCallLabels  map[string]string
 	Streaming       string // current assistant text delta
 	StreamingActive bool
 	ToolCalls       []ToolCallView // tool calls in flight or completed
