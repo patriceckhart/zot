@@ -1149,14 +1149,17 @@ func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
 			}
 			// Reserve the image footprint first, then place the escape
 			// in the top-left of that blank rectangle. Keeping the
-			// metadata above the image made some terminals blend text and
-			// graphics layers during full-screen repaints; metadata below
-			// the reserved rectangle is more stable and easier to read.
+			// metadata above the image made some terminals blend text
+			// and graphics layers during full-screen repaints; metadata
+			// below the reserved rectangle is more stable and easier to
+			// read. One extra blank row before the metadata gives the
+			// caption breathing room from the image's last pixel row.
 			out := make([]string, 0, rows+3)
 			out = append(out, "    "+seq)
 			for i := 1; i < rows; i++ {
 				out = append(out, "")
 			}
+			out = append(out, "")
 			out = append(out, v.Theme.FG256(v.Theme.Muted, info))
 			return out
 		}

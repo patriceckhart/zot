@@ -985,7 +985,7 @@ func snapViewportStartToImageBlock(chat []string, start int) int {
 	if start <= 0 || start >= len(chat) {
 		return start
 	}
-	if hasImageEscape(chat[start]) || strings.TrimSpace(chat[start]) != "" {
+	if hasImageEscape(chat[start]) || !isBoxBlankLine(chat[start]) {
 		return start
 	}
 	for k := start - 1; k >= 0; k-- {
@@ -993,7 +993,7 @@ func snapViewportStartToImageBlock(chat []string, start int) int {
 		if hasImageEscape(line) {
 			return k
 		}
-		if strings.TrimSpace(line) != "" {
+		if !isBoxBlankLine(line) {
 			break
 		}
 	}
@@ -1041,13 +1041,18 @@ func clipBottomClippedImages(lines []string) []string {
 		// then one trailing blank. If the info line isn't visible in
 		// the current chat slice, the image would paint down into the
 		// fixed status bar area. Suppress that image for this frame.
+		//
+		// When the image lives inside a tool box, the reservation rows
+		// are wrapped in vertical box edges ("│  …  │"); those rows
+		// look non-blank under a naive whitespace check but are still
+		// reservation rows for this scan, so treat them as blank.
 		foundInfo := false
 		for j := i + 1; j < len(out); j++ {
 			if strings.Contains(out[j], "image - ") {
 				foundInfo = true
 				break
 			}
-			if strings.TrimSpace(out[j]) != "" {
+			if !isBoxBlankLine(out[j]) {
 				break
 			}
 		}
@@ -1056,6 +1061,49 @@ func clipBottomClippedImages(lines []string) []string {
 		}
 	}
 	return out
+}
+
+// isBoxBlankLine reports whether line is visually empty after
+// stripping ANSI escape sequences, surrounding whitespace, and the
+// vertical box edges drawn by the tool-box renderer. Used by
+// clipBottomClippedImages so an image's reservation rows still count
+// as blank when those rows are wrapped in "│  …  │" inside a tool box.
+func isBoxBlankLine(line string) bool {
+	stripped := stripANSIBytes(line)
+	stripped = strings.TrimSpace(stripped)
+	stripped = strings.Trim(stripped, "│")
+	stripped = strings.TrimSpace(stripped)
+	return stripped == ""
+}
+
+// stripANSIBytes removes ANSI CSI escape sequences (ESC '[' … final
+// byte) from s without pulling in the regexp package. Mirrors the
+// internal helper in package tui; the duplicated copy avoids exporting
+// it just for one caller.
+func stripANSIBytes(s string) string {
+	if !strings.Contains(s, "\x1b") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			end := i + 2
+			for end < len(s) {
+				c := s[end]
+				end++
+				if c >= 0x40 && c <= 0x7e {
+					break
+				}
+			}
+			i = end
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
 
 // truncateLine shortens s so it fits within n display cells, with an
