@@ -142,6 +142,48 @@ func (c *Client) SendChatAction(ctx context.Context, chatID int64, action string
 	return nil
 }
 
+// SendPhoto uploads a local image file as a Telegram photo. Telegram
+// re-encodes / scales photos for inline preview; use SendDocument
+// when the recipient needs the original bytes.
+func (c *Client) SendPhoto(ctx context.Context, chatID int64, path, caption string) error {
+	f, err := openFile(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	_ = w.WriteField("chat_id", strconv.FormatInt(chatID, 10))
+	if caption != "" {
+		_ = w.WriteField("caption", caption)
+	}
+	part, err := w.CreateFormFile("photo", lastPathElem(path))
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return err
+	}
+	w.Close()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL()+"/sendPhoto", &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", w.FormDataContentType())
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("sendPhoto http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
 // SendDocument uploads a local file as a document attachment.
 func (c *Client) SendDocument(ctx context.Context, chatID int64, path, caption string) error {
 	f, err := openFile(path)

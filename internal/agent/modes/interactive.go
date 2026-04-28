@@ -2502,6 +2502,11 @@ func (i *Interactive) applyModelSelection(prov, model string) {
 	// identical messages will reuse the existing entries. Nothing
 	// to invalidate.
 	i.mu.Unlock()
+	// The new agent was built off the base tool registry, so any
+	// dynamically-registered tools (telegram_send_*) need to be
+	// reattached. applyTelegramTools is a no-op when the bridge is
+	// idle so the cross-provider path still works on a vanilla setup.
+	i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
 	if i.cfg.PersistModel != nil {
 		i.cfg.PersistModel(p, md)
 	}
@@ -2529,6 +2534,7 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 		i.statusErr = ""
 		i.statusOK = "logged in to " + ev.Provider + " via " + ev.Method
 		i.mu.Unlock()
+		i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
 		i.dialog.ShowResult(true, "")
 	}
 }
@@ -3091,6 +3097,7 @@ func (i *Interactive) telegramConnect() {
 		i.invalidate()
 		return
 	}
+	i.applyTelegramTools(true)
 	state := i.telegramBridge.State()
 	label := "telegram connected"
 	if state.Username != "" {
@@ -3117,11 +3124,69 @@ func (i *Interactive) telegramDisconnect() {
 		return
 	}
 	i.telegramBridge.Stop()
+	i.applyTelegramTools(false)
 	i.mu.Lock()
 	i.statusOK = "telegram disconnected"
 	i.statusErr = ""
 	i.mu.Unlock()
 	i.invalidate()
+}
+
+// telegramSenderAdapter wraps the bridge so the tools package can
+// drive it without importing telegram directly. The Active() check
+// is forwarded to the bridge so the tool can fail clearly with a
+// model-readable error when the user disconnected mid-turn.
+type telegramSenderAdapter struct {
+	bridge *telegram.Bridge
+}
+
+func (a telegramSenderAdapter) SendImage(ctx context.Context, path, caption string) error {
+	if a.bridge == nil {
+		return fmt.Errorf("telegram bridge is not connected")
+	}
+	return a.bridge.SendImage(ctx, path, caption)
+}
+
+func (a telegramSenderAdapter) SendDocument(ctx context.Context, path, caption string) error {
+	if a.bridge == nil {
+		return fmt.Errorf("telegram bridge is not connected")
+	}
+	return a.bridge.SendDocument(ctx, path, caption)
+}
+
+func (a telegramSenderAdapter) Active() bool {
+	return a.bridge != nil && a.bridge.Active()
+}
+
+// applyTelegramTools registers (active=true) or removes (active=false)
+// the telegram_send_image and telegram_send_file tools on the running
+// agent so the model only sees them while the bridge is connected.
+// Snapshots and mutates the live tool registry so any extension or
+// /reload-ext additions made while Telegram is connected survive a
+// later /telegram disconnect (we only add or strip the two telegram
+// entries, never the rest).
+func (i *Interactive) applyTelegramTools(active bool) {
+	if i.agent == nil {
+		return
+	}
+	current := i.agent.Tools
+	next := core.Registry{}
+	for name, t := range current {
+		if name == "telegram_send_image" || name == "telegram_send_file" {
+			continue
+		}
+		next[name] = t
+	}
+	if active {
+		sender := telegramSenderAdapter{bridge: i.telegramBridge}
+		next["telegram_send_image"] = &tools.TelegramSendImageTool{
+			CWD: i.cfg.CWD, Sandbox: i.cfg.Sandbox, Sender: sender,
+		}
+		next["telegram_send_file"] = &tools.TelegramSendFileTool{
+			CWD: i.cfg.CWD, Sandbox: i.cfg.Sandbox, Sender: sender,
+		}
+	}
+	i.agent.SetTools(next)
 }
 
 // telegramStatus writes a one-liner describing the bridge state.

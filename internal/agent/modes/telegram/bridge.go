@@ -153,7 +153,8 @@ func (b *Bridge) Stop() {
 // visual noise to a plain back-and-forth).
 func (b *Bridge) OnAssistantText(text string) {
 	b.mu.Lock()
-	prefix := "zot: "
+	// prefix := "zot: "
+	prefix := ""
 	if b.nextReplyFromTelegram {
 		prefix = ""
 		b.nextReplyFromTelegram = false
@@ -196,6 +197,42 @@ func (b *Bridge) sendToPaired(text, prefix string) {
 			return
 		}
 	}
+}
+
+// SendImage uploads path to the paired Telegram chat as an inline
+// photo. Returns an error if the bridge is not running, no user has
+// paired yet, or the upload itself fails. Used by the
+// telegram_send_image tool so a Telegram-originated turn can yield
+// a real image instead of a textual description.
+func (b *Bridge) SendImage(ctx context.Context, path, caption string) error {
+	b.mu.Lock()
+	chatID := b.chatID
+	running := b.running
+	b.mu.Unlock()
+	if !running {
+		return fmt.Errorf("telegram bridge is not running")
+	}
+	if chatID == 0 {
+		return fmt.Errorf("telegram bridge has no paired chat yet")
+	}
+	return b.Client.SendPhoto(ctx, chatID, path, caption)
+}
+
+// SendDocument uploads path to the paired Telegram chat as a raw
+// document attachment (no compression). Counterpart of SendImage for
+// the telegram_send_file tool.
+func (b *Bridge) SendDocument(ctx context.Context, path, caption string) error {
+	b.mu.Lock()
+	chatID := b.chatID
+	running := b.running
+	b.mu.Unlock()
+	if !running {
+		return fmt.Errorf("telegram bridge is not running")
+	}
+	if chatID == 0 {
+		return fmt.Errorf("telegram bridge has no paired chat yet")
+	}
+	return b.Client.SendDocument(ctx, chatID, path, caption)
 }
 
 // pollLoop long-polls Telegram and dispatches each update. Runs
