@@ -382,8 +382,11 @@ func (i *Interactive) Run(ctx context.Context) error {
 		i.dialog.Open(i.cfg.ZotHome)
 	}
 
-	// Input goroutine.
-	keys := make(chan tui.Key, 8)
+	// Input goroutine. Buffered generously so a drag-drop that the
+	// terminal delivers as a burst of single-character key events
+	// (no bracketed paste) can be drained in one main-loop pass
+	// instead of triggering a redraw per character.
+	keys := make(chan tui.Key, 256)
 	go func() {
 		reader := tui.NewReaderWithPeek(term.ReadByte, term.PeekByteTimeout)
 		for {
@@ -475,6 +478,22 @@ func (i *Interactive) Run(ctx context.Context) error {
 		case k := <-keys:
 			if done := i.handleKey(ctx, k); done {
 				return nil
+			}
+			// Drain any keystrokes that arrived during this iteration.
+			// VS Code (and other terminals that don't bracket drops as
+			// paste) deliver a path one rune at a time — without this
+			// loop the editor would render between every rune and a
+			// long path on a heavy transcript would visibly type in.
+		drain:
+			for {
+				select {
+				case k2 := <-keys:
+					if done := i.handleKey(ctx, k2); done {
+						return nil
+					}
+				default:
+					break drain
+				}
 			}
 			i.invalidate()
 		case ev := <-authEvents:
