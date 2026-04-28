@@ -816,15 +816,17 @@ func (i *Interactive) redraw() {
 		queue = append(queue, "")
 	}
 
-	// Bottom-sticky sections (always visible, never scroll). A blank
-	// row is inserted between the status bar and the editor, and a
-	// trailing blank row is added at the very bottom, so the input
-	// has breathing room from the surrounding chrome instead of
-	// sitting flush against the status line and the terminal edge.
-	bottom := make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(edLines)+3)
+	// Bottom-sticky sections (always visible, never scroll). One
+	// blank row above statusLines so the spinner / model / cwd
+	// block doesn't sit flush against the chat content above it,
+	// one blank between status bar and editor for input breathing
+	// room, and one trailing blank at the very bottom so the
+	// editor isn't flush against the terminal edge.
+	bottom := make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(edLines)+4)
 	bottom = append(bottom, dialog...)
 	bottom = append(bottom, suggest...)
 	bottom = append(bottom, queue...)
+	bottom = append(bottom, "")
 	bottom = append(bottom, statusLines...)
 	bottom = append(bottom, "")
 	bottom = append(bottom, edLines...)
@@ -941,10 +943,12 @@ func (i *Interactive) redraw() {
 	// the blinking cursor shows where the user is actually typing.
 	// Dialogs without a cursor (model picker, /help, /login, etc.)
 	// return -1 and the main editor keeps the cursor.
-	// +1 accounts for the blank row inserted between statusLines
-	// and edLines above. Without it the rendered cursor would land
-	// on the blank instead of inside the editor row.
-	cursorRow := len(visibleChat) + len(dialog) + len(suggest) + len(queue) + len(statusLines) + 1 + curR
+	// +2 accounts for the blank row above statusLines (so the
+	// status block has air above it) and the blank row between
+	// statusLines and edLines (input breathing room). Without
+	// these the rendered cursor would land on a blank instead of
+	// inside the editor row.
+	cursorRow := len(visibleChat) + len(dialog) + len(suggest) + len(queue) + 1 + len(statusLines) + 1 + curR
 	cursorCol := curC
 	if i.btwDialog.Active() {
 		if r, c := i.btwDialog.CursorPos(cols); r >= 0 {
