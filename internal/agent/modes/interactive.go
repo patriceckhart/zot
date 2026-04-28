@@ -837,12 +837,12 @@ func (i *Interactive) redraw() {
 	// to the editor but don't push the chat around.
 	var queue []string
 	if len(i.queued) > 0 {
+		queue = append(queue, "")
 		for _, q := range i.queued {
 			label := i.cfg.Theme.FG256(i.cfg.Theme.Accent, "  sliding in: ")
 			text := truncateLine(q, cols-17)
 			queue = append(queue, label+i.cfg.Theme.FG256(i.cfg.Theme.Muted, text))
 		}
-		queue = append(queue, "")
 	}
 
 	// Bottom-sticky sections (always visible, never scroll). One
