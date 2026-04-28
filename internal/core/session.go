@@ -443,21 +443,47 @@ func sessionHasNoMessages(path string) bool {
 	return true
 }
 
-// ListSessions returns session file paths for cwd, newest first.
+// ListSessions returns session file paths for cwd, most-recently-
+// modified first. Sorting on filesystem ModTime instead of the
+// timestamp embedded in the filename means a long-running session
+// the user actually returned to recently floats to the top of
+// /sessions, /continue, and the resume picker, even when it was
+// originally created days earlier than newer but idle sessions.
+// Files with identical ModTime fall back to filename desc so the
+// order stays stable across calls.
 func ListSessions(root, cwd string) []string {
 	dir := SessionsDir(root, cwd)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
-	var files []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
-			files = append(files, filepath.Join(dir, e.Name()))
-		}
+	type rec struct {
+		path string
+		mod  time.Time
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(files)))
-	return files
+	var files []rec
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, rec{path: p, mod: info.ModTime()})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		if !files[i].mod.Equal(files[j].mod) {
+			return files[i].mod.After(files[j].mod)
+		}
+		return files[i].path > files[j].path
+	})
+	out := make([]string, 0, len(files))
+	for _, r := range files {
+		out = append(out, r.path)
+	}
+	return out
 }
 
 // AppendMessage writes a message to the session.
