@@ -687,6 +687,16 @@ func (i *Interactive) redraw() {
 		chat = append(chat, "")
 	}
 
+	// Strip trailing blank rows so the chat content sits flush
+	// against the new "blank above status bar" row added by the
+	// bottom-region assembly. Build() ends every message with a
+	// blank separator; without this trim, the final message in
+	// the transcript would have its own trailing blank plus the
+	// status block's leading blank, doubling the gap.
+	for len(chat) > 0 && strings.TrimSpace(chat[len(chat)-1]) == "" {
+		chat = chat[:len(chat)-1]
+	}
+
 	// Dialogs (login or model picker) render between chat and the editor.
 	var dialog []string
 	switch {
