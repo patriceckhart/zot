@@ -51,6 +51,21 @@ type Agent struct {
 	// without each caller having to compose sinks manually.
 	OnEvent func(AgentEvent)
 
+	// OnMessageAppended, if set, fires every time a message is
+	// appended to the in-memory transcript by the agent loop — the
+	// initial user prompt, each finalised assistant message, and
+	// each tool-results message (plus the synthetic OpenAI image
+	// mirror, if any). Hosts wire this to the on-disk session so
+	// that turns are durable as soon as they happen, instead of
+	// only being flushed on a clean exit.
+	OnMessageAppended func(provider.Message)
+
+	// OnUsage, if set, fires after every turn's usage row arrives,
+	// carrying the cumulative usage for the session. Hosts wire
+	// this to the on-disk session so the persisted total stays
+	// current and a crash recovers the right cost figure.
+	OnUsage func(cumulative provider.Usage)
+
 	mu       sync.Mutex
 	messages []provider.Message
 	cost     CostTracker
@@ -108,6 +123,16 @@ func (a *Agent) SeedCost(u provider.Usage) {
 	a.cost.Total = u
 }
 
+// fireMessageAppended invokes OnMessageAppended without holding the
+// agent mutex, so the host's persistence callback can take its own
+// locks without deadlocking the agent loop. Tolerates a nil hook so
+// non-persisting callers (tests, RPC mode) don't have to set it.
+func (a *Agent) fireMessageAppended(m provider.Message) {
+	if a.OnMessageAppended != nil {
+		a.OnMessageAppended(m)
+	}
+}
+
 // Prompt sends a user message and runs the agent loop until the model
 // stops or an error occurs. Events are delivered via sink in order.
 // sink must not block the caller for long; buffer as needed.
@@ -128,6 +153,7 @@ func (a *Agent) Prompt(ctx context.Context, text string, images []provider.Image
 	a.mu.Lock()
 	a.messages = append(a.messages, user)
 	a.mu.Unlock()
+	a.fireMessageAppended(user)
 	sink(EvUserMessage{Message: user})
 
 	return a.runLoop(ctx, sink)
@@ -188,12 +214,18 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 			// This keeps the transcript self-contained for providers that can
 			// see image blocks in tool messages while making OpenAI vision
 			// models actually receive the image bytes.
+			var imageMirror provider.Message
 			if a.Client != nil && a.Client.Name() == "openai" {
 				if mirror := mirrorToolImagesAsUser(toolMsg); len(mirror.Content) > 0 {
 					a.messages = append(a.messages, mirror)
+					imageMirror = mirror
 				}
 			}
 			a.mu.Unlock()
+			a.fireMessageAppended(toolMsg)
+			if len(imageMirror.Content) > 0 {
+				a.fireMessageAppended(imageMirror)
+			}
 			// If context was cancelled during tool execution, bail out.
 			if err := ctx.Err(); err != nil {
 				sink(EvDone{})
@@ -252,6 +284,9 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 		case provider.EventUsage:
 			cum := a.cost.Add(e.Usage)
 			sink(EvUsage{Usage: e.Usage, Cumulative: cum})
+			if a.OnUsage != nil {
+				a.OnUsage(cum)
+			}
 		case provider.EventDone:
 			stop = e.Stop
 			finalErr = e.Err
@@ -302,6 +337,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 		a.mu.Lock()
 		a.messages = append(a.messages, finalMsg)
 		a.mu.Unlock()
+		a.fireMessageAppended(finalMsg)
 		if !suppress {
 			sink(EvAssistantMessage{Message: emit})
 		}

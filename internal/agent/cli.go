@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/patriceckhart/zot/internal/agent/extensions"
@@ -482,6 +485,12 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 	var sess *core.Session
 	var sessBaselineMsgs int // messages already on disk when current session opened
+	// persistMu guards sess + sessBaselineMsgs against concurrent access
+	// from the agent loop's per-message persistence hook (runs on the
+	// agent goroutine) and the TUI's session swap / flush callbacks
+	// (run on the TUI goroutine). Without this, a /sessions swap that
+	// races with a finishing turn could double-write or lose messages.
+	var persistMu sync.Mutex
 	if !args.NoSess && ag != nil {
 		sess, _ = openOrCreateSession(args, r, ag, version)
 		if ag != nil {
@@ -489,10 +498,61 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 	}
 	defer func() {
+		persistMu.Lock()
+		defer persistMu.Unlock()
 		if sess != nil {
 			sess.Close()
 		}
 	}()
+
+	// persistMessage is the per-message hook bound to the agent. It
+	// appends each new transcript message to the live session as soon
+	// as it lands, so a kill / closed terminal / OS crash costs at
+	// most the in-flight turn instead of the whole session. The
+	// baseline counter advances in lock-step so the exit-time flush
+	// doesn't double-write rows already on disk.
+	persistMessage := func(m provider.Message) {
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		if sess == nil {
+			return
+		}
+		if err := sess.AppendMessage(m); err == nil {
+			sessBaselineMsgs++
+		}
+	}
+	persistUsage := func(cum provider.Usage) {
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		if sess == nil {
+			return
+		}
+		_ = sess.AppendUsage(cum, cum)
+	}
+	wireAgentPersist := func(a *core.Agent) *core.Agent {
+		if a == nil {
+			return a
+		}
+		a.OnMessageAppended = persistMessage
+		a.OnUsage = persistUsage
+		return a
+	}
+	wireAgentPersist(ag)
+
+	// Re-wrap the build closures so any agent constructed by the TUI
+	// (login, /model swap to a different provider) also gets the
+	// persistence hooks. Without this, switching provider would
+	// silently revert to the old in-memory-only behaviour.
+	baseBuildAgent := buildAgent
+	buildAgent = func() (*core.Agent, string, string, error) {
+		a, p, m, err := baseBuildAgent()
+		return wireAgentPersist(a), p, m, err
+	}
+	baseBuildAgentFor := buildAgentFor
+	buildAgentFor = func(providerOverride, modelOverride string) (*core.Agent, string, string, error) {
+		a, p, m, err := baseBuildAgentFor(providerOverride, modelOverride)
+		return wireAgentPersist(a), p, m, err
+	}
 
 	// loadSession replaces the current session with the one at path and
 	// hands its messages to the agent. Used by the /sessions picker.
@@ -505,9 +565,14 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if err != nil {
 			return err
 		}
+		persistMu.Lock()
 		// Flush any unsaved messages to the old session before swapping.
+		// Per-message persistence keeps sessBaselineMsgs current, so
+		// this is a defensive no-op in the common case; it still
+		// matters for the rare race where a turn just finished and
+		// hadn't fired its hook yet.
 		if sess != nil {
-			WriteNewTranscript(currentAg, sess, sessBaselineMsgs)
+			writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
 			_ = sess.Close()
 		}
 		sess = newSess
@@ -516,6 +581,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			currentAg.SeedCost(usage)
 		}
 		sessBaselineMsgs = len(msgs)
+		persistMu.Unlock()
 		return nil
 	}
 
@@ -612,18 +678,21 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			// Append any not-yet-persisted agent messages to the
 			// current session file, then advance the baseline so
 			// the final WriteNewTranscript at exit doesn't write
-			// duplicates. Called by /session export so the
-			// exported bytes include everything the user has
-			// said in the running TUI, not just whatever got
-			// flushed at startup.
-			if sess == nil {
-				return
-			}
+			// duplicates. Per-message persistence keeps the on-
+			// disk file current already, so this is mostly a
+			// defensive flush — still needed for /session export
+			// to guarantee the exported bytes include the very
+			// last in-flight turn.
 			currentAg := iv.Agent()
 			if currentAg == nil {
 				return
 			}
-			WriteNewTranscript(currentAg, sess, sessBaselineMsgs)
+			persistMu.Lock()
+			defer persistMu.Unlock()
+			if sess == nil {
+				return
+			}
+			writeNewTranscriptLocked(currentAg, sess, sessBaselineMsgs)
 			sessBaselineMsgs = len(currentAg.Messages())
 		},
 		Extensions:    extMgr,
@@ -680,11 +749,52 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		confirmGate.SetConfirmer(iv)
 	}
 
+	// Signal-driven flush: a SIGTERM / SIGHUP to the zot process
+	// (closed terminal window, system shutdown, kill) used to lose
+	// the entire in-memory transcript because the deferred post-Run
+	// flush below never ran. Per-message persistence above covers
+	// most of it; this handler writes any in-flight remainder and
+	// then exits the process so we don't double-paint over a
+	// broken terminal that the TUI's restore deferreds can no
+	// longer fix from a signal context.
+	//
+	// SIGINT is intentionally NOT handled here — the TUI consumes
+	// Ctrl+C as a regular key event for cancel/clear semantics, and
+	// installing a SIGINT notifier here would swallow it.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigCh)
+	go func() {
+		_, ok := <-sigCh
+		if !ok {
+			return
+		}
+		if finalAg := iv.Agent(); finalAg != nil {
+			persistMu.Lock()
+			if sess != nil {
+				writeNewTranscriptLocked(finalAg, sess, sessBaselineMsgs)
+				sessBaselineMsgs = len(finalAg.Messages())
+				_ = sess.Close()
+				sess = nil
+			}
+			persistMu.Unlock()
+		}
+		// Exit cleanly. Re-raising the signal would skip os.Exit's
+		// at-exit hooks; explicit exit is fine because we've already
+		// flushed the only at-risk state (the session file).
+		os.Exit(0)
+	}()
+
 	runErr := iv.Run(ctx)
 
 	// Flush final transcript to session (only if we had / ended up with an agent).
-	if finalAg := iv.Agent(); finalAg != nil && sess != nil {
-		WriteNewTranscript(finalAg, sess, sessBaselineMsgs)
+	if finalAg := iv.Agent(); finalAg != nil {
+		persistMu.Lock()
+		if sess != nil {
+			writeNewTranscriptLocked(finalAg, sess, sessBaselineMsgs)
+			sessBaselineMsgs = len(finalAg.Messages())
+		}
+		persistMu.Unlock()
 	}
 	return runErr
 }
@@ -755,8 +865,18 @@ func pickSession(cwd string) (string, error) {
 }
 
 // WriteNewTranscript appends only messages after index `from` from the
-// agent's transcript to the session.
+// agent's transcript to the session. Used by callers that don't hold
+// the persistMu (non-interactive print/json modes which run a single
+// turn under their own goroutine).
 func WriteNewTranscript(ag *core.Agent, sess *core.Session, from int) {
+	writeNewTranscriptLocked(ag, sess, from)
+}
+
+// writeNewTranscriptLocked is the same as WriteNewTranscript. The
+// suffix marks that interactive callers must hold persistMu when
+// invoking it so concurrent appends from the agent loop don't race
+// with this catch-up flush.
+func writeNewTranscriptLocked(ag *core.Agent, sess *core.Session, from int) {
 	if sess == nil || ag == nil {
 		return
 	}
