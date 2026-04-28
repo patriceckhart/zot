@@ -13,4 +13,5 @@ require (
 require (
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
+	golang.org/x/image v0.18.0 // indirect
 )

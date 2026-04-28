@@ -352,12 +352,13 @@ func convertAnthContent(blocks []Content, renameTools bool) []interface{} {
 			}
 			out = append(out, anthTextBlock{Type: "text", Text: v.Text})
 		case ImageBlock:
+			data, mime := anthShrinkImageBytesIfTooBig(v.Data, v.MimeType)
 			out = append(out, anthImageBlock{
 				Type: "image",
 				Source: anthImageSource{
 					Type:      "base64",
-					MediaType: v.MimeType,
-					Data:      base64.StdEncoding.EncodeToString(v.Data),
+					MediaType: mime,
+					Data:      base64.StdEncoding.EncodeToString(data),
 				},
 			})
 		case ToolCallBlock:
@@ -413,12 +414,13 @@ func anthBuildToolResultContent(blocks []Content) (json.RawMessage, error) {
 		case TextBlock:
 			arr = append(arr, anthTextBlock{Type: "text", Text: v.Text})
 		case ImageBlock:
+			data, mime := anthShrinkImageBytesIfTooBig(v.Data, v.MimeType)
 			arr = append(arr, anthImageBlock{
 				Type: "image",
 				Source: anthImageSource{
 					Type:      "base64",
-					MediaType: v.MimeType,
-					Data:      base64.StdEncoding.EncodeToString(v.Data),
+					MediaType: mime,
+					Data:      base64.StdEncoding.EncodeToString(data),
 				},
 			})
 		}
