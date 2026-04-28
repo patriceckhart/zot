@@ -794,6 +794,11 @@ func (i *Interactive) redraw() {
 	} else if len(dialog) == 0 && i.fileSuggest.Active(currentInput) {
 		suggest = i.fileSuggest.Render(currentInput, i.cfg.Theme, cols)
 	}
+	if len(suggest) > 0 {
+		// One blank row above the popup so it doesn't sit flush
+		// against the chat / welcome content above.
+		suggest = append([]string{""}, suggest...)
+	}
 
 	// Busy prefix shown at the far left of the status bar. The
 	// spinner glyph and its funny-line message share the `zot`
@@ -845,13 +850,16 @@ func (i *Interactive) redraw() {
 		}
 	}
 
-	// Bottom-sticky sections (always visible, never scroll). One
-	// blank row above statusLines so the spinner / model / cwd
-	// block doesn't sit flush against the chat content above it,
-	// one blank between status bar and editor for input breathing
-	// room, and one trailing blank at the very bottom so the
-	// editor isn't flush against the terminal edge.
-	bottom := make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(edLines)+4)
+	// Bottom-sticky sections (always visible, never scroll). Each
+	// non-empty subsection (dialog, suggest popup, sliding-in queue)
+	// is preceded by one blank row so it has air above the chat
+	// content. The status block and editor get their own dedicated
+	// blanks so spacing stays consistent whether or not a dialog or
+	// popup is showing.
+	bottom := make([]string, 0, len(dialog)+len(suggest)+len(queue)+len(edLines)+8)
+	if len(dialog) > 0 {
+		bottom = append(bottom, "")
+	}
 	bottom = append(bottom, dialog...)
 	bottom = append(bottom, suggest...)
 	bottom = append(bottom, queue...)
@@ -972,28 +980,35 @@ func (i *Interactive) redraw() {
 	// the blinking cursor shows where the user is actually typing.
 	// Dialogs without a cursor (model picker, /help, /login, etc.)
 	// return -1 and the main editor keeps the cursor.
+	// dialogLead is 1 when the bottom region prepends a blank above
+	// the dialog block (whenever a dialog is showing) so popup-side
+	// cursor positions still land in the right cell.
+	dialogLead := 0
+	if len(dialog) > 0 {
+		dialogLead = 1
+	}
 	// +2 accounts for the blank row above statusLines (so the
 	// status block has air above it) and the blank row between
 	// statusLines and edLines (input breathing room). Without
 	// these the rendered cursor would land on a blank instead of
 	// inside the editor row.
-	cursorRow := len(visibleChat) + len(dialog) + len(suggest) + len(queue) + 1 + len(statusLines) + 1 + curR
+	cursorRow := len(visibleChat) + dialogLead + len(dialog) + len(suggest) + len(queue) + 1 + len(statusLines) + 1 + curR
 	cursorCol := curC
 	if i.btwDialog.Active() {
 		if r, c := i.btwDialog.CursorPos(cols); r >= 0 {
-			cursorRow = len(visibleChat) + r
+			cursorRow = len(visibleChat) + dialogLead + r
 			cursorCol = c
 		}
 	}
 	if i.dialog.Active() {
 		if r, c := i.dialog.CursorPos(cols); r >= 0 {
-			cursorRow = len(visibleChat) + r
+			cursorRow = len(visibleChat) + dialogLead + r
 			cursorCol = c
 		}
 	}
 	if i.sessionDialog.Active() {
 		if r, c := i.sessionDialog.CursorPos(); r >= 0 {
-			cursorRow = len(visibleChat) + r
+			cursorRow = len(visibleChat) + dialogLead + r
 			cursorCol = c
 		}
 	}
