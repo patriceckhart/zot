@@ -5,16 +5,44 @@ package tui
 
 import "strings"
 
+// TerminalColor describes a terminal colour in one of the colour
+// spaces terminals commonly support. Most of zot's theme still uses
+// xterm-256 indexes, but user-bubble backgrounds can also use ANSI
+// theme slots (for example SGR 100 / bright-black background) so they
+// match the user's terminal theme rather than the fixed 256-colour
+// cube.
+type TerminalColor struct {
+	Mode  terminalColorMode
+	Index int
+	R     int
+	G     int
+	B     int
+}
+
+type terminalColorMode int
+
+const (
+	terminalColor256 terminalColorMode = iota
+	terminalColorANSI
+	terminalColorRGB
+)
+
+func Color256(index int) TerminalColor { return TerminalColor{Mode: terminalColor256, Index: index} }
+func ColorANSI(sgr int) TerminalColor  { return TerminalColor{Mode: terminalColorANSI, Index: sgr} }
+func ColorRGB(r, g, b int) TerminalColor {
+	return TerminalColor{Mode: terminalColorRGB, R: r, G: g, B: b}
+}
+
 // ANSI 256-color palette used by zot. Defined as numeric codes so we
 // can swap themes without changing any render code.
 type Theme struct {
 	FG           int
 	Muted        int
 	Accent       int
-	User         int // label color for the user role
-	UserBubbleBG int // background tint behind user message rows
-	UserBubbleFG int // foreground colour for user message rows
-	Assistant    int // label color for the zot role
+	User         int           // label color for the user role
+	UserBubbleBG TerminalColor // background tint behind user message rows
+	UserBubbleFG int           // foreground colour for user message rows
+	Assistant    int           // label color for the zot role
 	Tool         int
 	ToolOut      int
 	Error        int
@@ -27,12 +55,12 @@ type Theme struct {
 var Dark = Theme{
 	FG:           253,
 	Muted:        244,
-	Accent:       111, // soft blue
-	User:         180, // warm tan (unused now that the speaker label is gone, kept for skin compat)
-	UserBubbleBG: 237, // soft mid-dark grey panel behind user rows
-	UserBubbleFG: 246, // matches Theme.Muted (status bar text colour)
-	Assistant:    117, // bright cyan — the zot label color
-	Tool:         114, // green
+	Accent:       111,                  // soft blue
+	User:         180,                  // warm tan (unused now that the speaker label is gone, kept for skin compat)
+	UserBubbleBG: ColorRGB(66, 69, 75), // #42454B
+	UserBubbleFG: 248,                  // slightly lighter grey for readability on #42454B
+	Assistant:    117,                  // bright cyan — the zot label color
+	Tool:         114,                  // green
 	ToolOut:      245,
 	Error:        203,
 	Warning:      214,
@@ -46,9 +74,9 @@ var Light = Theme{
 	Muted:        244,
 	Accent:       33,
 	User:         94,
-	UserBubbleBG: 254, // very pale grey panel behind user rows on light theme
-	UserBubbleFG: 240, // dark grey text, legible on the pale panel
-	Assistant:    31,  // deep cyan
+	UserBubbleBG: Color256(254), // very pale grey panel behind user rows on light theme
+	UserBubbleFG: 240,           // dark grey text, legible on the pale panel
+	Assistant:    31,            // deep cyan
 	Tool:         28,
 	ToolOut:      240,
 	Error:        160,
@@ -69,6 +97,13 @@ func (t Theme) FG256(c int, s string) string {
 // from the terminal yields whitespace instead of a glyph).
 func (t Theme) BG256(c int, s string) string {
 	return sgrBG(c) + s + reset
+}
+
+// BG wraps s in a terminal background colour. Unlike BG256, this can
+// target ANSI theme slots or truecolor RGB, which lets selected UI
+// surfaces follow the user's terminal theme.
+func (t Theme) BG(c TerminalColor, s string) string {
+	return sgrBGColor(c) + s + reset
 }
 
 // AccentBar returns a 2-cell-wide leader: a coloured half-block
@@ -106,7 +141,7 @@ func (t Theme) UserBubble(s string, width int) string {
 	if visible < width {
 		s += strings.Repeat(" ", width-visible)
 	}
-	return sgrFG(t.UserBubbleFG) + sgrBG(t.UserBubbleBG) + s + reset
+	return sgrFG(t.UserBubbleFG) + sgrBGColor(t.UserBubbleBG) + s + reset
 }
 
 // UserBubbleRow renders one user-bubble row prefixed with a coloured
@@ -140,6 +175,16 @@ const reset = "\x1b[0m"
 
 func sgrFG(c int) string { return "\x1b[38;5;" + itoa(c) + "m" }
 func sgrBG(c int) string { return "\x1b[48;5;" + itoa(c) + "m" }
+func sgrBGColor(c TerminalColor) string {
+	switch c.Mode {
+	case terminalColorANSI:
+		return "\x1b[" + itoa(c.Index) + "m"
+	case terminalColorRGB:
+		return "\x1b[48;2;" + itoa(c.R) + ";" + itoa(c.G) + ";" + itoa(c.B) + "m"
+	default:
+		return sgrBG(c.Index)
+	}
+}
 
 // small itoa to avoid pulling strconv into this hot path twice.
 func itoa(n int) string {

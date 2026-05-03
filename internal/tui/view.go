@@ -489,7 +489,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 		row := func(content string) string {
 			inner := strings.Repeat(" ", leftGutter) + content
 			padded := v.Theme.UserBubble(inner, width-2)
-			bar := v.Theme.BG256(v.Theme.UserBubbleBG, v.Theme.FG256(v.Theme.Accent, "▌ "))
+			bar := v.Theme.BG(v.Theme.UserBubbleBG, v.Theme.FG256(v.Theme.Accent, "▌ "))
 			return bar + padded
 		}
 		var bubble []string

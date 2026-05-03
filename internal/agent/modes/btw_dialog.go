@@ -392,7 +392,7 @@ func btwUserBubbleRows(th tui.Theme, text string, bubbleWidth int) []string {
 	if innerWidth < 1 {
 		innerWidth = 1
 	}
-	bar := th.BG256(th.UserBubbleBG, th.FG256(th.Accent, "▌ "))
+	bar := th.BG(th.UserBubbleBG, th.FG256(th.Accent, "▌ "))
 	row := func(content string) string {
 		inner := strings.Repeat(" ", leftGutter) + content
 		return "  " + bar + th.UserBubble(inner, bubbleWidth-2)
