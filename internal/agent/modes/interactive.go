@@ -253,6 +253,12 @@ type Interactive struct {
 	parkedTurn  int
 	parkedTotal int
 
+	// inputHistoryIndex is -1 when not browsing history. When the
+	// editor is empty, Left/Right can walk previous user prompts for
+	// quick manual testing without stealing normal cursor movement in
+	// non-empty input.
+	inputHistoryIndex int
+
 	// lastCtrlC is when the user last pressed ctrl+c. The first press
 	// clears the editor / cancels a turn / shows a hint; a second press
 	// within ctrlCExitWindow exits. Mirrors the python-repl convention.
@@ -305,6 +311,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		suggest:           newSlashSuggester(),
 		fileSuggest:       newFileSuggester(),
 		spin:              newSpinner(),
+		inputHistoryIndex: -1,
 	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
@@ -1635,6 +1642,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 	}
 
+	if i.handleInputHistoryKey(k) {
+		return false
+	}
+	if i.inputHistoryIndex >= 0 && k.Kind != tui.KeyLeft && k.Kind != tui.KeyRight {
+		i.inputHistoryIndex = -1
+	}
+
 	if submit := i.ed.HandleKey(k); submit {
 		// SubmitValue() expands any [pasted text #N +L lines]
 		// placeholders back into their bodies; the raw Value()
@@ -1646,6 +1660,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return false
 		}
 		i.ed.Clear()
+		i.inputHistoryIndex = -1
 		i.suggest.Reset()
 		i.fileSuggest.Reset()
 
@@ -1713,10 +1728,84 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	return false
 }
 
+func (i *Interactive) handleInputHistoryKey(k tui.Key) bool {
+	if k.Kind != tui.KeyLeft && k.Kind != tui.KeyRight {
+		return false
+	}
+	// Do not steal normal cursor movement. History browsing can only
+	// start from an empty editor; once active, Left/Right keep walking
+	// the ring so repeated presses work even though the editor now
+	// contains the selected historical prompt.
+	if i.inputHistoryIndex < 0 && !i.ed.IsEmpty() {
+		return false
+	}
+	hist := i.inputHistory()
+	if len(hist) == 0 {
+		return false
+	}
+
+	if i.inputHistoryIndex < 0 {
+		// Start just after the newest item so Left lands on the most
+		// recent user prompt and Right keeps the editor empty.
+		i.inputHistoryIndex = len(hist)
+	}
+
+	switch k.Kind {
+	case tui.KeyLeft:
+		if i.inputHistoryIndex > 0 {
+			i.inputHistoryIndex--
+		}
+	case tui.KeyRight:
+		if i.inputHistoryIndex < len(hist) {
+			i.inputHistoryIndex++
+		}
+	}
+
+	if i.inputHistoryIndex >= len(hist) {
+		i.ed.Clear()
+	} else {
+		i.ed.SetValue(hist[i.inputHistoryIndex])
+	}
+	return true
+}
+
+func (i *Interactive) inputHistory() []string {
+	if i.agent == nil {
+		return nil
+	}
+	msgs := i.agent.Messages()
+	hist := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role != provider.RoleUser || isHiddenTranscriptMessage(m) {
+			continue
+		}
+		text := userMessageText(m)
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		hist = append(hist, text)
+	}
+	return hist
+}
+
+func userMessageText(m provider.Message) string {
+	var sb strings.Builder
+	for _, c := range m.Content {
+		if tb, ok := c.(provider.TextBlock); ok {
+			if sb.Len() > 0 {
+				sb.WriteByte('\n')
+			}
+			sb.WriteString(tb.Text)
+		}
+	}
+	return sb.String()
+}
+
 // invokeExtensionCommand fires an extension-registered slash command
 // in a background goroutine, awaits the response, and applies the
 // requested action (prompt / insert / display / noop). Errors and
 // timeouts surface as a status_err line.
+
 func (i *Interactive) invokeExtensionCommand(ctx context.Context, name, args string) {
 	resp, err := i.cfg.Extensions.Invoke(ctx, name, args, 30*time.Second)
 	if err != nil {
