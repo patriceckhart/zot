@@ -93,6 +93,9 @@ func (d *changelogDialog) Render(th tui.Theme, width int) []string {
 			// Regular line: render through markdown for bullet points etc.
 			rendered := tui.RenderMarkdown(l, th, width-4)
 			for _, rl := range strings.Split(rendered, "\n") {
+				if len(rl) > 0 && rl[0] == tui.FlushLeftSentinel {
+					rl = rl[1:]
+				}
 				bodyLines = append(bodyLines, rl)
 			}
 		}

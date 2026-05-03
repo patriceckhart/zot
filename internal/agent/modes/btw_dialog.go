@@ -300,15 +300,14 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 
 	for _, t := range d.turns {
 		out = append(out, "")
-		out = append(out, "  "+th.AccentBar(th.User)+th.FG256(th.User, "you"))
-		for _, line := range strings.Split(t.User, "\n") {
-			out = append(out, "    "+th.FG256(th.Muted, line))
-		}
+		out = append(out, btwUserBubbleRows(th, t.User, width-2)...)
 		if t.Assistant != "" {
 			out = append(out, "")
-			out = append(out, "  "+th.AccentBar(th.Assistant)+th.FG256(th.Assistant, "zot"))
 			md := tui.RenderMarkdown(t.Assistant, th, width-4)
 			for _, line := range strings.Split(md, "\n") {
+				if len(line) > 0 && line[0] == tui.FlushLeftSentinel {
+					line = line[1:]
+				}
 				out = append(out, "    "+line)
 			}
 		}
@@ -339,6 +338,7 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 			// marker, so just two cells of pad.
 			out = append(out, "  "+l)
 		}
+		out = append(out, "") // breathing room between editor and frame rule
 	}
 	out = append(out, frameRuleColor(th, width, th.Accent))
 	return out
@@ -362,11 +362,9 @@ func (d *btwDialog) CursorPos(width int) (row, col int) {
 	}
 	for _, t := range d.turns {
 		editorOffset++ // blank
-		editorOffset++ // "you" header
-		editorOffset += len(strings.Split(t.User, "\n"))
+		editorOffset += len(btwUserBubbleRows(d.theme, t.User, width-2))
 		if t.Assistant != "" {
 			editorOffset++ // blank
-			editorOffset++ // "zot" header
 			editorOffset += len(strings.Split(tui.RenderMarkdown(t.Assistant, d.theme, width-4), "\n"))
 		}
 		if t.Err != "" {
@@ -380,6 +378,39 @@ func (d *btwDialog) CursorPos(width int) (row, col int) {
 	editorOffset++ // pre-editor blank
 	_, eRow, eCol := d.editor.Render(width - 2)
 	return editorOffset + eRow, eCol + 2 /* matches render indent */
+}
+
+// btwUserBubbleRows renders a user message inside the /btw dialog
+// using the same bubble layout the main chat uses (full-width tinted
+// panel, left-edge ▌ bar, padding rows above and below). The frame
+// padding is the caller's job; bubbleWidth is the available row
+// width inside the frame.
+func btwUserBubbleRows(th tui.Theme, text string, bubbleWidth int) []string {
+	const leftGutter = 0
+	const rightGutter = 2
+	innerWidth := bubbleWidth - 2 - leftGutter - rightGutter // 2 = bar's two cells
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+	bar := th.BG256(th.UserBubbleBG, th.FG256(th.Accent, "▌ "))
+	row := func(content string) string {
+		inner := strings.Repeat(" ", leftGutter) + content
+		return "  " + bar + th.UserBubble(inner, bubbleWidth-2)
+	}
+	var bubble []string
+	for _, l := range strings.Split(text, "\n") {
+		for _, w := range tui.WrapANSILine(l, innerWidth) {
+			bubble = append(bubble, row(w))
+		}
+	}
+	if len(bubble) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(bubble)+2)
+	out = append(out, row(""))
+	out = append(out, bubble...)
+	out = append(out, row(""))
+	return out
 }
 
 // errMessage is a tiny helper for the future when we want to surface

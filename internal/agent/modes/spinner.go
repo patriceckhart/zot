@@ -38,7 +38,7 @@ var funnyWorkingLines = []string{
 	"picking a fight with syntax",
 	"reading between the bits",
 	"tasting the semicolons",
-	"pretending to understand go generics",
+	"pretending to understand the code",
 	"petting the cache",
 	"drafting clever replies",
 	"warming up the GPU choir",

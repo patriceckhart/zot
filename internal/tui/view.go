@@ -250,34 +250,16 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 	// overlay below is the real content and a naked "zot" bar
 	// above it reads as a stray empty message.
 	if v.StreamingActive && strings.TrimSpace(v.Streaming) != "" {
-		// Suppress the streaming "▍ zot" header if the turn is
-		// already open (a previous assistant/tool message in this
-		// turn already rendered one). Otherwise the streaming text
-		// would jump from headerless to under a new header once it
-		// finalises into a transcript message.
-		turnOpen := false
-		for j := len(v.Messages) - 1; j >= 0; j-- {
-			prev := v.Messages[j]
-			if prev.Meta["compaction"] == "true" {
-				continue
-			}
-			if prev.Role == provider.RoleAssistant || prev.Role == provider.RoleTool {
-				turnOpen = true
-			}
-			break
-		}
-		if !turnOpen {
-			out = append(out, v.Theme.AccentBar(v.Theme.Assistant)+v.Theme.FG256(v.Theme.Assistant, "zot"))
-		}
 		// Stream the partial assistant text through the same markdown
 		// renderer used for finalised messages so code fences, diffs,
 		// lists, and inline styles look the same while streaming and
-		// don't suddenly reflow when the turn ends. Indent matches the
-		// finalised assistant body in renderMessage so the column
-		// stays consistent across the stream/finalise transition.
-		// Width is capped so ultra-wide terminals don't produce
-		// edge-to-edge rules / unreadably long prose lines.
-		const indent = "    "
+		// don't suddenly reflow when the turn ends. No speaker header
+		// is drawn; the indent matches the finalised assistant body in
+		// renderMessage so the column stays consistent across the
+		// stream/finalise transition. Width is capped so ultra-wide
+		// terminals don't produce edge-to-edge code-fence rules or
+		// unreadably long prose lines.
+		const indent = "  "
 		inner := assistantBodyWidth(width - len(indent))
 		md := RenderMarkdown(v.Streaming, v.Theme, inner)
 		for _, l := range strings.Split(md, "\n") {
@@ -438,10 +420,8 @@ const (
 )
 
 // assistantBodyRightPad is the blank gutter kept on the right
-// side of every assistant prose line so text doesn't kiss the
-// terminal edge. Matches the 4-cell left indent, so a line of
-// fully-wrapped prose sits in a symmetric column.
-const assistantBodyRightPad = 4
+// side of every assistant prose line.
+const assistantBodyRightPad = 2
 
 // assistantBodyWidth returns the usable width for the assistant
 // message body (markdown prose + code fences). Uses the full
@@ -486,34 +466,56 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 
 	switch m.Role {
 	case provider.RoleUser:
-		header := v.Theme.AccentBar(v.Theme.User) + v.Theme.FG256(v.Theme.User, "you")
-		lines = append(lines, header)
+		// User rows: no speaker label. Each line is painted with a
+		// faint bubble background tint (UserBubble) so the user's
+		// turns visually segment the chat without needing a header.
+		// One tinted blank row above and below approximates CSS
+		// padding-top / padding-bottom (terminals can't do fractional
+		// rows, so a full row of bubble-coloured whitespace is the
+		// closest analogue and gives the bubble visible breathing
+		// room).
+		// User rows: a 1-cell "▌" accent bar at column 0 painted on
+		// the bubble bg, so the bar's cell shares the panel tint and
+		// there is no visible gap between bar and panel. (Some terminals
+		// — iTerm2, Apple Terminal — may smear the cell-0 bg into the
+		// window inset to the left; that's a terminal-side rendering
+		// quirk we accept in exchange for a clean bar-to-panel join.)
+		const leftGutter = 0                               // cells of bubble bg between bar and text
+		const rightGutter = 2                              // cells of bubble bg between text and right edge
+		innerWidth := width - 2 - leftGutter - rightGutter // 2 = bar's two cells (▌ + trailing space)
+		if innerWidth < 1 {
+			innerWidth = 1
+		}
+		row := func(content string) string {
+			inner := strings.Repeat(" ", leftGutter) + content
+			padded := v.Theme.UserBubble(inner, width-2)
+			bar := v.Theme.BG256(v.Theme.UserBubbleBG, v.Theme.FG256(v.Theme.Accent, "▌ "))
+			return bar + padded
+		}
+		var bubble []string
 		for _, c := range m.Content {
 			switch b := c.(type) {
 			case provider.TextBlock:
 				for _, l := range strings.Split(b.Text, "\n") {
-					for _, w := range wrapLine(l, width-4, "") {
-						lines = append(lines, "    "+v.Theme.FG256(v.Theme.Muted, w))
+					for _, w := range wrapLine(l, innerWidth, "") {
+						bubble = append(bubble, row(w))
 					}
 				}
 			case provider.ImageBlock:
-				lines = append(lines, "    "+v.Theme.FG256(v.Theme.Muted, fmt.Sprintf("[image %s, %d bytes]", b.MimeType, len(b.Data))))
+				bubble = append(bubble, row(fmt.Sprintf("[image %s, %d bytes]", b.MimeType, len(b.Data))))
 			}
 		}
-	case provider.RoleAssistant:
-		// Only draw the agent header at the start of a turn. Mid-turn
-		// assistant messages (e.g. another tool_use round-trip after a
-		// tool result) reuse the header that's already on screen.
-		if !turnOpen {
-			lines = append(lines, v.Theme.AccentBar(v.Theme.Assistant)+v.Theme.FG256(v.Theme.Assistant, "zot"))
+		if len(bubble) > 0 {
+			lines = append(lines, row(""))
+			lines = append(lines, bubble...)
+			lines = append(lines, row(""))
 		}
-		// Indent assistant body the same 4 cells the user body uses,
-		// so the conversation column lines up vertically. The width
-		// passed into the markdown renderer / wrap is reduced by the
-		// indent so long lines wrap inside the indented column, and
-		// capped so ultra-wide terminals don't produce edge-to-edge
-		// code-fence rules or unreadably long prose lines.
-		const indent = "    "
+	case provider.RoleAssistant:
+		// Assistant rows: no speaker label either. Prose still gets a
+		// small left indent so it visually aligns with tool box body
+		// content, but no "zot" header.
+		_ = turnOpen
+		const indent = "  "
 		inner := assistantBodyWidth(width - len(indent))
 		for _, c := range m.Content {
 			switch b := c.(type) {
@@ -565,17 +567,18 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 				if tr.IsError {
 					lines = append(lines, toolBoxSide(v.Theme, v.Theme.FG256(color, "  error"), width))
 				}
-				for _, body := range v.renderToolResultContent(tr.Content, width, color, path, startLine) {
-					// Image escapes paint into a graphics layer that
-					// doesn't share the text grid; wrapping such a row
-					// in │ … │ produces visible artefacts on iTerm /
-					// Kitty, so leave image rows un-bordered. The
-					// surrounding lines still close the box top + bottom.
-					if hasImageEscapeLine(body) {
-						lines = append(lines, body)
-						continue
+				for _, line := range v.renderToolResultContent(tr.Content, width, color, path, startLine) {
+					// Image-footprint rows (the escape row, the blank
+					// reservation rows beneath it, and the gap row
+					// before the metadata caption) are tagged with the
+					// imageFootprintSentinel by renderImageBlock. Strip
+					// the tag, then wrap the row in the usual │ … │ box
+					// edges so the box frame stays continuous around
+					// the image.
+					if strings.HasPrefix(line, imageFootprintSentinel) {
+						line = line[len(imageFootprintSentinel):]
 					}
-					lines = append(lines, toolBoxSide(v.Theme, body, width))
+					lines = append(lines, toolBoxSide(v.Theme, line, width))
 				}
 				lines = append(lines, toolBoxSide(v.Theme, "", width))
 				lines = append(lines, toolBoxBottom(v.Theme, width))
@@ -643,9 +646,8 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	}
 	body := toolResultBlock(v.Theme, tc.Result, width, color)
 	for _, l := range v.collapseToolBody(body, false) {
-		if hasImageEscapeLine(l) {
-			lines = append(lines, l)
-			continue
+		if strings.HasPrefix(l, imageFootprintSentinel) {
+			l = l[len(imageFootprintSentinel):]
 		}
 		lines = append(lines, toolBoxSide(v.Theme, l, width))
 	}
@@ -696,9 +698,8 @@ func (v *View) wrapLiveBody(body []string, width int) []string {
 	body = v.collapseToolBody(body, false)
 	out := make([]string, 0, len(body))
 	for _, l := range body {
-		if hasImageEscapeLine(l) {
-			out = append(out, l)
-			continue
+		if strings.HasPrefix(l, imageFootprintSentinel) {
+			l = l[len(imageFootprintSentinel):]
 		}
 		out = append(out, toolBoxSide(v.Theme, l, width))
 	}
@@ -725,6 +726,13 @@ func toolBlockRule(th Theme, width int) string {
 // the corner, and gives body lines a tiny gutter from the left side.
 const toolBoxInnerPad = 1
 
+// toolBoxOuterMargin is the number of blank cells kept to the left of
+// the opening corner and to the right of the closing corner. Aligns
+// the box's frame with the column where user-bubble text begins, so
+// the conversation reads as one column instead of having tool boxes
+// running edge-to-edge while user/assistant rows sit indented.
+const toolBoxOuterMargin = 2
+
 // toolBoxTop renders the labelled top edge of a tool block:
 //
 //	┌─  bash xcrun simctl list devices ─────────────────────────────┐
@@ -734,10 +742,11 @@ const toolBoxInnerPad = 1
 // of the line so the right corner sits at column width-1, matching the
 // closing edge.
 func toolBoxTop(th Theme, label string, width int) string {
-	w := width
+	w := width - 2*toolBoxOuterMargin
 	if w < 12 {
 		w = 12
 	}
+	margin := strings.Repeat(" ", toolBoxOuterMargin)
 	innerPad := strings.Repeat(" ", toolBoxInnerPad)
 	// "┌─" + innerPad + " " + label + " " + innerPad = used; pad
 	// with ─ to width-1, then "┐".
@@ -763,7 +772,7 @@ func toolBoxTop(th Theme, label string, width int) string {
 		}
 	}
 	line := prefix + label + suffix + strings.Repeat("─", fill) + "┐"
-	return th.FG256(th.Muted, line)
+	return margin + th.FG256(th.Muted, line) + margin
 }
 
 // toolBoxBottom renders the bottom edge of a tool block:
@@ -772,12 +781,13 @@ func toolBoxTop(th Theme, label string, width int) string {
 //
 // Spans the same width as toolBoxTop so the corners line up.
 func toolBoxBottom(th Theme, width int) string {
-	w := width
+	w := width - 2*toolBoxOuterMargin
 	if w < 12 {
 		w = 12
 	}
+	margin := strings.Repeat(" ", toolBoxOuterMargin)
 	line := "└" + strings.Repeat("─", w-2) + "┘"
-	return th.FG256(th.Muted, line)
+	return margin + th.FG256(th.Muted, line) + margin
 }
 
 // hasImageEscapeLine reports whether s contains a Kitty (\x1b_G) or
@@ -787,6 +797,16 @@ func toolBoxBottom(th Theme, width int) string {
 func hasImageEscapeLine(s string) bool {
 	return strings.Contains(s, "\x1b]1337;File=") || strings.Contains(s, "\x1b_G")
 }
+
+// imageFootprintSentinel marks rows that belong to an inline-image's
+// reserved footprint — the escape row plus the blank rows below it
+// plus the gap row before the metadata caption. Any consumer that
+// wraps content in box edges (│ … │) detects the sentinel, strips
+// it, and emits the row un-bordered so the box's vertical edges
+// don't show through next to the image's graphics rectangle. Uses a
+// non-printing C0 control byte so it can never appear in normal
+// text or in an ANSI escape sequence body.
+const imageFootprintSentinel = "\x1e"
 
 // toolBoxBodyTrimLeft is the number of leading literal spaces stripped
 // from each body line as it enters toolBoxSide. Body renderers
@@ -807,14 +827,26 @@ const toolBoxBodyTrimLeft = 2
 // of inner padding sits on each side so the content breathes from the
 // edges; the right padding fills to column width-1.
 func toolBoxSide(th Theme, line string, width int) string {
-	w := width
+	w := width - 2*toolBoxOuterMargin
 	if w < 12 {
 		w = 12
 	}
+	margin := strings.Repeat(" ", toolBoxOuterMargin)
 	left := th.FG256(th.Muted, "│") + strings.Repeat(" ", toolBoxInnerPad)
 	right := strings.Repeat(" ", toolBoxInnerPad) + th.FG256(th.Muted, "│")
 	inner := w - 2 - 2*toolBoxInnerPad // available between the two pads
 	line = trimLeadingSpaces(line, toolBoxBodyTrimLeft)
+
+	// Inline-image escapes (iTerm OSC 1337, Kitty APC G) carry
+	// thousands of bytes of base64 payload that visibleWidth and
+	// stripANSI don't recognise as ANSI. Measuring or truncating
+	// such a row destroys the escape and the image disappears.
+	// Pass the row through with edges + a fixed inner padding
+	// based on the visible prefix only.
+	if hasImageEscapeLine(line) {
+		return margin + left + line + right + margin
+	}
+
 	cur := visibleWidth(line)
 	if cur > inner {
 		// Last-resort truncation. Strips ANSI styling at the cut
@@ -830,7 +862,7 @@ func toolBoxSide(th Theme, line string, width int) string {
 	if pad < 0 {
 		pad = 0
 	}
-	return left + line + strings.Repeat(" ", pad) + right
+	return margin + left + line + strings.Repeat(" ", pad) + right + margin
 }
 
 // trimLeadingSpaces removes up to n literal space characters from the
@@ -1154,12 +1186,21 @@ func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
 			// below the reserved rectangle is more stable and easier to
 			// read. One extra blank row before the metadata gives the
 			// caption breathing room from the image's last pixel row.
+			//
+			// Every footprint row (escape, reservations, gap) is tagged
+			// with imageFootprintSentinel so callers wrapping content in
+			// box edges can recognise these rows and emit them bare —
+			// the image's graphics rectangle paints over them and any
+			// │ character drawn alongside would visibly bleed through.
+			// 4 leading cells push the escape past the box's left
+			// edge plus a small interior gutter so the image rectangle
+			// sits visibly inside the frame instead of kissing the │.
 			out := make([]string, 0, rows+3)
-			out = append(out, "    "+seq)
+			out = append(out, imageFootprintSentinel+"    "+seq)
 			for i := 1; i < rows; i++ {
-				out = append(out, "")
+				out = append(out, imageFootprintSentinel)
 			}
-			out = append(out, "")
+			out = append(out, imageFootprintSentinel)
 			out = append(out, v.Theme.FG256(v.Theme.Muted, info))
 			return out
 		}
@@ -1589,6 +1630,9 @@ func (v *View) renderCompactionBlock(m provider.Message, width int) []string {
 				}
 				md := RenderMarkdown(text, th, width-4)
 				for _, l := range strings.Split(md, "\n") {
+					if len(l) > 0 && l[0] == FlushLeftSentinel {
+						l = l[1:]
+					}
 					lines = append(lines, indent+l)
 				}
 			}

@@ -637,7 +637,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
 		Terminal:       term,
-		Theme:          tui.Dark,
+		Theme:          tui.DetectThemeFromBackground(80 * time.Millisecond),
 		Model:          r.Model,
 		Provider:       r.Provider,
 		AuthMethod:     r.AuthMethod,

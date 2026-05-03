@@ -5,6 +5,13 @@ import (
 	"strings"
 )
 
+// FlushLeftSentinel was used previously to opt fenced code blocks
+// out of the prose indent. The current rendering keeps fences
+// aligned with surrounding prose, so the sentinel is no longer
+// emitted; the constant is kept (and exported) so any older
+// caller that still strips it remains a harmless no-op.
+const FlushLeftSentinel = '\x1c'
+
 // RenderMarkdown renders a small subset of Markdown to styled terminal
 // text using theme colors. Supported: headings, bold, italic, inline
 // code, fenced code blocks, bullet lists, numbered lists, blockquotes.

@@ -137,6 +137,11 @@ func (d *skillsDialog) renderBody(th tui.Theme, width int) []string {
 
 	rendered := tui.RenderMarkdown(s.Body, th, width-4)
 	bodyLines := strings.Split(rendered, "\n")
+	for i, l := range bodyLines {
+		if len(l) > 0 && l[0] == tui.FlushLeftSentinel {
+			bodyLines[i] = l[1:]
+		}
+	}
 
 	const maxRows = 16
 	if d.scroll > len(bodyLines)-1 {

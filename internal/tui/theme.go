@@ -8,48 +8,54 @@ import "strings"
 // ANSI 256-color palette used by zot. Defined as numeric codes so we
 // can swap themes without changing any render code.
 type Theme struct {
-	FG          int
-	Muted       int
-	Accent      int
-	User        int // label color for the user role
-	Assistant   int // label color for the zot role
-	Tool        int
-	ToolOut     int
-	Error       int
-	Warning     int
-	Spinner     int // spinner + funny working line
-	SelectionBG int // background for highlighted rows
-	SelectionFG int // foreground for highlighted rows
+	FG           int
+	Muted        int
+	Accent       int
+	User         int // label color for the user role
+	UserBubbleBG int // background tint behind user message rows
+	UserBubbleFG int // foreground colour for user message rows
+	Assistant    int // label color for the zot role
+	Tool         int
+	ToolOut      int
+	Error        int
+	Warning      int
+	Spinner      int // spinner + funny working line
+	SelectionBG  int // background for highlighted rows
+	SelectionFG  int // foreground for highlighted rows
 }
 
 var Dark = Theme{
-	FG:          253,
-	Muted:       244,
-	Accent:      111, // soft blue
-	User:        180, // warm tan
-	Assistant:   117, // bright cyan — the zot label color
-	Tool:        114, // green
-	ToolOut:     245,
-	Error:       203,
-	Warning:     214,
-	Spinner:     183, // soft purple
-	SelectionBG: 24,  // deep blue background
-	SelectionFG: 231, // near-white foreground
+	FG:           253,
+	Muted:        244,
+	Accent:       111, // soft blue
+	User:         180, // warm tan (unused now that the speaker label is gone, kept for skin compat)
+	UserBubbleBG: 237, // soft mid-dark grey panel behind user rows
+	UserBubbleFG: 246, // matches Theme.Muted (status bar text colour)
+	Assistant:    117, // bright cyan — the zot label color
+	Tool:         114, // green
+	ToolOut:      245,
+	Error:        203,
+	Warning:      214,
+	Spinner:      183, // soft purple
+	SelectionBG:  24,  // deep blue background
+	SelectionFG:  231, // near-white foreground
 }
 
 var Light = Theme{
-	FG:          236,
-	Muted:       244,
-	Accent:      33,
-	User:        94,
-	Assistant:   31, // deep cyan
-	Tool:        28,
-	ToolOut:     240,
-	Error:       160,
-	Warning:     166,
-	Spinner:     91,  // purple
-	SelectionBG: 153, // light blue
-	SelectionFG: 232, // near-black
+	FG:           236,
+	Muted:        244,
+	Accent:       33,
+	User:         94,
+	UserBubbleBG: 254, // very pale grey panel behind user rows on light theme
+	UserBubbleFG: 240, // dark grey text, legible on the pale panel
+	Assistant:    31,  // deep cyan
+	Tool:         28,
+	ToolOut:      240,
+	Error:        160,
+	Warning:      166,
+	Spinner:      91,  // purple
+	SelectionBG:  153, // light blue
+	SelectionFG:  232, // near-black
 }
 
 // FG256 wraps s in foreground color c using ANSI 256-color SGR.
@@ -89,6 +95,36 @@ func (t Theme) PadHighlight(s string, width int) string {
 		s += strings.Repeat(" ", width-visible)
 	}
 	return sgrFG(t.SelectionFG) + sgrBG(t.SelectionBG) + s + reset
+}
+
+// UserBubble paints a single user message row with the bubble
+// background colour, padding to width so the tint extends to the
+// full terminal width. Foreground stays in UserBubbleFG so text
+// remains legible against the tint.
+func (t Theme) UserBubble(s string, width int) string {
+	visible := visibleWidth(s)
+	if visible < width {
+		s += strings.Repeat(" ", width-visible)
+	}
+	return sgrFG(t.UserBubbleFG) + sgrBG(t.UserBubbleBG) + s + reset
+}
+
+// UserBubbleRow renders one user-bubble row prefixed with a coloured
+// half-block accent bar ("▌ ") so every line of the bubble has the
+// zot-blue gutter at the very left. The bar lives outside the bubble
+// tint (chat bg) so the bubble itself sits inside it. Width is the
+// outer width including the bar; the bubble content is padded to
+// width-2 (the bar + its trailing space).
+func (t Theme) UserBubbleRow(content string, width int) string {
+	// Bar plus a single space gutter, in the assistant accent colour
+	// so it matches the tool-box / app accent and reads as zot's voice
+	// marker. Two cells wide.
+	bar := t.FG256(t.Assistant, "▌ ")
+	bubbleW := width - 2
+	if bubbleW < 1 {
+		bubbleW = 1
+	}
+	return bar + t.UserBubble(content, bubbleW)
 }
 
 // Bold wraps s in bold SGR.
