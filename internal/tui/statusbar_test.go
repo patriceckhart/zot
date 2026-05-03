@@ -56,3 +56,21 @@ func TestStatusBarNoCWD(t *testing.T) {
 		t.Fatalf("empty cwd: want 1 line, got %d: %q", len(lines), lines)
 	}
 }
+
+func TestStatusBarNoYoloTagPrecedesCWD(t *testing.T) {
+	lines := StatusBar(StatusBarParams{
+		Theme:    Dark,
+		Provider: "openai",
+		Model:    "gpt-5.5",
+		CWD:      "/tmp/x",
+		NoYolo:   true,
+		Cols:     200,
+	})
+	if len(lines) != 2 {
+		t.Fatalf("want 2 lines, got %d: %q", len(lines), lines)
+	}
+	plain := stripANSI(lines[1])
+	if !strings.Contains(plain, "yolo mode disabled - /tmp/x") {
+		t.Fatalf("cwd line should include no-yolo tag before cwd, got %q", plain)
+	}
+}

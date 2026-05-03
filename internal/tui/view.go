@@ -1716,6 +1716,7 @@ type StatusBarParams struct {
 	BusyPrefix string // spinner + funny line when busy
 	CWD        string
 	Locked     bool // sandbox on?
+	NoYolo     bool // confirmation mode enabled?
 
 	// Cumulative session usage and cost.
 	Usage provider.Usage
@@ -1836,11 +1837,14 @@ func StatusBar(p StatusBarParams) []string {
 
 	cwd := shortenHome(p.CWD)
 	tags := ""
+	if p.NoYolo {
+		tags += "yolo mode disabled "
+	}
 	if p.Locked {
-		tags += "- jailed "
+		tags += "jailed "
 	}
 	if p.Telegram {
-		tags += "- tg "
+		tags += "telegram connected "
 	}
 	if tags != "" && cwd != "" {
 		cwd = tags + "- " + cwd

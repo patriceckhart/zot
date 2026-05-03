@@ -834,6 +834,7 @@ func (i *Interactive) redraw() {
 		BusyPrefix:     busyPrefix,
 		CWD:            i.cfg.CWD,
 		Locked:         i.cfg.Sandbox.Locked(),
+		NoYolo:         i.cfg.NoYolo,
 		Usage:          i.cumUsage,
 		Subscription:   i.cfg.AuthMethod == "oauth",
 		ContextUsed:    i.lastCtxInput,
