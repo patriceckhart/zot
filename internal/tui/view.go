@@ -572,13 +572,15 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 					// reservation rows beneath it, and the gap row
 					// before the metadata caption) are tagged with the
 					// imageFootprintSentinel by renderImageBlock. Strip
-					// the tag, then wrap the row in the usual │ … │ box
-					// edges so the box frame stays continuous around
-					// the image.
-					if strings.HasPrefix(line, imageFootprintSentinel) {
-						line = line[len(imageFootprintSentinel):]
+					// the tag, parse the optional width hint, then wrap
+					// the row in the usual │ … │ box edges so the
+					// frame stays continuous around the image.
+					imgCells, stripped := parseImageFootprint(line)
+					if hasImageEscapeLine(stripped) {
+						lines = append(lines, toolBoxSideWithImage(v.Theme, stripped, imgCells, width))
+					} else {
+						lines = append(lines, toolBoxSide(v.Theme, stripped, width))
 					}
-					lines = append(lines, toolBoxSide(v.Theme, line, width))
 				}
 				lines = append(lines, toolBoxSide(v.Theme, "", width))
 				lines = append(lines, toolBoxBottom(v.Theme, width))
@@ -646,10 +648,12 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	}
 	body := toolResultBlock(v.Theme, tc.Result, width, color)
 	for _, l := range v.collapseToolBody(body, false) {
-		if strings.HasPrefix(l, imageFootprintSentinel) {
-			l = l[len(imageFootprintSentinel):]
+		imgCells, stripped := parseImageFootprint(l)
+		if hasImageEscapeLine(stripped) {
+			lines = append(lines, toolBoxSideWithImage(v.Theme, stripped, imgCells, width))
+			continue
 		}
-		lines = append(lines, toolBoxSide(v.Theme, l, width))
+		lines = append(lines, toolBoxSide(v.Theme, stripped, width))
 	}
 	lines = append(lines, toolBoxSide(v.Theme, "", width))
 	lines = append(lines, toolBoxBottom(v.Theme, width))
@@ -698,10 +702,12 @@ func (v *View) wrapLiveBody(body []string, width int) []string {
 	body = v.collapseToolBody(body, false)
 	out := make([]string, 0, len(body))
 	for _, l := range body {
-		if strings.HasPrefix(l, imageFootprintSentinel) {
-			l = l[len(imageFootprintSentinel):]
+		imgCells, stripped := parseImageFootprint(l)
+		if hasImageEscapeLine(stripped) {
+			out = append(out, toolBoxSideWithImage(v.Theme, stripped, imgCells, width))
+			continue
 		}
-		out = append(out, toolBoxSide(v.Theme, l, width))
+		out = append(out, toolBoxSide(v.Theme, stripped, width))
 	}
 	return out
 }
@@ -802,11 +808,35 @@ func hasImageEscapeLine(s string) bool {
 // reserved footprint — the escape row plus the blank rows below it
 // plus the gap row before the metadata caption. Any consumer that
 // wraps content in box edges (│ … │) detects the sentinel, strips
-// it, and emits the row un-bordered so the box's vertical edges
-// don't show through next to the image's graphics rectangle. Uses a
-// non-printing C0 control byte so it can never appear in normal
-// text or in an ANSI escape sequence body.
+// it, and emits the row — the image graphics rectangle paints over
+// whatever was drawn there. Uses a non-printing C0 control byte so
+// it can never appear in normal text or in an ANSI escape sequence
+// body.
+//
+// The escape row carries an extra width hint between two sentinels:
+// "\x1e<cells>\x1e<spaces+escape>". Wrappers parse the cells count
+// to know how wide the image is in terminal cells and how many cells
+// of trailing padding are needed before the closing box edge.
 const imageFootprintSentinel = "\x1e"
+
+// parseImageFootprint splits a footprint-tagged row into (cellsWide,
+// rest). cellsWide is 0 when the row carries no width hint (the
+// reservation blanks and gap row don't, only the escape row does).
+func parseImageFootprint(s string) (int, string) {
+	if !strings.HasPrefix(s, imageFootprintSentinel) {
+		return 0, s
+	}
+	rest := s[len(imageFootprintSentinel):]
+	end := strings.Index(rest, imageFootprintSentinel)
+	if end < 0 {
+		return 0, rest
+	}
+	w, err := strconv.Atoi(rest[:end])
+	if err != nil {
+		return 0, rest
+	}
+	return w, rest[end+len(imageFootprintSentinel):]
+}
 
 // toolBoxBodyTrimLeft is the number of leading literal spaces stripped
 // from each body line as it enters toolBoxSide. Body renderers
@@ -837,16 +867,6 @@ func toolBoxSide(th Theme, line string, width int) string {
 	inner := w - 2 - 2*toolBoxInnerPad // available between the two pads
 	line = trimLeadingSpaces(line, toolBoxBodyTrimLeft)
 
-	// Inline-image escapes (iTerm OSC 1337, Kitty APC G) carry
-	// thousands of bytes of base64 payload that visibleWidth and
-	// stripANSI don't recognise as ANSI. Measuring or truncating
-	// such a row destroys the escape and the image disappears.
-	// Pass the row through with edges + a fixed inner padding
-	// based on the visible prefix only.
-	if hasImageEscapeLine(line) {
-		return margin + left + line + right + margin
-	}
-
 	cur := visibleWidth(line)
 	if cur > inner {
 		// Last-resort truncation. Strips ANSI styling at the cut
@@ -859,6 +879,40 @@ func toolBoxSide(th Theme, line string, width int) string {
 		cur = visibleWidth(line)
 	}
 	pad := inner - cur
+	if pad < 0 {
+		pad = 0
+	}
+	return margin + left + line + strings.Repeat(" ", pad) + right + margin
+}
+
+// toolBoxSideWithImage wraps a row that carries an inline-image
+// escape sequence. The image protocols are configured to not move
+// the cursor after rendering (iTerm: doNotMoveCursor=1, kitty/
+// ghostty: C=1), so the only visible cell advance on the row is
+// from the leading indent spaces before the escape. We pad from
+// there to the right edge column and draw the closing │ there.
+// imgCells is unused (kept in the signature for compatibility with
+// the parseImageFootprint width hint).
+func toolBoxSideWithImage(th Theme, line string, imgCells, width int) string {
+	_ = imgCells
+	w := width - 2*toolBoxOuterMargin
+	if w < 12 {
+		w = 12
+	}
+	margin := strings.Repeat(" ", toolBoxOuterMargin)
+	left := th.FG256(th.Muted, "│") + strings.Repeat(" ", toolBoxInnerPad)
+	right := strings.Repeat(" ", toolBoxInnerPad) + th.FG256(th.Muted, "│")
+	inner := w - 2 - 2*toolBoxInnerPad
+
+	line = trimLeadingSpaces(line, toolBoxBodyTrimLeft)
+
+	// Count leading spaces (visible cells consumed before the escape).
+	leading := 0
+	for leading < len(line) && line[leading] == ' ' {
+		leading++
+	}
+
+	pad := inner - leading
 	if pad < 0 {
 		pad = 0
 	}
@@ -1175,9 +1229,12 @@ func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
 		}
 		const maxRows = 20
 		if seq := RenderInlineImageScaled(v.ImageProto, b.Data, b.MimeType, cells, maxRows); seq != "" {
-			rows := RowsForInlineImage(b.Data, cells, maxRows)
+			rows, actualCells := InlineImageFootprint(b.Data, cells, maxRows)
 			if rows < 1 {
 				rows = 1
+			}
+			if actualCells < 1 {
+				actualCells = cells
 			}
 			// Reserve the image footprint first, then place the escape
 			// in the top-left of that blank rectangle. Keeping the
@@ -1195,8 +1252,12 @@ func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
 			// 4 leading cells push the escape past the box's left
 			// edge plus a small interior gutter so the image rectangle
 			// sits visibly inside the frame instead of kissing the │.
+			// The escape row carries a width hint after the sentinel
+			// ("\x1e<cells>\x1e\u2026") so toolBoxSide knows how many
+			// cells the image occupies and can pad to the right edge.
+			widthHint := fmt.Sprintf("%s%d%s", imageFootprintSentinel, actualCells, imageFootprintSentinel)
 			out := make([]string, 0, rows+3)
-			out = append(out, imageFootprintSentinel+"    "+seq)
+			out = append(out, widthHint+"    "+seq)
 			for i := 1; i < rows; i++ {
 				out = append(out, imageFootprintSentinel)
 			}

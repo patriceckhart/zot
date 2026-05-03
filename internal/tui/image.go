@@ -113,7 +113,13 @@ func renderITerm2(data []byte, maxCellsWide, maxCellsHigh int) string {
 	if maxCellsHigh > 0 {
 		fmt.Fprintf(&sb, ";height=%d", maxCellsHigh)
 	}
-	sb.WriteString(";preserveAspectRatio=1:")
+	sb.WriteString(";preserveAspectRatio=1")
+	// doNotMoveCursor=1 keeps the cursor at the start of the image
+	// after rendering. We need that so the caller can pad with spaces
+	// and draw the box's closing │ at a fixed terminal column without
+	// having to know how many cells the image actually occupied (the
+	// rendered width depends on the terminal's cell aspect ratio).
+	sb.WriteString(";doNotMoveCursor=1:")
 	sb.WriteString(b64)
 	sb.WriteString("\x07")
 	return sb.String()
@@ -136,7 +142,14 @@ func renderKitty(data []byte, maxCellsWide, maxCellsHigh int) string {
 
 	// Pick the most constraining dimension and use only it. Kitty
 	// preserves aspect ratio when exactly one of c/r is provided.
-	hdr := "a=T,f=100"
+	//
+	// C=1 tells kitty/ghostty to not move the cursor after rendering
+	// the image. We need that so the caller can pad with spaces and
+	// draw the box's closing │ at a fixed terminal column without
+	// having to know how many cells the image actually occupied (the
+	// rendered width depends on the terminal's cell aspect ratio,
+	// which differs across fonts/terminals).
+	hdr := "a=T,f=100,C=1"
 	if maxCellsWide > 0 && maxCellsHigh > 0 {
 		if pxW, pxH := ImageDimensions(data); pxW > 0 && pxH > 0 {
 			// rows that the native width would produce at maxCellsWide.
@@ -211,22 +224,42 @@ func CellAspectRatio() float64 {
 // rendered at cellsWide columns will occupy, preserving aspect ratio.
 // Clamped to maxRows. Returns 0 if the image cannot be decoded.
 func RowsForInlineImage(data []byte, cellsWide, maxRows int) int {
+	rows, _ := InlineImageFootprint(data, cellsWide, maxRows)
+	return rows
+}
+
+// InlineImageFootprint returns the rendered (rows, cells) footprint
+// of an image at the requested cellsWide / maxRows budget,
+// preserving aspect ratio. When the image's natural height exceeds
+// maxRows, the rendered width shrinks below cellsWide so the
+// aspect ratio is preserved within the row clamp; callers wrapping
+// the image in a frame need that actual width to place a closing
+// border at the right column.
+func InlineImageFootprint(data []byte, cellsWide, maxRows int) (int, int) {
 	w, h := ImageDimensions(data)
 	if w <= 0 || h <= 0 || cellsWide <= 0 {
-		return 0
+		return 0, 0
 	}
-	// pixels per cell (horizontal)
-	// scaleX = imageWidthPx / cellsWide
-	// rendered height in cells = imageHeightPx / (scaleX * CellAspectRatio)
-	// Round up: under-reserving by even one row is much worse than one
-	// extra blank line, because following text can overwrite the image.
 	scaleX := float64(w) / float64(cellsWide)
-	rows := int(math.Ceil(float64(h) / (scaleX * CellAspectRatio())))
+	rowsF := float64(h) / (scaleX * CellAspectRatio())
+	rows := int(math.Ceil(rowsF))
 	if rows < 1 {
 		rows = 1
 	}
+	actualCells := cellsWide
 	if maxRows > 0 && rows > maxRows {
 		rows = maxRows
+		// Image is constrained by height; recompute the width so
+		// aspect ratio is preserved. cellsHigh = maxRows; cellsWide
+		// = pxW * maxRows * CellAspectRatio / pxH.
+		newCells := int(math.Floor(float64(w)*float64(maxRows)*CellAspectRatio()/float64(h) + 0.5))
+		if newCells < 1 {
+			newCells = 1
+		}
+		if newCells > cellsWide {
+			newCells = cellsWide
+		}
+		actualCells = newCells
 	}
-	return rows
+	return rows, actualCells
 }
