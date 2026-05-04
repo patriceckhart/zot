@@ -236,6 +236,11 @@ type Interactive struct {
 	// survive past the ctx of the key event that enqueued them.
 	runCtx context.Context
 
+	// pendingPostCompactNote is a status_ok message to surface after
+	// a successful auto-compact pass triggered by a 413 or by the
+	// pre-turn fraction guard. Cleared by runCompact once shown.
+	pendingPostCompactNote string
+
 	// autoCompacting is true while a model-triggered compaction is in
 	// flight. Surfaced in the status bar so the user can tell a
 	// condense pass from a regular assistant turn.
@@ -359,16 +364,14 @@ func (i *Interactive) Run(ctx context.Context) error {
 		}
 	}()
 
-	mouseSeqOn := ""
-	mouseSeqOff := ""
-	if isVSCodeTerminal() {
-		mouseSeqOn = tui.SeqMouseOn
-		mouseSeqOff = tui.SeqMouseOff
-	}
-
-	_, _ = term.Write([]byte(tui.SeqBracketedPasteOn + mouseSeqOn))
+	// Enabling mouse reporting steals click-drag selection from the
+	// host terminal (VS Code, Ghostty, iTerm). The user prefers native
+	// selection over the wheel-speed boost, so we no longer turn it
+	// on automatically. Wheel events fall through to the terminal's
+	// own scrollback handler.
+	_, _ = term.Write([]byte(tui.SeqBracketedPasteOn))
 	_, _ = term.Write([]byte(tui.SeqAltScreenOn))
-	defer term.Write([]byte(tui.SeqAltScreenOff + mouseSeqOff + tui.SeqBracketedPasteOff + tui.SeqShowCursor))
+	defer term.Write([]byte(tui.SeqAltScreenOff + tui.SeqBracketedPasteOff + tui.SeqShowCursor))
 
 	// Streaming pacer: drains buffered text deltas at a steady rate
 	// so typewriter feel is identical across providers regardless of
@@ -401,13 +404,14 @@ func (i *Interactive) Run(ctx context.Context) error {
 	time.AfterFunc(welcomeVersionDuration, i.invalidate)
 
 	// If the agent was constructed with a pre-loaded transcript
-	// (--continue, --resume, --session) park the viewport on the
-	// most recent turn so the user lands looking at where the
-	// previous session left off rather than at the bottom of an
-	// already-rendered final reply.
+	// (--continue, --resume, --session) pin the viewport at the
+	// bottom so the most recent reply (and any prompt the user just
+	// typed) is fully visible. Earlier behaviour parked the view at
+	// the last user turn, which could leave the latest message clipped
+	// off the bottom of the page on long sessions.
 	if i.agent != nil {
 		if msgs := i.agent.Messages(); len(msgs) > 0 {
-			i.scrollToLastTurn(msgs)
+			i.scrollToBottom()
 		}
 	}
 
@@ -579,21 +583,6 @@ func (i *Interactive) invalidate() {
 	case i.dirty <- struct{}{}:
 	default:
 	}
-}
-
-func isVSCodeTerminal() bool {
-	return strings.EqualFold(os.Getenv("TERM_PROGRAM"), "vscode")
-}
-
-func mouseWheelScrollRows() int {
-	// VS Code's integrated terminal emits relatively small wheel
-	// steps compared with Ghostty's native scrolling. Mouse-wheel
-	// events get a bigger delta than keyboard arrows so trackpads and
-	// wheel mice feel responsive without changing Up/Down behaviour.
-	if isVSCodeTerminal() {
-		return 12
-	}
-	return 6
 }
 
 func (i *Interactive) cachedChatLocked(cols int) []string {
@@ -1630,14 +1619,6 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		return false
 	case tui.KeyPageDown:
 		i.scrollBy(-i.chatPage())
-		return false
-	case tui.KeyMouseWheelUp:
-		i.scrollBy(+mouseWheelScrollRows())
-		return false
-	case tui.KeyMouseWheelDown:
-		if i.scrollOffset > 0 {
-			i.scrollBy(-mouseWheelScrollRows())
-		}
 		return false
 	case tui.KeyUp:
 		// Always use up/down for chat scrolling, even when the editor
@@ -2850,11 +2831,16 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 			if len(msgs) > 0 && msgs[0].Meta["compaction"] == "true" {
 				tokens = msgs[0].Meta["tokens_before"]
 			}
-			if tokens != "" {
+			switch {
+			case i.pendingPostCompactNote != "":
+				i.statusOK = i.pendingPostCompactNote
+			case tokens != "":
 				i.statusOK = fmt.Sprintf("compacted from ~%s tokens (ctrl+o to expand)", tokens)
-			} else {
+			default:
 				i.statusOK = "compacted (ctrl+o to expand)"
 			}
+			i.pendingPostCompactNote = ""
+			i.extNotes = stripAutoCompactNotes(i.extNotes)
 			i.lastCtxInput = 0
 			i.toolCalls = map[string]*tui.ToolCallView{}
 			i.toolOrder = nil
@@ -2886,6 +2872,27 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 	if i.agent == nil {
 		return
 	}
+	// Pre-turn safety: if the most recent context measurement is
+	// already past the auto-compact threshold, condense before
+	// sending so the next outbound request stays under the limit.
+	// The condense flow re-fires the user's queued prompt for us, so
+	// we just hand it off and exit.
+	i.mu.Lock()
+	needsPreCompact := !i.autoCompacting && i.shouldAutoCompactLocked()
+	if needsPreCompact {
+		if prompt != "" {
+			i.queued = append([]string{prompt}, i.queued...)
+		}
+		i.statusErr = ""
+		i.extNotes = append(i.extNotes, autoCompactNoteLine(i.cfg.Theme, "context near limit — condensing history before sending…"))
+		i.pendingPostCompactNote = "context auto-compacted; sending your last message"
+		i.mu.Unlock()
+		i.invalidate()
+		i.runCompact(parent, true)
+		return
+	}
+	i.mu.Unlock()
+
 	ctx, cancel := context.WithCancel(parent)
 	i.mu.Lock()
 	i.busy = true
@@ -2924,6 +2931,18 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 		if err != nil && ctx.Err() == nil {
 			i.statusErr = err.Error()
 		}
+		// Detect HTTP 413 "payload too large" responses. The provider
+		// rejected the request because the request body exceeded its
+		// per-request limit. Token-based auto-compact can miss this
+		// because the limit is on raw bytes, not tokens. Re-queue the
+		// prompt so it survives the condense pass and trigger one.
+		payloadTooLarge := err != nil && ctx.Err() == nil && isPayloadTooLargeError(err)
+		if payloadTooLarge {
+			i.statusErr = ""
+			i.queued = append([]string{prompt}, i.queued...)
+			i.extNotes = append(i.extNotes, autoCompactNoteLine(i.cfg.Theme, "request was too large — condensing history before retrying…"))
+			i.pendingPostCompactNote = "context auto-compacted; retrying your last message"
+		}
 		// Persist the assistant's reply (and every tool row before
 		// it) to the session file while the turn memory is hot.
 		// Without this, WriteNewTranscript only fires at zot exit,
@@ -2961,10 +2980,46 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 		switch {
 		case hasNext:
 			i.startTurn(parent, next)
+		case payloadTooLarge:
+			i.runCompact(parent, true)
 		case shouldAutoCompact:
 			i.runCompact(parent, true)
 		}
 	}()
+}
+
+func stripAutoCompactNotes(notes []string) []string {
+	if len(notes) == 0 {
+		return notes
+	}
+	out := notes[:0]
+	for _, n := range notes {
+		if strings.Contains(n, "condensing history") {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// autoCompactNoteLine returns a styled chat-area note for the
+// inline auto-compact heads-up. Lives in extNotes so it survives
+// the busy-spinner overwrite of the status row.
+func autoCompactNoteLine(th tui.Theme, msg string) string {
+	return "  " + th.FG256(th.Warning, "⚠ "+msg)
+}
+
+// isPayloadTooLargeError matches HTTP 413 responses surfaced by the
+// provider clients. The error formatting differs slightly between
+// providers (anthropic and openai both prepend the status code), so
+// we look for the canonical 413 marker as well as the conventional
+// 'payload too large' phrase.
+func isPayloadTooLargeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "http 413") || strings.Contains(msg, " 413") || strings.HasPrefix(msg, "413 ") || strings.Contains(msg, "payload too large") || strings.Contains(msg, "request entity too large")
 }
 
 // autoCompactThreshold is the context-window fraction at which the
