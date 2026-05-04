@@ -2,10 +2,12 @@ package core
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -110,6 +112,27 @@ func NewSession(root, cwd, providerName, model, version string) (*Session, error
 	return s, nil
 }
 
+func forEachJSONLLine(r io.Reader, fn func([]byte) error) error {
+	br := bufio.NewReader(r)
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 {
+			line = bytes.TrimRight(line, "\r\n")
+			if len(line) > 0 {
+				if ferr := fn(line); ferr != nil {
+					return ferr
+				}
+			}
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
 // SessionUsage returns the most recent cumulative usage row stored in
 // a session file. Sessions append one usage row per completed turn; the
 // latest row's cumulative field is the session total. Missing usage rows
@@ -122,21 +145,19 @@ func SessionUsage(path string) (provider.Usage, error) {
 	defer f.Close()
 
 	var usage provider.Usage
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
-	for sc.Scan() {
+	if err := forEachJSONLLine(f, func(line []byte) error {
 		var head sessionLineHead
-		if err := json.Unmarshal(sc.Bytes(), &head); err != nil || head.Type != "usage" {
-			continue
+		if err := json.Unmarshal(line, &head); err != nil || head.Type != "usage" {
+			return nil
 		}
 		var row struct {
 			Cumulative provider.Usage `json:"cumulative"`
 		}
-		if err := json.Unmarshal(sc.Bytes(), &row); err == nil {
+		if err := json.Unmarshal(line, &row); err == nil {
 			usage = row.Cumulative
 		}
-	}
-	if err := sc.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return provider.Usage{}, err
 	}
 	return usage, nil
@@ -152,28 +173,26 @@ func OpenSession(path string) (*Session, []provider.Message, error) {
 
 	var meta SessionMeta
 	var messages []provider.Message
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
-	for sc.Scan() {
+	if err := forEachJSONLLine(f, func(line []byte) error {
 		var head sessionLineHead
-		if err := json.Unmarshal(sc.Bytes(), &head); err != nil {
-			continue
+		if err := json.Unmarshal(line, &head); err != nil {
+			return nil
 		}
 		switch head.Type {
 		case "meta":
 			var row struct {
 				Meta SessionMeta `json:"meta"`
 			}
-			if err := json.Unmarshal(sc.Bytes(), &row); err == nil {
+			if err := json.Unmarshal(line, &row); err == nil {
 				meta = row.Meta
 			}
 		case "message":
-			if msg, err := hydrateMessage(sc.Bytes()); err == nil && len(msg.Content) > 0 {
+			if msg, err := hydrateMessage(line); err == nil && len(msg.Content) > 0 {
 				messages = append(messages, msg)
 			}
 		}
-	}
-	if err := sc.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, nil, err
 	}
 	messages = repairToolUseResultPairs(messages)
@@ -333,19 +352,17 @@ func describeSession(path string) SessionSummary {
 		return s
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
-	for sc.Scan() {
+	_ = forEachJSONLLine(f, func(line []byte) error {
 		var head sessionLineHead
-		if err := json.Unmarshal(sc.Bytes(), &head); err != nil {
-			continue
+		if err := json.Unmarshal(line, &head); err != nil {
+			return nil
 		}
 		switch head.Type {
 		case "meta":
 			var row struct {
 				Meta SessionMeta `json:"meta"`
 			}
-			if err := json.Unmarshal(sc.Bytes(), &row); err == nil {
+			if err := json.Unmarshal(line, &row); err == nil {
 				s.Started = row.Meta.Started
 				s.Model = row.Meta.Model
 				s.Provider = row.Meta.Provider
@@ -354,24 +371,25 @@ func describeSession(path string) SessionSummary {
 		case "message":
 			s.MessageCount++
 			if s.FirstUserText == "" {
-				s.FirstUserText = firstUserText(sc.Bytes())
+				s.FirstUserText = firstUserText(line)
 			}
 		case "rename":
 			var row struct {
 				Title string `json:"title"`
 			}
-			if err := json.Unmarshal(sc.Bytes(), &row); err == nil && row.Title != "" {
+			if err := json.Unmarshal(line, &row); err == nil && row.Title != "" {
 				s.Title = row.Title
 			}
 		case "usage":
 			var row struct {
 				Cumulative provider.Usage `json:"cumulative"`
 			}
-			if err := json.Unmarshal(sc.Bytes(), &row); err == nil {
+			if err := json.Unmarshal(line, &row); err == nil {
 				s.TotalCost = row.Cumulative.CostUSD
 			}
 		}
-	}
+		return nil
+	})
 	return s
 }
 
@@ -429,18 +447,19 @@ func sessionHasNoMessages(path string) bool {
 		return false
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
-	for sc.Scan() {
+	hasMessage := false
+	_ = forEachJSONLLine(f, func(line []byte) error {
 		var head sessionLineHead
-		if err := json.Unmarshal(sc.Bytes(), &head); err != nil {
-			continue
+		if err := json.Unmarshal(line, &head); err != nil {
+			return nil
 		}
 		if head.Type == "message" {
-			return false
+			hasMessage = true
+			return io.EOF
 		}
-	}
-	return true
+		return nil
+	})
+	return !hasMessage
 }
 
 // ListSessions returns session file paths for cwd, most-recently-

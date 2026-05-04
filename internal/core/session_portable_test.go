@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,6 +110,55 @@ func TestExportToFilePath(t *testing.T) {
 
 // TestExportStripsCWDFromMeta verifies the exported meta no longer
 // carries the source user's cwd (not useful to the recipient).
+func TestExportSessionHandlesHugeJSONLRows(t *testing.T) {
+	root := t.TempDir()
+	sess, err := NewSession(root, "/cwd", "anthropic", "claude-opus-4-7", "0.0.0-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = sess.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: "first prompt names export"}},
+	})
+	_ = sess.AppendMessage(provider.Message{
+		Role:    provider.RoleAssistant,
+		Content: []provider.Content{provider.TextBlock{Text: strings.Repeat("x", 22*1024*1024)}},
+	})
+	_ = sess.Close()
+
+	exportDir := t.TempDir()
+	out, err := ExportSession(sess.Path, exportDir)
+	if err != nil {
+		t.Fatalf("ExportSession with huge row: %v", err)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Fatalf("exported file missing: %v", err)
+	}
+	opened, msgs, err := OpenSession(sess.Path)
+	if err != nil {
+		t.Fatalf("OpenSession with huge row: %v", err)
+	}
+	_ = opened.Close()
+	if len(msgs) != 2 {
+		t.Fatalf("OpenSession messages=%d, want 2", len(msgs))
+	}
+	// Ensure the exported file is still readable JSONL and contains the
+	// huge assistant message row, not just the meta/header.
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), strings.Repeat("x", 1024)) {
+		t.Fatalf("export does not appear to contain huge assistant row")
+	}
+	for n, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			t.Fatalf("exported line %d is invalid json: %v", n+1, err)
+		}
+	}
+}
+
 func TestExportStripsCWDFromMeta(t *testing.T) {
 	root := t.TempDir()
 	sess, err := NewSession(root, "/original/cwd", "anthropic", "claude-opus-4-7", "0.0.0-test")

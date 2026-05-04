@@ -2,6 +2,7 @@ package core
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,7 +67,11 @@ func ExportSession(srcPath, dstPath string) (string, error) {
 	firstPrompt := ""
 	if !strings.HasSuffix(strings.ToLower(dstPath), PortableExt) {
 		if fi, _ := os.Stat(dstPath); fi == nil || fi.IsDir() {
-			firstPrompt = firstUserPrompt(sc)
+			p, err := firstUserPrompt(src)
+			if err != nil {
+				return "", fmt.Errorf("export: read first prompt: %w", err)
+			}
+			firstPrompt = p
 		}
 	}
 
@@ -110,27 +115,31 @@ func ExportSession(srcPath, dstPath string) (string, error) {
 		return "", err
 	}
 
-	// Stream every non-meta row verbatim.
-	sc2 := bufio.NewScanner(src)
-	sc2.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
-	for sc2.Scan() {
-		line := sc2.Bytes()
-		var h sessionLineHead
-		if err := json.Unmarshal(line, &h); err != nil {
-			continue
+	// Stream every non-meta row verbatim. Use ReadBytes instead of
+	// bufio.Scanner: large sessions can contain very long JSONL rows
+	// (image blocks, big tool outputs, compacted history) that exceed
+	// Scanner's token limit and fail with "token too long".
+	r := bufio.NewReader(src)
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(line) > 0 {
+			line = bytes.TrimRight(line, "\r\n")
+			var h sessionLineHead
+			if err := json.Unmarshal(line, &h); err == nil && h.Type != "meta" {
+				if _, werr := bw.Write(line); werr != nil {
+					return "", werr
+				}
+				if werr := bw.WriteByte('\n'); werr != nil {
+					return "", werr
+				}
+			}
 		}
-		if h.Type == "meta" {
-			continue // already wrote a rewritten copy above
+		if err == io.EOF {
+			break
 		}
-		if _, err := bw.Write(line); err != nil {
-			return "", err
+		if err != nil {
+			return "", fmt.Errorf("export: read source: %w", err)
 		}
-		if err := bw.WriteByte('\n'); err != nil {
-			return "", err
-		}
-	}
-	if err := sc2.Err(); err != nil {
-		return "", fmt.Errorf("export: read source: %w", err)
 	}
 	if err := bw.Flush(); err != nil {
 		return "", err
@@ -207,29 +216,22 @@ func ImportSession(srcPath, root, cwd, version string) (string, error) {
 		return "", err
 	}
 
-	// Rewind the source and stream every non-meta row.
+	// Rewind the source and stream every non-meta row. Avoid
+	// bufio.Scanner so exported sessions with huge JSONL rows import
+	// cleanly.
 	if _, err := src.Seek(0, io.SeekStart); err != nil {
 		return "", fmt.Errorf("import: rewind: %w", err)
 	}
-	sc2 := bufio.NewScanner(src)
-	sc2.Buffer(make([]byte, 0, 64*1024), 20*1024*1024)
-	for sc2.Scan() {
-		line := sc2.Bytes()
+	if err := forEachJSONLLine(src, func(line []byte) error {
 		var h sessionLineHead
-		if err := json.Unmarshal(line, &h); err != nil {
-			continue
-		}
-		if h.Type == "meta" {
-			continue
+		if err := json.Unmarshal(line, &h); err != nil || h.Type == "meta" {
+			return nil
 		}
 		if _, err := bw.Write(line); err != nil {
-			return "", err
+			return err
 		}
-		if err := bw.WriteByte('\n'); err != nil {
-			return "", err
-		}
-	}
-	if err := sc2.Err(); err != nil {
+		return bw.WriteByte('\n')
+	}); err != nil {
 		return "", fmt.Errorf("import: read source: %w", err)
 	}
 	if err := bw.Flush(); err != nil {
@@ -321,34 +323,39 @@ func BranchSession(parentPath, root, cwd, version string, upToMessageIdx int) (s
 
 	// Copy message rows up to the cut point, plus all usage rows
 	// that land before the cut (they describe the cost of those
-	// messages).
+	// messages). Rewind and use the large-row-safe JSONL reader.
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("branch: rewind parent: %w", err)
+	}
 	msgCount := 0
-	for sc.Scan() && msgCount < upToMessageIdx {
-		line := sc.Bytes()
+	if err := forEachJSONLLine(src, func(line []byte) error {
+		if msgCount >= upToMessageIdx {
+			return io.EOF
+		}
 		var h sessionLineHead
 		if err := json.Unmarshal(line, &h); err != nil {
-			continue
+			return nil
 		}
 		switch h.Type {
 		case "message":
 			if _, err := bw.Write(line); err != nil {
-				return "", err
+				return err
 			}
 			if err := bw.WriteByte('\n'); err != nil {
-				return "", err
+				return err
 			}
 			msgCount++
 		case "usage":
 			if _, err := bw.Write(line); err != nil {
-				return "", err
+				return err
 			}
 			if err := bw.WriteByte('\n'); err != nil {
-				return "", err
+				return err
 			}
 			// don't increment msgCount for usage rows
 		}
-	}
-	if err := sc.Err(); err != nil {
+		return nil
+	}); err != nil && err != io.EOF {
 		return "", fmt.Errorf("branch: read parent: %w", err)
 	}
 	if err := bw.Flush(); err != nil {
@@ -456,43 +463,42 @@ func FindSessionByID(root, cwd, id string) string {
 	return ""
 }
 
-// firstUserPrompt scans forward from the current scanner position
-// looking for the first user-role message and returns its text
-// (trimmed, short). Used to build a humane export filename.
-func firstUserPrompt(sc *bufio.Scanner) string {
-	for sc.Scan() {
-		var line sessionLine
-		if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
-			continue
-		}
-		if line.Type != "message" || line.Message == nil || line.Message.Role != "user" {
-			continue
-		}
-		for _, c := range line.Message.Content {
-			// Use type name to avoid an import of provider here beyond
-			// the already-imported alias; TextBlock is the only content
-			// shape that yields a useful preview, so we just look for
-			// something with a reasonable string form.
-			s := fmt.Sprintf("%v", c)
-			_ = s // formatted value is too noisy; go straight to typed path
-		}
-		// Simpler: marshal the message and fish out the first "text"
-		// we can find. Avoids reaching into the provider package just
-		// for an interface type check.
-		b, _ := json.Marshal(line.Message)
-		var m struct {
-			Content []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-		}
-		_ = json.Unmarshal(b, &m)
-		for _, c := range m.Content {
-			if c.Text != "" {
-				return c.Text
+// firstUserPrompt scans forward from the current source position
+// looking for the first user-role message and returns its text.
+// Used to build a humane export filename. Uses Reader instead of
+// Scanner so a very large JSONL row before the first user prompt
+// cannot trip Scanner's token limit.
+func firstUserPrompt(src io.Reader) (string, error) {
+	r := bufio.NewReader(src)
+	for {
+		lineBytes, err := r.ReadBytes('\n')
+		if len(lineBytes) > 0 {
+			lineBytes = bytes.TrimRight(lineBytes, "\r\n")
+			var line sessionLine
+			if err := json.Unmarshal(lineBytes, &line); err == nil {
+				if line.Type == "message" && line.Message != nil && line.Message.Role == "user" {
+					b, _ := json.Marshal(line.Message)
+					var m struct {
+						Content []struct {
+							Text string `json:"text"`
+						} `json:"content"`
+					}
+					_ = json.Unmarshal(b, &m)
+					for _, c := range m.Content {
+						if c.Text != "" {
+							return c.Text, nil
+						}
+					}
+				}
 			}
 		}
+		if err == io.EOF {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
 	}
-	return ""
 }
 
 // filenameFor builds a descriptive .zotsession filename from the
