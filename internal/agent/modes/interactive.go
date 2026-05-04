@@ -373,7 +373,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 	// enter the alternate-screen buffer (CSI ?1049h). The renderer emits
 	// chat as normal terminal flow/scrollback and redraws only the live
 	// input/status block on normal typing.
-	_, _ = term.Write([]byte(tui.SeqBracketedPasteOn + tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqClearScrollback + tui.SeqClearScreen + tui.MoveTo(1, 1)))
+	_, _ = term.Write([]byte(tui.SeqBracketedPasteOn + tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqClearScreen + tui.SeqClearScrollback + tui.MoveTo(1, 1)))
 	defer term.Write([]byte(tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqBracketedPasteOff + tui.SeqShowCursor))
 
 	// Streaming pacer: drains buffered text deltas at a steady rate
@@ -1606,8 +1606,14 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	case tui.KeyCtrlO:
 		// Toggle expansion of collapsed tool results. Affects every tool
 		// call in the transcript — press again to re-collapse.
+		// In main-screen scrollback mode this changes already-emitted
+		// transcript rows, so do a full clear+replay instead of trying
+		// to edit old scrollback in place.
 		i.mu.Lock()
 		i.view.ExpandAll = !i.view.ExpandAll
+		if i.rend != nil {
+			i.rend.Clear()
+		}
 		i.mu.Unlock()
 		i.invalidate()
 		return false

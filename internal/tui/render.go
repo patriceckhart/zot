@@ -68,14 +68,18 @@ func (r *Renderer) Resize(cols, rows int) {
 	}
 }
 
-// Clear forces a full repaint on the next Draw and clears the screen.
+// Clear forces a full repaint on the next Draw and clears the screen
+// plus scrollback. In main-screen flow mode this is required whenever
+// already-emitted transcript layout changes (for example ctrl+o
+// expand/collapse), because terminal scrollback cannot be edited
+// reliably once printed.
 func (r *Renderer) Clear() {
 	r.prev = nil
 	r.logChat = nil
 	r.logBottom = nil
 	r.logInit = false
 	r.logCursorR = 0
-	_, _ = io.WriteString(r.out, SeqClearScreen)
+	_, _ = io.WriteString(r.out, SeqDeleteKittyImages+SeqClearScreen+SeqClearScrollback+MoveTo(1, 1))
 }
 
 // Invalidate forces a full repaint on the next Draw without clearing the
@@ -293,6 +297,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 		// immediately by the live input/status block. No bottom padding,
 		// no footer layout.
 		w.WriteString(SeqClearScreen)
+		w.WriteString(SeqClearScrollback)
 		w.WriteString(MoveTo(1, 1))
 		for _, line := range chatFrame {
 			w.WriteString("\x1b[0m")
@@ -333,16 +338,16 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 			}
 		} else {
 			// Transcript changed in place (streaming text grows within the
-			// last assistant block, markdown finalises/reflows, /clear or a
-			// session load replaces content). Do not append a second full copy
-			// to terminal scrollback. We are currently at the top of the old
-			// bottom block, so the old chat block is immediately above us;
-			// move up to its top, erase it in place, and write the replacement
-			// chat before the live bottom block.
-			if len(r.logChat) > 0 {
-				w.WriteString("\x1b[" + itoa(len(r.logChat)) + "A")
-			}
-			eraseRows(&w, len(r.logChat))
+			// last assistant block, markdown finalises/reflows, ctrl+o
+			// expand/collapse, /clear, session load). In main-screen flow
+			// mode old chat lives in terminal scrollback; trying to move up
+			// and rewrite it is unreliable, especially once images or native
+			// scrolling are involved. Use the safe path: clear visible screen
+			// + scrollback, then replay the current transcript once.
+			w.WriteString(SeqDeleteKittyImages)
+			w.WriteString(SeqClearScreen)
+			w.WriteString(SeqClearScrollback)
+			w.WriteString(MoveTo(1, 1))
 			for _, line := range chatFrame {
 				w.WriteString("\x1b[0m")
 				w.WriteString(SeqClearLine)
