@@ -111,6 +111,26 @@ func (a *extToolAdapter) NewExtensionTool(info ExtensionToolInfo) core.Tool {
 // the events that have a clear extension-facing meaning are
 // forwarded; internal-only ones (text_delta, tool_progress) are
 // dropped to keep the per-extension stream sane.
+func trimMessagesForResume(msgs []provider.Message, keepTail int) []provider.Message {
+	if keepTail <= 0 || len(msgs) <= keepTail {
+		return msgs
+	}
+	var out []provider.Message
+	start := len(msgs) - keepTail
+	// Preserve the synthetic compaction summary when present so an
+	// already-compacted session stays compacted after resume.
+	if len(msgs) > 0 && msgs[0].Meta["compaction"] == "true" && start > 1 {
+		out = append(out, msgs[0])
+	}
+	// Avoid hydrating a tail that starts with orphan tool_result rows;
+	// provider APIs require those to be paired with an earlier tool_use.
+	for start < len(msgs) && msgs[start].Role == provider.RoleTool {
+		start++
+	}
+	out = append(out, msgs[start:]...)
+	return out
+}
+
 func fanoutAgentEvent(mgr *extensions.Manager, ev core.AgentEvent) {
 	if mgr == nil {
 		return
@@ -565,6 +585,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if err != nil {
 			return err
 		}
+		fullMsgCount := len(msgs)
+		msgs = trimMessagesForResume(msgs, 20)
 		persistMu.Lock()
 		// Flush any unsaved messages to the old session before swapping.
 		// Per-message persistence keeps sessBaselineMsgs current, so
@@ -580,7 +602,12 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if usage, uerr := core.SessionUsage(path); uerr == nil {
 			currentAg.SeedCost(usage)
 		}
-		sessBaselineMsgs = len(msgs)
+		// The live agent only receives a compact resume window, but
+		// the session file remains intact. Keep the persistence
+		// baseline at the original on-disk message count so future
+		// turns append after the full session instead of duplicating
+		// the hydrated tail.
+		sessBaselineMsgs = fullMsgCount
 		persistMu.Unlock()
 		return nil
 	}
@@ -635,27 +662,30 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 	}()
 
+	initialCfg, _ := LoadConfig()
 	iv = modes.NewInteractive(modes.InteractiveConfig{
-		Terminal:       term,
-		Theme:          tui.DetectThemeFromBackground(80 * time.Millisecond),
-		Model:          r.Model,
-		Provider:       r.Provider,
-		AuthMethod:     r.AuthMethod,
-		BaseURL:        r.BaseURL,
-		Reasoning:      r.Reasoning,
-		SystemPrompt:   r.SystemPrompt,
-		Tools:          r.ToolRegistry,
-		MaxSteps:       r.MaxSteps,
-		CWD:            r.CWD,
-		ZotHome:        ZotHome(),
-		Version:        version,
-		UpdateInfoChan: updateCh,
-		Sandbox:        sharedSandbox,
-		Agent:          ag,
-		InitialInput:   args.Prompt,
-		AuthManager:    mgr,
-		BuildAgent:     buildAgent,
-		BuildAgentFor:  buildAgentFor,
+		Terminal:            term,
+		Theme:               tui.DetectThemeFromBackground(80 * time.Millisecond),
+		InlineImagesEnabled: initialCfg.InlineImagesEnabled,
+		SettingsStore:       configSettingsStore{},
+		Model:               r.Model,
+		Provider:            r.Provider,
+		AuthMethod:          r.AuthMethod,
+		BaseURL:             r.BaseURL,
+		Reasoning:           r.Reasoning,
+		SystemPrompt:        r.SystemPrompt,
+		Tools:               r.ToolRegistry,
+		MaxSteps:            r.MaxSteps,
+		CWD:                 r.CWD,
+		ZotHome:             ZotHome(),
+		Version:             version,
+		UpdateInfoChan:      updateCh,
+		Sandbox:             sharedSandbox,
+		Agent:               ag,
+		InitialInput:        args.Prompt,
+		AuthManager:         mgr,
+		BuildAgent:          buildAgent,
+		BuildAgentFor:       buildAgentFor,
 		LoggedInProviders: func() []string {
 			var out []string
 			for _, p := range []string{"anthropic", "openai"} {

@@ -21,6 +21,12 @@ type Config struct {
 	Reasoning string `json:"reasoning"`
 	Theme     string `json:"theme"`
 
+	// InlineImagesEnabled controls whether zot draws screenshots inline
+	// when the terminal supports an image protocol. nil/missing means
+	// auto (enabled when supported); false disables; true forces the
+	// detected protocol when available.
+	InlineImagesEnabled *bool `json:"inline_images_enabled,omitempty"`
+
 	// LastChangelogShown is the version whose release-notes
 	// dialog the user has already seen. When the running binary's
 	// version differs, the next interactive run shows the

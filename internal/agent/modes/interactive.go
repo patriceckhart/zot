@@ -34,6 +34,12 @@ type InteractiveConfig struct {
 	MaxSteps     int
 	CWD          string
 
+	// InlineImagesEnabled overrides terminal image rendering. nil means
+	// auto-detect and render when supported; false disables; true uses
+	// the detected protocol when available.
+	InlineImagesEnabled *bool
+	SettingsStore       SettingsStore
+
 	// Agent is optional. If nil, zot opens without credentials; the
 	// user must /login before they can prompt.
 	Agent *core.Agent
@@ -168,6 +174,11 @@ type chatCacheKey struct {
 	expandAll       bool
 }
 
+// SettingsStore persists user-toggleable settings surfaced by /settings.
+type SettingsStore interface {
+	SetInlineImages(enabled bool) error
+}
+
 type Interactive struct {
 	cfg  InteractiveConfig
 	view *tui.View
@@ -261,6 +272,7 @@ type Interactive struct {
 	confirmDialog     *confirmDialog
 	logoutDialog      *logoutDialog
 	telegramDialog    *telegramDialog
+	settingsDialog    *settingsDialog
 	telegramBridge    *telegram.Bridge
 	sessionOpsDialog  *sessionOpsDialog
 	sessionTreeDialog *sessionTreeDialog
@@ -302,6 +314,11 @@ type Interactive struct {
 	// Notify / Display. They live above the editor (just below the
 	// transcript) until cleared by /clear or another reset.
 	extNotes []string
+
+	// sessionLoading is true while a /sessions selection is being read
+	// on a background goroutine. Keeping this off the input goroutine
+	// lets ctrl+c/exit remain responsive for very large JSONL sessions.
+	sessionLoading bool
 }
 
 // welcomeVersionDuration is how long the welcome banner shows the
@@ -315,7 +332,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		cfg: cfg,
 		view: &tui.View{
 			Theme:      cfg.Theme,
-			ImageProto: tui.DetectImageProtocol(),
+			ImageProto: effectiveImageProtocol(cfg.InlineImagesEnabled),
 		},
 		// Prompt is the standard half-block accent bar used by chat
 		// speaker labels too, so the input gutter matches the rest
@@ -334,6 +351,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		confirmDialog:     newConfirmDialog(),
 		logoutDialog:      newLogoutDialog(),
 		telegramDialog:    newTelegramDialog(),
+		settingsDialog:    newSettingsDialog(),
 		sessionOpsDialog:  newSessionOpsDialog(),
 		sessionTreeDialog: newSessionTreeDialog(),
 		extPanel:          newExtPanelDialog(),
@@ -856,6 +874,8 @@ func (i *Interactive) redraw() {
 		dialog = i.logoutDialog.Render(i.cfg.Theme, cols)
 	case i.telegramDialog.Active():
 		dialog = i.telegramDialog.Render(i.cfg.Theme, cols)
+	case i.settingsDialog.Active():
+		dialog = i.settingsDialog.Render(i.cfg.Theme, cols)
 	case i.sessionOpsDialog.Active():
 		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, cols)
 	case i.sessionTreeDialog.Active():
@@ -1450,6 +1470,19 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	}
+	if i.settingsDialog.Active() {
+		if k.Kind == tui.KeyCtrlC {
+			i.settingsDialog.Close()
+			i.invalidate()
+			return false
+		}
+		act := i.settingsDialog.HandleKey(k)
+		if act.Toggle {
+			i.applySettingToggle(act.Key, act.Value)
+		}
+		i.invalidate()
+		return false
+	}
 	if i.sessionOpsDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.sessionOpsDialog.Close()
@@ -1546,6 +1579,12 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	// Global keys.
 	switch k.Kind {
 	case tui.KeyCtrlC:
+		i.mu.Lock()
+		loadingSession := i.sessionLoading
+		i.mu.Unlock()
+		if loadingSession {
+			return true
+		}
 		// While busy: do NOT cancel the turn. ctrl+c during a
 		// running turn is almost always reflex muscle memory
 		// ("be quiet" in a shell) rather than a deliberate
@@ -2101,6 +2140,81 @@ func (i *Interactive) ClosePanel(extName, panelID string) {
 	}
 }
 
+func effectiveImageProtocol(override *bool) tui.ImageProtocol {
+	detected := tui.DetectImageProtocol()
+	if override == nil {
+		return detected
+	}
+	if !*override {
+		return tui.ImageProtocolNone
+	}
+	return detected
+}
+
+func imageProtocolName(p tui.ImageProtocol) string {
+	switch p {
+	case tui.ImageProtocolKitty:
+		return "kitty/ghostty"
+	case tui.ImageProtocolITerm2:
+		return "iTerm2"
+	default:
+		return "none"
+	}
+}
+
+func onOff(v bool) string {
+	if v {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+func (i *Interactive) openSettingsDialog() {
+	detected := tui.DetectImageProtocol()
+	imgEnabled := detected != tui.ImageProtocolNone
+	if i.cfg.InlineImagesEnabled != nil {
+		imgEnabled = *i.cfg.InlineImagesEnabled
+	}
+	imgDisabled := detected == tui.ImageProtocolNone
+	imgHint := ""
+	if imgDisabled {
+		imgEnabled = false
+		imgHint = "this terminal does not support inline images"
+	} else {
+		imgHint = "terminal supports " + imageProtocolName(detected)
+	}
+	i.settingsDialog.Open([]settingsItem{{
+		key:      "inline_images_enabled",
+		label:    "render images when supported",
+		desc:     "draw screenshots inline instead of showing a text placeholder",
+		value:    imgEnabled,
+		disabled: imgDisabled,
+		hint:     imgHint,
+	}})
+}
+
+func (i *Interactive) applySettingToggle(key string, value bool) {
+	switch key {
+	case "inline_images_enabled":
+		val := value
+		i.cfg.InlineImagesEnabled = &val
+		if i.cfg.SettingsStore != nil {
+			if err := i.cfg.SettingsStore.SetInlineImages(value); err != nil {
+				i.mu.Lock()
+				i.statusErr = "settings: " + err.Error()
+				i.mu.Unlock()
+				return
+			}
+		}
+		i.mu.Lock()
+		i.view.ImageProto = effectiveImageProtocol(i.cfg.InlineImagesEnabled)
+		i.view.InvalidateRenderCache()
+		i.statusOK = "inline image rendering " + onOff(value)
+		i.statusErr = ""
+		i.mu.Unlock()
+	}
+}
+
 func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	parts := strings.Fields(cmd)
 	switch parts[0] {
@@ -2154,6 +2268,11 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 			}
 			i.modelDialog.Open(i.cfg.Model, loggedIn)
 		}
+	case "/settings":
+		i.mu.Lock()
+		i.statusErr = "/settings is temporarily disabled"
+		i.statusOK = ""
+		i.mu.Unlock()
 	case "/sessions":
 		i.sessionDialog.Open(i.cfg.ZotHome, i.cfg.CWD)
 	case "/jump":
@@ -2586,26 +2705,43 @@ func (i *Interactive) applySessionSelection(path string) {
 		i.mu.Unlock()
 		return
 	}
-	if err := i.cfg.LoadSession(path); err != nil {
-		i.mu.Lock()
-		i.statusErr = err.Error()
+	i.mu.Lock()
+	if i.sessionLoading {
+		i.statusErr = "already resuming a session"
 		i.mu.Unlock()
+		i.invalidate()
 		return
 	}
-
-	i.mu.Lock()
-	i.statusOK = "resumed session: " + path
+	i.sessionLoading = true
+	i.statusOK = "resuming session: " + path
 	i.statusErr = ""
-	i.parkedTurn = 0
-	i.parkedTotal = 0
-	i.view.InvalidateRenderCache()
-	if i.agent != nil {
-		i.view.Messages = i.agent.Messages()
-		i.cumUsage = i.agent.Cost()
-	}
 	i.mu.Unlock()
+	i.invalidate()
 
-	i.scrollToBottom()
+	go func() {
+		err := i.cfg.LoadSession(path)
+		i.mu.Lock()
+		defer i.mu.Unlock()
+		i.sessionLoading = false
+		if err != nil {
+			i.statusErr = err.Error()
+			i.statusOK = ""
+			i.invalidate()
+			return
+		}
+		i.statusOK = "resumed session: " + path
+		i.statusErr = ""
+		i.parkedTurn = 0
+		i.parkedTotal = 0
+		i.scrollOffset = 0
+		i.extNotes = nil
+		i.view.InvalidateRenderCache()
+		if i.agent != nil {
+			i.view.Messages = i.agent.Messages()
+			i.cumUsage = i.agent.Cost()
+		}
+		i.invalidate()
+	}()
 }
 
 // scrollToLastTurn parks the viewport at the most recent user turn,
@@ -2971,7 +3107,7 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 		if payloadTooLarge {
 			i.statusErr = ""
 			i.queued = append([]string{prompt}, i.queued...)
-			i.extNotes = append(i.extNotes, autoCompactNoteLine(i.cfg.Theme, "request was too large — condensing history before retrying…"))
+			i.extNotes = append(i.extNotes, autoCompactNoteLine(i.cfg.Theme, "request was too large. condensing history before retrying ..."))
 			i.pendingPostCompactNote = "context auto-compacted; retrying your last message"
 		}
 		// Persist the assistant's reply (and every tool row before
