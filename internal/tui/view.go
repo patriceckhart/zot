@@ -183,6 +183,47 @@ func (v *View) Build(width int) []string {
 	return lines
 }
 
+// BuildLive renders only in-flight assistant/tool/error state. Main-screen
+// scrollback renderers can keep these rows outside the immutable transcript
+// so native scrolling stays stable while a turn streams.
+func (v *View) BuildLive(width int) []string {
+	var out []string
+	if v.StreamingActive && strings.TrimSpace(v.Streaming) != "" {
+		const indent = "  "
+		inner := assistantBodyWidth(width - len(indent))
+		md := RenderMarkdown(v.Streaming, v.Theme, inner)
+		for _, l := range strings.Split(md, "\n") {
+			for _, w := range wrapANSILine(l, inner) {
+				out = append(out, indent+w)
+			}
+		}
+		out = append(out, "")
+	}
+	finalised := map[string]bool{}
+	for _, m := range v.Messages {
+		for _, c := range m.Content {
+			switch b := c.(type) {
+			case provider.ToolCallBlock:
+				finalised[b.ID] = true
+			case provider.ToolResultBlock:
+				finalised[b.CallID] = true
+			}
+		}
+	}
+	for _, tc := range v.ToolCalls {
+		if finalised[tc.ID] {
+			continue
+		}
+		out = append(out, v.renderToolCall(tc, width)...)
+		out = append(out, "")
+	}
+	if v.Err != "" {
+		out = append(out, v.Theme.FG256(v.Theme.Error, "✖ "+v.Err))
+		out = append(out, "")
+	}
+	return out
+}
+
 // BuildWithAnchors is like Build but additionally reports the first
 // row occupied by each message in v.Messages. Callers that need to
 // scroll to a specific turn (the /jump dialog) use the anchor slice
@@ -646,7 +687,7 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	if tc.Error {
 		color = v.Theme.Error
 	}
-	body := toolResultBlock(v.Theme, tc.Result, width, color)
+	body := toolResultBlock(v.Theme, tc.Result, toolBoxBodyRenderWidth(width), color)
 	for _, l := range v.collapseToolBody(body, false) {
 		imgCells, stripped := parseImageFootprint(l)
 		if hasImageEscapeLine(stripped) {
@@ -748,6 +789,7 @@ const toolBoxOuterMargin = 2
 // of the line so the right corner sits at column width-1, matching the
 // closing edge.
 func toolBoxTop(th Theme, label string, width int) string {
+	label = oneLineToolLabel(label)
 	w := width - 2*toolBoxOuterMargin
 	if w < 12 {
 		w = 12
@@ -780,6 +822,10 @@ func toolBoxTop(th Theme, label string, width int) string {
 	fillStr := strings.Repeat("─", fill)
 	name, rest := splitToolLabel(label)
 	return margin + th.FG256(th.Muted, prefix) + th.FG256(th.FG, name) + th.FG256(th.Muted, rest+suffix+fillStr+"┐") + margin
+}
+
+func oneLineToolLabel(label string) string {
+	return strings.Join(strings.Fields(label), " ")
 }
 
 func splitToolLabel(label string) (name, rest string) {
@@ -860,6 +906,25 @@ func parseImageFootprint(s string) (int, string) {
 // of cells from the body's own indent to keep the content from
 // drifting too far right.
 const toolBoxBodyTrimLeft = 2
+
+// toolBoxBodyRenderWidth is the width body renderers should target before
+// their rows are wrapped by toolBoxSide. Most body renderers emit a four-cell
+// indent; toolBoxSide trims toolBoxBodyTrimLeft cells from that indent and
+// then adds the box edge/padding. Passing the full terminal width lets long
+// bash/heredoc lines overrun the inner box and makes terminals soft-wrap,
+// visually breaking the right edge. This returns the maximum renderer width
+// whose post-trim visible width fits inside the box.
+func toolBoxBodyRenderWidth(width int) int {
+	w := width - 2*toolBoxOuterMargin
+	if w < 12 {
+		w = 12
+	}
+	inner := w - 2 - 2*toolBoxInnerPad
+	if inner < 1 {
+		inner = 1
+	}
+	return inner + toolBoxBodyTrimLeft
+}
 
 // toolBoxSide wraps a single body line with vertical box edges:
 //
@@ -982,7 +1047,8 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width, color i
 	for _, b := range blocks {
 		switch bb := b.(type) {
 		case provider.TextBlock:
-			body = append(body, v.renderToolText(bb.Text, width, color, sourcePath, startLine)...)
+			bodyWidth := toolBoxBodyRenderWidth(width)
+			body = append(body, v.renderToolText(bb.Text, bodyWidth, color, sourcePath, startLine)...)
 		case provider.ImageBlock:
 			hasImage = true
 			body = append(body, v.renderImageBlock(bb, width)...)
@@ -1399,7 +1465,9 @@ func (v *View) renderBashResult(lines []string, width, defaultColor int) []strin
 				out = append(out, "    "+v.Theme.FG256(v.Theme.Accent, w))
 			}
 		case i == footerIdx:
-			out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, l))
+			for _, w := range wrapLine(l, width-4, "    ") {
+				out = append(out, "    "+v.Theme.FG256(v.Theme.Muted, w))
+			}
 		default:
 			for _, w := range wrapLine(l, width-4, "    ") {
 				out = append(out, "    "+v.Theme.FG256(defaultColor, w))
@@ -1586,7 +1654,7 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 	x, ok := v.(map[string]any)
 	if !ok {
 		b, _ := json.Marshal(v)
-		s := string(b)
+		s := oneLineToolLabel(string(b))
 		if len(s) > 60 {
 			s = s[:57] + "..."
 		}
@@ -1601,12 +1669,13 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 	}
 	if primary == "" {
 		b, _ := json.Marshal(v)
-		s := string(b)
+		s := oneLineToolLabel(string(b))
 		if len(s) > 60 {
 			s = s[:57] + "..."
 		}
 		return s
 	}
+	primary = oneLineToolLabel(primary)
 
 	// Tool-specific decoration. Only the read tool gets a range
 	// suffix for now; other tools just truncate the primary arg.
