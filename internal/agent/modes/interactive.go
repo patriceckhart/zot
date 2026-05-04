@@ -153,6 +153,21 @@ type ChangelogPayload struct {
 }
 
 // Interactive is the TUI chat loop.
+type chatCacheKey struct {
+	cols            int
+	agentRev        uint64
+	statusOK        string
+	statusErr       string
+	help            string
+	extNotes        string
+	updateAvailable bool
+	updateCurrent   string
+	updateLatest    string
+	updateURL       string
+	welcomeShowVer  bool
+	expandAll       bool
+}
+
 type Interactive struct {
 	cfg  InteractiveConfig
 	view *tui.View
@@ -202,6 +217,14 @@ type Interactive struct {
 	// and off the top.
 	prevChatLen  int
 	prevChatCols int
+
+	// chatCache stores the built transcript/status-note rows for idle
+	// frames. Editor typing changes only the bottom input region, so
+	// reusing this cache avoids copying/walking/reassembling a long
+	// session on every keypress.
+	chatCache      []string
+	chatCacheKey   chatCacheKey
+	chatCacheValid bool
 
 	// Messages typed while a turn is in flight. Each is delivered as
 	// its own follow-up turn once the current one finishes. Rendered
@@ -573,66 +596,51 @@ func mouseWheelScrollRows() int {
 	return 6
 }
 
-// lastCols returns the current terminal width in columns.
-func (i *Interactive) lastCols() int {
-	cols, _ := i.cfg.Terminal.Size()
-	return cols
+func (i *Interactive) cachedChatLocked(cols int) []string {
+	key, cacheable := i.chatCacheKeyLocked(cols)
+	if cacheable && i.chatCacheValid && i.chatCacheKey == key {
+		return append([]string(nil), i.chatCache...)
+	}
+	chat := i.buildChatLocked(cols)
+	if cacheable {
+		i.chatCache = append(i.chatCache[:0], chat...)
+		i.chatCacheKey = key
+		i.chatCacheValid = true
+	} else {
+		i.chatCacheValid = false
+	}
+	return chat
 }
 
-// chatPage returns the number of chat rows currently visible, used
-// as the page size for PageUp/PageDown.
-func (i *Interactive) chatPage() int {
-	_, rows := i.cfg.Terminal.Size()
-	p := rows - 6 // rough reservation for status + editor + a dialog line
-	if p < 4 {
-		p = 4
+func (i *Interactive) chatCacheKeyLocked(cols int) (chatCacheKey, bool) {
+	// Live turns mutate streaming/tool-call state at high frequency;
+	// keep those on the old rebuild path. The cache targets the common
+	// idle case where only the editor contents changed between redraws.
+	if i.busy || i.streamOn || i.streamFlushPending {
+		return chatCacheKey{}, false
 	}
-	return p
+	var rev uint64
+	if i.agent != nil {
+		rev = i.agent.Revision()
+	}
+	showVer := len(i.view.Messages) == 0 && !i.streamOn && len(i.toolOrder) == 0 && !i.welcomeStart.IsZero() && time.Since(i.welcomeStart) < welcomeVersionDuration
+	return chatCacheKey{
+		cols:            cols,
+		agentRev:        rev,
+		statusOK:        i.statusOK,
+		statusErr:       i.statusErr,
+		help:            strings.Join(i.helpBlock, "\n"),
+		extNotes:        strings.Join(i.extNotes, "\n"),
+		updateAvailable: i.updateInfo.Available,
+		updateCurrent:   i.updateInfo.Current,
+		updateLatest:    i.updateInfo.Latest,
+		updateURL:       i.updateInfo.URL,
+		welcomeShowVer:  showVer,
+		expandAll:       i.view.ExpandAll,
+	}, true
 }
 
-// scrollBy adjusts the scroll offset. Positive = up (into history).
-// Clearing the parked-turn label when we're back at the bottom means
-// the "viewing turn N" footer goes away automatically as soon as you
-// scroll back to the live tail.
-func (i *Interactive) scrollBy(delta int) {
-	i.mu.Lock()
-	i.scrollOffset += delta
-	if i.scrollOffset < 0 {
-		i.scrollOffset = 0
-	}
-	if i.scrollOffset == 0 {
-		i.parkedTurn = 0
-		i.parkedTotal = 0
-	}
-	if i.rend != nil {
-		// VS Code's terminal is especially prone to leaving stray
-		// wrapped-character fragments behind during scroll-driven
-		// viewport changes. Force a full repaint on scroll, but
-		// avoid a whole-screen clear because that visibly flickers.
-		i.rend.Invalidate()
-	}
-	i.mu.Unlock()
-	i.invalidate()
-}
-
-// scrollToBottom pins the view to the latest content.
-func (i *Interactive) scrollToBottom() {
-	i.mu.Lock()
-	i.scrollOffset = 0
-	i.parkedTurn = 0
-	i.parkedTotal = 0
-	if i.rend != nil {
-		i.rend.Invalidate()
-	}
-	i.mu.Unlock()
-	i.invalidate()
-}
-
-func (i *Interactive) redraw() {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-
-	cols, _ := i.cfg.Terminal.Size()
+func (i *Interactive) buildChatLocked(cols int) []string {
 	if i.agent != nil {
 		i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
 	} else {
@@ -744,6 +752,70 @@ func (i *Interactive) redraw() {
 	for len(chat) > 0 && strings.TrimSpace(chat[len(chat)-1]) == "" {
 		chat = chat[:len(chat)-1]
 	}
+	return chat
+}
+
+// lastCols returns the current terminal width in columns.
+func (i *Interactive) lastCols() int {
+	cols, _ := i.cfg.Terminal.Size()
+	return cols
+}
+
+// chatPage returns the number of chat rows currently visible, used
+// as the page size for PageUp/PageDown.
+func (i *Interactive) chatPage() int {
+	_, rows := i.cfg.Terminal.Size()
+	p := rows - 6 // rough reservation for status + editor + a dialog line
+	if p < 4 {
+		p = 4
+	}
+	return p
+}
+
+// scrollBy adjusts the scroll offset. Positive = up (into history).
+// Clearing the parked-turn label when we're back at the bottom means
+// the "viewing turn N" footer goes away automatically as soon as you
+// scroll back to the live tail.
+func (i *Interactive) scrollBy(delta int) {
+	i.mu.Lock()
+	i.scrollOffset += delta
+	if i.scrollOffset < 0 {
+		i.scrollOffset = 0
+	}
+	if i.scrollOffset == 0 {
+		i.parkedTurn = 0
+		i.parkedTotal = 0
+	}
+	if i.rend != nil {
+		// VS Code's terminal is especially prone to leaving stray
+		// wrapped-character fragments behind during scroll-driven
+		// viewport changes. Force a full repaint on scroll, but
+		// avoid a whole-screen clear because that visibly flickers.
+		i.rend.Invalidate()
+	}
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// scrollToBottom pins the view to the latest content.
+func (i *Interactive) scrollToBottom() {
+	i.mu.Lock()
+	i.scrollOffset = 0
+	i.parkedTurn = 0
+	i.parkedTotal = 0
+	if i.rend != nil {
+		i.rend.Invalidate()
+	}
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+func (i *Interactive) redraw() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	cols, _ := i.cfg.Terminal.Size()
+	chat := i.cachedChatLocked(cols)
 
 	// Dialogs (login or model picker) render between chat and the editor.
 	var dialog []string

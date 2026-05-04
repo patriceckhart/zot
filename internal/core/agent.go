@@ -68,7 +68,12 @@ type Agent struct {
 
 	mu       sync.Mutex
 	messages []provider.Message
-	cost     CostTracker
+	// rev increments whenever the transcript slice is replaced or a
+	// message is appended. The TUI uses it as a cheap redraw cache key
+	// so editor-only typing doesn't copy/rebuild a long transcript on
+	// every keypress.
+	rev  uint64
+	cost CostTracker
 }
 
 // NewAgent returns an Agent with sensible defaults.
@@ -91,6 +96,15 @@ func (a *Agent) Messages() []provider.Message {
 	return out
 }
 
+// Revision returns a monotonically increasing transcript version.
+// It is cheap to query and changes whenever Messages() would return
+// different transcript content because of append/set operations.
+func (a *Agent) Revision() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.rev
+}
+
 // SetTools swaps the tool registry. Used by /reload-ext to hand
 // the agent a fresh registry after extension subprocesses have been
 // respawned (and their freshly-registered tools merged in).
@@ -105,6 +119,7 @@ func (a *Agent) SetMessages(msgs []provider.Message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.messages = append(a.messages[:0], msgs...)
+	a.rev++
 }
 
 // Cost returns the cumulative usage.
@@ -152,6 +167,7 @@ func (a *Agent) Prompt(ctx context.Context, text string, images []provider.Image
 
 	a.mu.Lock()
 	a.messages = append(a.messages, user)
+	a.rev++
 	a.mu.Unlock()
 	a.fireMessageAppended(user)
 	sink(EvUserMessage{Message: user})
@@ -207,6 +223,7 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 			toolMsg, hadError := a.executeTools(ctx, assistantMsg, sink)
 			a.mu.Lock()
 			a.messages = append(a.messages, toolMsg)
+			a.rev++
 			// OpenAI's chat-completions tool message shape is text-centric.
 			// Vision models reliably consume images when they arrive as user
 			// content, so when a tool result contains images we mirror them
@@ -218,6 +235,7 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 			if a.Client != nil && a.Client.Name() == "openai" {
 				if mirror := mirrorToolImagesAsUser(toolMsg); len(mirror.Content) > 0 {
 					a.messages = append(a.messages, mirror)
+					a.rev++
 					imageMirror = mirror
 				}
 			}
@@ -336,6 +354,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 
 		a.mu.Lock()
 		a.messages = append(a.messages, finalMsg)
+		a.rev++
 		a.mu.Unlock()
 		a.fireMessageAppended(finalMsg)
 		if !suppress {
