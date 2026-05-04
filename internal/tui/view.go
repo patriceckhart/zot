@@ -777,8 +777,21 @@ func toolBoxTop(th Theme, label string, width int) string {
 			fill = 0
 		}
 	}
-	line := prefix + label + suffix + strings.Repeat("─", fill) + "┐"
-	return margin + th.FG256(th.Muted, line) + margin
+	fillStr := strings.Repeat("─", fill)
+	name, rest := splitToolLabel(label)
+	return margin + th.FG256(th.Muted, prefix) + th.FG256(th.FG, name) + th.FG256(th.Muted, rest+suffix+fillStr+"┐") + margin
+}
+
+func splitToolLabel(label string) (name, rest string) {
+	label = strings.TrimLeft(label, " ")
+	if label == "" {
+		return "", ""
+	}
+	idx := strings.IndexAny(label, " \t")
+	if idx < 0 {
+		return label, ""
+	}
+	return label[:idx], label[idx:]
 }
 
 // toolBoxBottom renders the bottom edge of a tool block:
