@@ -197,7 +197,7 @@ func (v *View) BuildLive(width int) []string {
 				out = append(out, indent+w)
 			}
 		}
-		out = append(out, "")
+		// out = append(out, "")
 	}
 	finalised := map[string]bool{}
 	for _, m := range v.Messages {
@@ -215,11 +215,11 @@ func (v *View) BuildLive(width int) []string {
 			continue
 		}
 		out = append(out, v.renderToolCall(tc, width)...)
-		out = append(out, "")
+		// out = append(out, "")
 	}
 	if v.Err != "" {
 		out = append(out, v.Theme.FG256(v.Theme.Error, "✖ "+v.Err))
-		out = append(out, "")
+		// out = append(out, "")
 	}
 	return out
 }
