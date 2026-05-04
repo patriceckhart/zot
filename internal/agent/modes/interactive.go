@@ -369,9 +369,12 @@ func (i *Interactive) Run(ctx context.Context) error {
 	// selection over the wheel-speed boost, so we no longer turn it
 	// on automatically. Wheel events fall through to the terminal's
 	// own scrollback handler.
-	_, _ = term.Write([]byte(tui.SeqBracketedPasteOn))
-	_, _ = term.Write([]byte(tui.SeqAltScreenOn))
-	defer term.Write([]byte(tui.SeqAltScreenOff + tui.SeqBracketedPasteOff + tui.SeqShowCursor))
+	// Keep zot on the terminal's main screen. We intentionally do not
+	// enter the alternate-screen buffer (CSI ?1049h). The renderer emits
+	// chat as normal terminal flow/scrollback and redraws only the live
+	// input/status block on normal typing.
+	_, _ = term.Write([]byte(tui.SeqBracketedPasteOn + tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqClearScrollback + tui.SeqClearScreen + tui.MoveTo(1, 1)))
+	defer term.Write([]byte(tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqBracketedPasteOff + tui.SeqShowCursor))
 
 	// Streaming pacer: drains buffered text deltas at a steady rate
 	// so typewriter feel is identical across providers regardless of
@@ -1061,16 +1064,9 @@ func (i *Interactive) redraw() {
 		}
 	}
 
-	frame := make([]string, 0, len(visibleChat)+len(bottom))
-	frame = append(frame, visibleChat...)
-	frame = append(frame, bottom...)
-
 	// Default: the real terminal cursor sits on the main editor's
-	// input position. When an overlay dialog has its own input
-	// field (today just /btw), route the cursor there instead so
-	// the blinking cursor shows where the user is actually typing.
-	// Dialogs without a cursor (model picker, /help, /login, etc.)
-	// return -1 and the main editor keeps the cursor.
+	// input position. In main-screen log mode cursor rows are relative
+	// to the fixed bottom band, not the chat transcript.
 	// dialogLead is 1 when the bottom region prepends a blank above
 	// the dialog block (whenever a dialog is showing) so popup-side
 	// cursor positions still land in the right cell.
@@ -1083,23 +1079,23 @@ func (i *Interactive) redraw() {
 	// statusLines and edLines (input breathing room). Without
 	// these the rendered cursor would land on a blank instead of
 	// inside the editor row.
-	cursorRow := len(visibleChat) + dialogLead + len(dialog) + len(suggest) + len(queue) + 1 + len(statusLines) + 1 + curR
+	cursorRow := dialogLead + len(dialog) + len(suggest) + len(queue) + 1 + len(statusLines) + 1 + curR
 	cursorCol := curC
 	if i.btwDialog.Active() {
 		if r, c := i.btwDialog.CursorPos(cols); r >= 0 {
-			cursorRow = len(visibleChat) + dialogLead + r
+			cursorRow = dialogLead + r
 			cursorCol = c
 		}
 	}
 	if i.dialog.Active() {
 		if r, c := i.dialog.CursorPos(cols); r >= 0 {
-			cursorRow = len(visibleChat) + dialogLead + r
+			cursorRow = dialogLead + r
 			cursorCol = c
 		}
 	}
 	if i.sessionDialog.Active() {
 		if r, c := i.sessionDialog.CursorPos(); r >= 0 {
-			cursorRow = len(visibleChat) + dialogLead + r
+			cursorRow = dialogLead + r
 			cursorCol = c
 		}
 	}
@@ -1107,7 +1103,8 @@ func (i *Interactive) redraw() {
 		cursorRow = -1
 		cursorCol = 0
 	}
-	i.rend.Draw(frame, cursorRow, cursorCol)
+	_ = visibleChat // maintained for legacy scroll state/indicators; DrawLog owns chat viewport.
+	i.rend.DrawLog(chat, bottom, cursorRow, cursorCol)
 }
 
 func hasImageEscape(line string) bool {

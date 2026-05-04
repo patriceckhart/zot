@@ -86,7 +86,10 @@ const (
 	SeqHideCursor        = "\x1b[?25l"
 	SeqShowCursor        = "\x1b[?25h"
 	SeqClearScreen       = "\x1b[2J\x1b[H"
+	SeqClearScrollback   = "\x1b[3J"
 	SeqClearLine         = "\x1b[2K"
+	SeqResetScrollRegion = "\x1b[r"
+	SeqDeleteKittyImages = "\x1b_Ga=d\x1b\\"
 	SeqBracketedPasteOn  = "\x1b[?2004h"
 	SeqBracketedPasteOff = "\x1b[?2004l"
 	// Basic mouse tracking + SGR extended coordinates. Used only

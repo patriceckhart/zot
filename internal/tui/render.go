@@ -32,6 +32,14 @@ type Renderer struct {
 	// the image set changes. Only matters when inline images are
 	// enabled via ZOT_INLINE_IMAGES; defaults to false.
 	prevHadImage bool
+
+	// Main-screen flow renderer state. logChat is the full chat buffer
+	// already emitted into terminal scrollback. logBottom is the
+	// editable/status block currently drawn after the chat.
+	logChat    []string
+	logBottom  []string
+	logInit    bool
+	logCursorR int
 }
 
 // NewRenderer returns a renderer that writes to out.
@@ -50,6 +58,10 @@ func (r *Renderer) Resize(cols, rows int) {
 		r.cols = cols
 		r.rows = rows
 		r.prev = nil
+		r.logChat = nil
+		r.logBottom = nil
+		r.logInit = false
+		r.logCursorR = 0
 		if r.out != nil {
 			_, _ = io.WriteString(r.out, SeqClearScreen)
 		}
@@ -59,6 +71,10 @@ func (r *Renderer) Resize(cols, rows int) {
 // Clear forces a full repaint on the next Draw and clears the screen.
 func (r *Renderer) Clear() {
 	r.prev = nil
+	r.logChat = nil
+	r.logBottom = nil
+	r.logInit = false
+	r.logCursorR = 0
 	_, _ = io.WriteString(r.out, SeqClearScreen)
 }
 
@@ -244,4 +260,163 @@ func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 	r.prevHadImage = curHasImage
 	r.cursorRow = cursorRow
 	r.cursorCol = cursorCol
+}
+
+// DrawLog renders zot in the terminal's main screen as normal terminal
+// flow rather than a fixed full-screen frame. Chat lines are emitted once
+// into the host terminal scrollback; the current bottom block (dialogs,
+// slash popup, status, editor) is erased and redrawn in place at the end.
+//
+// cursorBottomRow/cursorCol are offsets into bottom, not the full frame.
+func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int) {
+	if r.cols == 0 || r.rows == 0 {
+		return
+	}
+	if len(bottom) == 0 {
+		bottom = []string{""}
+	}
+	chatFrame := make([]string, len(chat))
+	for i, line := range chat {
+		chatFrame[i] = truncateToWidth(line, r.cols)
+	}
+	bottomFrame := make([]string, len(bottom))
+	for i, line := range bottom {
+		bottomFrame[i] = truncateToWidth(line, r.cols)
+	}
+
+	var w strings.Builder
+	w.WriteString(SeqSynchronizedOn)
+	w.WriteString(SeqHideCursor)
+
+	if !r.logInit {
+		// First paint: start at top-left and print the transcript followed
+		// immediately by the live input/status block. No bottom padding,
+		// no footer layout.
+		w.WriteString(SeqClearScreen)
+		w.WriteString(MoveTo(1, 1))
+		for _, line := range chatFrame {
+			w.WriteString("\x1b[0m")
+			w.WriteString(SeqClearLine)
+			w.WriteString(line)
+			w.WriteString("\r\n")
+		}
+		writeBlock(&w, bottomFrame)
+		r.logInit = true
+	} else {
+		// Move from the currently exposed cursor back to the top of the
+		// live bottom block, then erase the old block. We track the row
+		// inside the bottom block where we left the cursor last Draw.
+		w.WriteString("\r")
+		if r.logCursorR > 0 {
+			w.WriteString("\x1b[" + itoa(r.logCursorR) + "A")
+		}
+		eraseRows(&w, len(r.logBottom))
+
+		prefix := len(r.logChat) <= len(chatFrame)
+		if prefix {
+			for i := range r.logChat {
+				if r.logChat[i] != chatFrame[i] {
+					prefix = false
+					break
+				}
+			}
+		}
+		if prefix {
+			// Append only genuinely new chat rows. They become real terminal
+			// scrollback, and inline image escapes are emitted once here — not
+			// on every keystroke.
+			for _, line := range chatFrame[len(r.logChat):] {
+				w.WriteString("\x1b[0m")
+				w.WriteString(SeqClearLine)
+				w.WriteString(line)
+				w.WriteString("\r\n")
+			}
+		} else {
+			// Transcript changed in place (streaming text grows within the
+			// last assistant block, markdown finalises/reflows, /clear or a
+			// session load replaces content). Do not append a second full copy
+			// to terminal scrollback. We are currently at the top of the old
+			// bottom block, so the old chat block is immediately above us;
+			// move up to its top, erase it in place, and write the replacement
+			// chat before the live bottom block.
+			if len(r.logChat) > 0 {
+				w.WriteString("\x1b[" + itoa(len(r.logChat)) + "A")
+			}
+			eraseRows(&w, len(r.logChat))
+			for _, line := range chatFrame {
+				w.WriteString("\x1b[0m")
+				w.WriteString(SeqClearLine)
+				w.WriteString(line)
+				w.WriteString("\r\n")
+			}
+		}
+		writeBlock(&w, bottomFrame)
+	}
+
+	// writeBlock leaves the cursor on the last bottom row. Move to the
+	// requested cursor position inside that block.
+	if cursorBottomRow >= 0 && cursorBottomRow < len(bottomFrame) {
+		up := (len(bottomFrame) - 1) - cursorBottomRow
+		if up > 0 {
+			w.WriteString("\x1b[" + itoa(up) + "A")
+		}
+		w.WriteString("\r")
+		if cursorCol > 0 {
+			w.WriteString("\x1b[" + itoa(cursorCol) + "C")
+		}
+		w.WriteString(SeqShowCursor)
+		r.logCursorR = cursorBottomRow
+	} else {
+		r.logCursorR = len(bottomFrame) - 1
+	}
+
+	w.WriteString(SeqSynchronizedOff)
+	_, _ = io.WriteString(r.out, w.String())
+
+	r.logChat = append(r.logChat[:0], chatFrame...)
+	r.logBottom = append(r.logBottom[:0], bottomFrame...)
+	r.cursorRow = cursorBottomRow
+	r.cursorCol = cursorCol
+}
+
+func writeBlock(w *strings.Builder, lines []string) {
+	for i, line := range lines {
+		w.WriteString("\x1b[0m")
+		w.WriteString(SeqClearLine)
+		w.WriteString(line)
+		if i < len(lines)-1 {
+			w.WriteString("\r\n")
+		}
+	}
+}
+
+func eraseRows(w *strings.Builder, n int) {
+	if n <= 0 {
+		return
+	}
+	for i := 0; i < n; i++ {
+		w.WriteString("\x1b[0m")
+		w.WriteString(SeqClearLine)
+		if i < n-1 {
+			w.WriteString("\r\n")
+		}
+	}
+	if n > 1 {
+		w.WriteString("\x1b[" + itoa(n-1) + "A")
+	}
+	w.WriteString("\r")
+}
+
+func tailTruncated(lines []string, maxRows, cols int) []string {
+	if maxRows <= 0 {
+		return nil
+	}
+	if len(lines) > maxRows {
+		lines = lines[len(lines)-maxRows:]
+	}
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		out[i] = truncateToWidth(line, cols)
+	}
+	return out
 }
