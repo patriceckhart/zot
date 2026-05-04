@@ -48,7 +48,7 @@ func HighlightCode(src, lang string) []string {
 		highlightCache.store(lang, src, out)
 		return out
 	}
-	out := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	out := strings.Split(strings.TrimRight(stripANSIBackgrounds(buf.String()), "\n"), "\n")
 	highlightCache.store(lang, src, out)
 	return out
 }
@@ -110,6 +110,66 @@ func LanguageFromPath(p string) string {
 
 // chooseLexer picks the best lexer for a language hint; falls back to
 // nil (no highlighting) if the hint is empty or unknown.
+// stripANSIBackgrounds removes SGR background-color attributes emitted by
+// terminal syntax formatters while preserving foreground colors and styles.
+// Chroma's inherited styles can assign black backgrounds to a few tokens
+// (notably punctuation/error-ish spans), which looks like random black blocks
+// inside zot's dark-gray tool boxes. Foreground color is enough for code.
+func stripANSIBackgrounds(s string) string {
+	var out strings.Builder
+	out.Grow(len(s))
+	for i := 0; i < len(s); {
+		if s[i] != 0x1b || i+1 >= len(s) || s[i+1] != '[' {
+			out.WriteByte(s[i])
+			i++
+			continue
+		}
+		j := i + 2
+		for j < len(s) && s[j] != 'm' {
+			j++
+		}
+		if j >= len(s) {
+			out.WriteString(s[i:])
+			break
+		}
+		params := strings.Split(s[i+2:j], ";")
+		kept := make([]string, 0, len(params))
+		for p := 0; p < len(params); p++ {
+			param := params[p]
+			switch param {
+			case "48":
+				// 48;5;N or 48;2;R;G;B background color.
+				if p+1 < len(params) && params[p+1] == "5" {
+					p += 2
+					continue
+				}
+				if p+1 < len(params) && params[p+1] == "2" {
+					p += 4
+					continue
+				}
+				continue
+			case "49":
+				continue
+			}
+			// 40-47 and 100-107 are ANSI background colors.
+			if len(param) == 2 && param[0] == '4' && param[1] >= '0' && param[1] <= '7' {
+				continue
+			}
+			if len(param) == 3 && param[0] == '1' && param[1] == '0' && param[2] >= '0' && param[2] <= '7' {
+				continue
+			}
+			kept = append(kept, param)
+		}
+		if len(kept) > 0 {
+			out.WriteString("\x1b[")
+			out.WriteString(strings.Join(kept, ";"))
+			out.WriteByte('m')
+		}
+		i = j + 1
+	}
+	return out.String()
+}
+
 func chooseLexer(lang string) chroma.Lexer {
 	if lang == "" {
 		return nil
