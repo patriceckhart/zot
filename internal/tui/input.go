@@ -42,6 +42,8 @@ const (
 	KeyCtrlW
 	KeyCtrlO
 	KeyPaste
+	KeyMouseWheelUp
+	KeyMouseWheelDown
 	KeyUnknown
 )
 
@@ -222,6 +224,22 @@ func (r *Reader) readCSI() (Key, error) {
 }
 
 func (r *Reader) dispatchCSI(params string, final byte) Key {
+	// SGR mouse mode: CSI < button ; x ; y M/m. Wheel events use
+	// button codes 64 (up) and 65 (down). We ignore coordinates for
+	// now; the chat view only needs scroll direction.
+	if strings.HasPrefix(params, "<") && (final == 'M' || final == 'm') {
+		parts := strings.Split(strings.TrimPrefix(params, "<"), ";")
+		if len(parts) >= 1 {
+			switch parts[0] {
+			case "64":
+				return Key{Kind: KeyMouseWheelUp}
+			case "65":
+				return Key{Kind: KeyMouseWheelDown}
+			}
+		}
+		return Key{Kind: KeyUnknown}
+	}
+
 	// Modified arrow keys come in as CSI 1;<mod><final>. Modifier values
 	// we care about: 2=Shift, 3=Alt/Option, 5=Ctrl. We only extract Alt.
 	var alt bool

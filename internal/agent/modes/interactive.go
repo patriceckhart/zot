@@ -336,9 +336,16 @@ func (i *Interactive) Run(ctx context.Context) error {
 		}
 	}()
 
-	_, _ = term.Write([]byte(tui.SeqBracketedPasteOn))
+	mouseSeqOn := ""
+	mouseSeqOff := ""
+	if isVSCodeTerminal() {
+		mouseSeqOn = tui.SeqMouseOn
+		mouseSeqOff = tui.SeqMouseOff
+	}
+
+	_, _ = term.Write([]byte(tui.SeqBracketedPasteOn + mouseSeqOn))
 	_, _ = term.Write([]byte(tui.SeqAltScreenOn))
-	defer term.Write([]byte(tui.SeqAltScreenOff + tui.SeqBracketedPasteOff + tui.SeqShowCursor))
+	defer term.Write([]byte(tui.SeqAltScreenOff + mouseSeqOff + tui.SeqBracketedPasteOff + tui.SeqShowCursor))
 
 	// Streaming pacer: drains buffered text deltas at a steady rate
 	// so typewriter feel is identical across providers regardless of
@@ -549,6 +556,21 @@ func (i *Interactive) invalidate() {
 	case i.dirty <- struct{}{}:
 	default:
 	}
+}
+
+func isVSCodeTerminal() bool {
+	return strings.EqualFold(os.Getenv("TERM_PROGRAM"), "vscode")
+}
+
+func mouseWheelScrollRows() int {
+	// VS Code's integrated terminal emits relatively small wheel
+	// steps compared with Ghostty's native scrolling. Mouse-wheel
+	// events get a bigger delta than keyboard arrows so trackpads and
+	// wheel mice feel responsive without changing Up/Down behaviour.
+	if isVSCodeTerminal() {
+		return 12
+	}
+	return 6
 }
 
 // lastCols returns the current terminal width in columns.
@@ -1536,6 +1558,14 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		return false
 	case tui.KeyPageDown:
 		i.scrollBy(-i.chatPage())
+		return false
+	case tui.KeyMouseWheelUp:
+		i.scrollBy(+mouseWheelScrollRows())
+		return false
+	case tui.KeyMouseWheelDown:
+		if i.scrollOffset > 0 {
+			i.scrollBy(-mouseWheelScrollRows())
+		}
 		return false
 	case tui.KeyUp:
 		// Always use up/down for chat scrolling, even when the editor

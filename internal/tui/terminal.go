@@ -89,10 +89,16 @@ const (
 	SeqClearLine         = "\x1b[2K"
 	SeqBracketedPasteOn  = "\x1b[?2004h"
 	SeqBracketedPasteOff = "\x1b[?2004l"
-	SeqAltScreenOn       = "\x1b[?1049h"
-	SeqAltScreenOff      = "\x1b[?1049l"
-	SeqSynchronizedOn    = "\x1b[?2026h"
-	SeqSynchronizedOff   = "\x1b[?2026l"
+	// Basic mouse tracking + SGR extended coordinates. Used only
+	// when explicitly enabled by the interactive mode (currently VS
+	// Code terminal) so terminals with good native scrolling, like
+	// Ghostty, are left alone.
+	SeqMouseOn         = "\x1b[?1000h\x1b[?1006h"
+	SeqMouseOff        = "\x1b[?1000l\x1b[?1006l"
+	SeqAltScreenOn     = "\x1b[?1049h"
+	SeqAltScreenOff    = "\x1b[?1049l"
+	SeqSynchronizedOn  = "\x1b[?2026h"
+	SeqSynchronizedOff = "\x1b[?2026l"
 )
 
 // MoveTo moves the cursor to 1-indexed (row, col).
