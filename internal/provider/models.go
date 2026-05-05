@@ -96,6 +96,10 @@ var Catalog = []Model{
 	{
 		Provider: "kimi", ID: "kimi-for-coding", DisplayName: "Kimi-k2.6",
 		ContextWindow: 262144, MaxOutput: 32000, Reasoning: true,
+		// Kimi Coding's public model metadata currently reports zero-priced
+		// usage for this endpoint; keep the cost meter explicit instead of
+		// relying on the struct's zero defaults.
+		PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, PriceCacheWrite: 0,
 		BaseURL: "https://api.kimi.com/coding/v1",
 	},
 
