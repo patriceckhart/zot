@@ -244,10 +244,15 @@ func (v *View) BuildLive(width int) []string {
 			}
 		}
 	}
+	insertedToolGap := false
 	for _, tc := range v.ToolCalls {
 		if finalised[tc.ID] {
 			continue
 		}
+		if !insertedToolGap && len(out) > 0 {
+			out = append(out, "")
+		}
+		insertedToolGap = true
 		out = append(out, v.renderToolCall(tc, width)...)
 		// out = append(out, "")
 	}
