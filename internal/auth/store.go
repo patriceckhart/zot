@@ -18,6 +18,7 @@ import (
 type Credentials struct {
 	Anthropic ProviderCreds `json:"anthropic,omitempty"`
 	OpenAI    ProviderCreds `json:"openai,omitempty"`
+	Kimi      ProviderCreds `json:"kimi,omitempty"`
 }
 
 // ProviderCreds holds credentials for a single provider. Only one of
@@ -80,6 +81,8 @@ func (c *Credentials) get(provider string) *ProviderCreds {
 		return &c.Anthropic
 	case "openai":
 		return &c.OpenAI
+	case "kimi":
+		return &c.Kimi
 	}
 	return nil
 }

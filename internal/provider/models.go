@@ -92,6 +92,13 @@ var Catalog = []Model{
 		PriceInput: 15.00, PriceOutput: 75.00, PriceCacheRead: 1.50, PriceCacheWrite: 18.75,
 	},
 
+	// ---- Kimi / Kimi Code ----
+	{
+		Provider: "kimi", ID: "kimi-for-coding", DisplayName: "Kimi-k2.6",
+		ContextWindow: 262144, MaxOutput: 32000, Reasoning: true,
+		BaseURL: "https://api.kimi.com/coding/v1",
+	},
+
 	// ---- OpenAI / GPT-5 family ----
 	{
 		Provider: "openai", ID: "gpt-5", DisplayName: "GPT-5",

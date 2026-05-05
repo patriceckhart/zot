@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/patriceckhart/zot/internal/agent/tools"
@@ -128,12 +129,15 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 
 	// User-requested provider (explicit > config > default).
 	provName := firstNonEmpty(args.Provider, cfg.Provider, "anthropic")
-	if provName != "anthropic" && provName != "openai" && provName != "ollama" {
+	if provName != "anthropic" && provName != "openai" && provName != "kimi" && provName != "ollama" {
 		// Unknown provider (maybe removed or renamed). Fall back to
 		// the first provider that has credentials, or anthropic.
 		provName = "anthropic"
 		if _, _, _, err := ResolveCredentialFull("openai", ""); err == nil {
 			provName = "openai"
+		}
+		if _, _, _, err := ResolveCredentialFull("kimi", ""); err == nil {
+			provName = "kimi"
 		}
 		if _, _, _, err := ResolveCredentialFull("anthropic", ""); err == nil {
 			provName = "anthropic"
@@ -166,13 +170,15 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	// never shows a "not logged in" banner.
 	userPickedProvider := args.Provider != ""
 	if credErr != nil && !userPickedProvider && provName != "ollama" {
-		other := "openai"
-		if provName == "openai" {
-			other = "anthropic"
-		}
-		if c, m, a, err := ResolveCredentialFull(other, args.APIKey); err == nil {
-			provName = other
-			cred, method, accountID, credErr = c, m, a, err
+		for _, other := range []string{"anthropic", "openai", "kimi"} {
+			if other == provName {
+				continue
+			}
+			if c, m, a, err := ResolveCredentialFull(other, args.APIKey); err == nil {
+				provName = other
+				cred, method, accountID, credErr = c, m, a, err
+				break
+			}
 		}
 	}
 
@@ -181,6 +187,8 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		switch provName {
 		case "openai":
 			model = "gpt-5"
+		case "kimi":
+			model = "kimi-for-coding"
 		case "ollama":
 			return Resolved{}, fmt.Errorf("ollama requires --model (e.g. --model llama3)")
 		default:
@@ -191,9 +199,12 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	// says gpt-5 but we fell back to anthropic), pick that provider's default.
 	if provName != "ollama" {
 		if m, err := provider.FindModel("", model); err == nil && m.Provider != provName {
-			if provName == "openai" {
+			switch provName {
+			case "openai":
 				model = "gpt-5"
-			} else {
+			case "kimi":
+				model = "kimi-for-coding"
+			default:
 				model = provider.DefaultModel.ID
 			}
 		}
@@ -345,6 +356,8 @@ func (r Resolved) NewClient() provider.Client {
 	switch r.Provider {
 	case "ollama":
 		return provider.NewOpenAI(r.Credential, r.BaseURL)
+	case "kimi":
+		return provider.NewKimiWithHeaders(r.Credential, r.BaseURL, kimiCodeHeaders())
 	case "openai":
 		if r.AuthMethod == "oauth" {
 			inner := provider.NewOpenAICodex(r.Credential, r.AccountID, r.BaseURL)
@@ -380,6 +393,8 @@ func (r Resolved) wrapWithRefresh(inner provider.Client) provider.Client {
 		switch provName {
 		case "openai":
 			return provider.NewOpenAICodex(token, accountID, baseURL)
+		case "kimi":
+			return provider.NewKimiWithHeaders(token, baseURL, kimiCodeHeaders())
 		default:
 			return provider.NewAnthropicOAuth(token, baseURL)
 		}
@@ -464,10 +479,37 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+func kimiCodeHeaders() map[string]string {
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "unknown"
+	}
+	deviceID := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		if b, err := os.ReadFile(filepath.Join(home, ".kimi", "device_id")); err == nil {
+			deviceID = strings.TrimSpace(string(b))
+		}
+	}
+	if deviceID == "" {
+		deviceID = "zot"
+	}
+	return map[string]string{
+		"User-Agent":         "KimiCLI/1.41.0",
+		"X-Msh-Platform":     "kimi_cli",
+		"X-Msh-Version":      "1.41.0",
+		"X-Msh-Device-Name":  host,
+		"X-Msh-Device-Model": runtime.GOOS + "-" + runtime.GOARCH,
+		"X-Msh-Os-Version":   runtime.GOOS,
+		"X-Msh-Device-Id":    deviceID,
+	}
+}
+
 func envVarName(provider string) string {
 	switch provider {
 	case "openai":
 		return "OPENAI"
+	case "kimi":
+		return "KIMI"
 	case "ollama":
 		return "OLLAMA"
 	default:

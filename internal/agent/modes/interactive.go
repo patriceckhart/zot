@@ -54,6 +54,10 @@ type InteractiveConfig struct {
 	// the concrete provider/model in use.
 	BuildAgent func() (*core.Agent, string, string, error)
 
+	// SetKimiCLIFallbackDisabled controls whether zot may fall back to
+	// the official Kimi Code CLI token when zot has no stored Kimi token.
+	SetKimiCLIFallbackDisabled func(disabled bool) error
+
 	// BuildAgentFor rebuilds the agent with an explicit provider/model
 	// override (used by the /model picker when switching providers).
 	// If providerOverride is empty, the current provider is kept.
@@ -2397,7 +2401,7 @@ func (i *Interactive) openLogoutDialog() {
 	}
 
 	var items []logoutItem
-	for _, p := range []string{"anthropic", "openai"} {
+	for _, p := range []string{"anthropic", "openai", "kimi"} {
 		if creds.Has(p) {
 			method := creds.Method(p)
 			if method == "oauth" {
@@ -2431,7 +2435,7 @@ func (i *Interactive) openLogoutDialog() {
 // is torn down so the user is forced through /login before their next
 // prompt.
 //
-// target: "anthropic" | "openai" | "all"
+// target: "anthropic" | "openai" | "kimi" | "all"
 func (i *Interactive) doLogout(target string) {
 	if i.cfg.AuthManager == nil {
 		i.mu.Lock()
@@ -2450,12 +2454,12 @@ func (i *Interactive) doLogout(target string) {
 	var providers []string
 	switch target {
 	case "", "all":
-		providers = []string{"anthropic", "openai"}
-	case "anthropic", "openai":
+		providers = []string{"anthropic", "openai", "kimi"}
+	case "anthropic", "openai", "kimi":
 		providers = []string{target}
 	default:
 		i.mu.Lock()
-		i.statusErr = "unknown provider: " + target + " (use anthropic, openai, or all)"
+		i.statusErr = "unknown provider: " + target + " (use anthropic, openai, kimi, or all)"
 		i.mu.Unlock()
 		return
 	}
@@ -2466,6 +2470,12 @@ func (i *Interactive) doLogout(target string) {
 		if err := store.Clear(p); err != nil {
 			errs = append(errs, p+": "+err.Error())
 			continue
+		}
+		if p == "kimi" && i.cfg.SetKimiCLIFallbackDisabled != nil {
+			if err := i.cfg.SetKimiCLIFallbackDisabled(true); err != nil {
+				errs = append(errs, p+": "+err.Error())
+				continue
+			}
 		}
 		if p == i.cfg.Provider {
 			clearedCurrent = true
@@ -2491,6 +2501,9 @@ func (i *Interactive) doLogout(target string) {
 }
 
 func (i *Interactive) startAPIKeyFlow(provider string) {
+	if provider == "kimi" && i.cfg.SetKimiCLIFallbackDisabled != nil {
+		_ = i.cfg.SetKimiCLIFallbackDisabled(false)
+	}
 	url, err := i.cfg.AuthManager.StartAPIKey(provider)
 	if err != nil {
 		i.dialog.ShowResult(false, err.Error())
@@ -2500,6 +2513,9 @@ func (i *Interactive) startAPIKeyFlow(provider string) {
 }
 
 func (i *Interactive) startOAuthFlow(provider string) {
+	if provider == "kimi" && i.cfg.SetKimiCLIFallbackDisabled != nil {
+		_ = i.cfg.SetKimiCLIFallbackDisabled(false)
+	}
 	// Always run the manual/copy-code flow in parallel with the local
 	// callback server so headless environments (docker, SSH) can paste
 	// the authorization code directly without first pressing 'p'.

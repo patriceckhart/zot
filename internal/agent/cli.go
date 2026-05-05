@@ -664,31 +664,32 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 
 	initialCfg, _ := LoadConfig()
 	iv = modes.NewInteractive(modes.InteractiveConfig{
-		Terminal:            term,
-		Theme:               tui.DetectThemeFromBackground(80 * time.Millisecond),
-		InlineImagesEnabled: initialCfg.InlineImagesEnabled,
-		SettingsStore:       configSettingsStore{},
-		Model:               r.Model,
-		Provider:            r.Provider,
-		AuthMethod:          r.AuthMethod,
-		BaseURL:             r.BaseURL,
-		Reasoning:           r.Reasoning,
-		SystemPrompt:        r.SystemPrompt,
-		Tools:               r.ToolRegistry,
-		MaxSteps:            r.MaxSteps,
-		CWD:                 r.CWD,
-		ZotHome:             ZotHome(),
-		Version:             version,
-		UpdateInfoChan:      updateCh,
-		Sandbox:             sharedSandbox,
-		Agent:               ag,
-		InitialInput:        args.Prompt,
-		AuthManager:         mgr,
-		BuildAgent:          buildAgent,
-		BuildAgentFor:       buildAgentFor,
+		Terminal:                   term,
+		Theme:                      tui.DetectThemeFromBackground(80 * time.Millisecond),
+		InlineImagesEnabled:        initialCfg.InlineImagesEnabled,
+		SettingsStore:              configSettingsStore{},
+		Model:                      r.Model,
+		Provider:                   r.Provider,
+		AuthMethod:                 r.AuthMethod,
+		BaseURL:                    r.BaseURL,
+		Reasoning:                  r.Reasoning,
+		SystemPrompt:               r.SystemPrompt,
+		Tools:                      r.ToolRegistry,
+		MaxSteps:                   r.MaxSteps,
+		CWD:                        r.CWD,
+		ZotHome:                    ZotHome(),
+		Version:                    version,
+		UpdateInfoChan:             updateCh,
+		Sandbox:                    sharedSandbox,
+		Agent:                      ag,
+		InitialInput:               args.Prompt,
+		AuthManager:                mgr,
+		BuildAgent:                 buildAgent,
+		SetKimiCLIFallbackDisabled: SetKimiCLIFallbackDisabled,
+		BuildAgentFor:              buildAgentFor,
 		LoggedInProviders: func() []string {
 			var out []string
-			for _, p := range []string{"anthropic", "openai"} {
+			for _, p := range []string{"anthropic", "openai", "kimi"} {
 				if _, _, err := ResolveCredential(p, ""); err == nil {
 					out = append(out, p)
 				}

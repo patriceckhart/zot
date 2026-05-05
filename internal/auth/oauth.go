@@ -111,6 +111,14 @@ var (
 			"originator":                 "zot",
 		},
 	}
+
+	// Kimi Code subscription: used by the official Kimi Code CLI.
+	// Kimi uses OAuth 2 device-code flow instead of a loopback callback.
+	KimiOAuth = OAuthProvider{
+		Name:     "kimi",
+		TokenURL: "https://auth.kimi.com/api/oauth/token",
+		ClientID: "17e5f671-d194-4dfb-9706-5516cb48c098",
+	}
 )
 
 // PKCE holds a verifier/challenge pair.

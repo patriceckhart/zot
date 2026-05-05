@@ -78,8 +78,8 @@ func (m *Manager) Close() {
 
 // StartAPIKey launches the API-key login flow.
 func (m *Manager) StartAPIKey(provider string) (string, error) {
-	if provider != "anthropic" && provider != "openai" {
-		return "", fmt.Errorf("provider must be anthropic or openai")
+	if provider != "anthropic" && provider != "openai" && provider != "kimi" {
+		return "", fmt.Errorf("provider must be anthropic, openai, or kimi")
 	}
 	if err := m.ensureKeyServer(); err != nil {
 		return "", err
@@ -125,6 +125,9 @@ func (m *Manager) consumeKeyServerResults() {
 // Only one oauth flow may be in progress at a time (because the
 // callback port is fixed per provider and re-used by the official CLIs).
 func (m *Manager) StartOAuth(provider string) (string, error) {
+	if provider == "kimi" {
+		return m.StartKimiDeviceOAuth()
+	}
 	var op OAuthProvider
 	switch provider {
 	case "anthropic":
@@ -132,7 +135,7 @@ func (m *Manager) StartOAuth(provider string) (string, error) {
 	case "openai":
 		op = OpenAIOAuth
 	default:
-		return "", fmt.Errorf("provider must be anthropic or openai")
+		return "", fmt.Errorf("provider must be anthropic, openai, or kimi")
 	}
 
 	m.mu.Lock()
@@ -203,11 +206,49 @@ func (m *Manager) awaitOAuth(ctx context.Context, op OAuthProvider, cs *Callback
 	m.emit(Event{Kind: "success", Provider: op.Name, Method: "oauth"})
 }
 
+// StartKimiDeviceOAuth starts Kimi Code's device-code subscription login.
+func (m *Manager) StartKimiDeviceOAuth() (string, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	if m.oauthCancel != nil {
+		m.oauthCancel()
+	}
+	m.oauthCtx = ctx
+	m.oauthCancel = cancel
+	m.mu.Unlock()
+
+	dev, err := RequestKimiDeviceAuthorization(ctx)
+	if err != nil {
+		return "", err
+	}
+	url := dev.VerificationURIComplete
+	go m.maybeOpen(url)
+	m.emit(Event{Kind: "started", Provider: "kimi", Method: "oauth", URL: url})
+	go func() {
+		tok, err := PollKimiDeviceToken(ctx, dev)
+		if err != nil {
+			if ctx.Err() == nil {
+				m.emit(Event{Kind: "error", Provider: "kimi", Method: "oauth", Message: err.Error()})
+			}
+			return
+		}
+		if err := m.store.SetOAuth("kimi", *tok); err != nil {
+			m.emit(Event{Kind: "error", Provider: "kimi", Method: "oauth", Message: err.Error()})
+			return
+		}
+		m.emit(Event{Kind: "success", Provider: "kimi", Method: "oauth"})
+	}()
+	return url, nil
+}
+
 // StartManualOAuth begins an OAuth flow but does NOT start a local
 // callback server or open a browser. The returned URL is shown to the
 // user so they can complete the authorization on another device; the
 // resulting code is pasted back via CompleteManualOAuth.
 func (m *Manager) StartManualOAuth(provider string) (string, error) {
+	if provider == "kimi" {
+		return m.StartKimiDeviceOAuth()
+	}
 	var op OAuthProvider
 	switch provider {
 	case "anthropic":
@@ -215,7 +256,7 @@ func (m *Manager) StartManualOAuth(provider string) (string, error) {
 	case "openai":
 		op = OpenAIOAuth
 	default:
-		return "", fmt.Errorf("provider must be anthropic or openai")
+		return "", fmt.Errorf("provider must be anthropic, openai, or kimi")
 	}
 
 	pkce, err := NewPKCE()

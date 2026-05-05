@@ -72,6 +72,15 @@ func refreshModels() {
 			all = append(all, live...)
 		}
 	}
+	if cred, method, err := ResolveCredential("kimi", ""); err == nil && method == "apikey" {
+		if live, err := provider.DiscoverOpenAI(ctx, cred, "https://api.kimi.com/coding/v1"); err == nil {
+			for i := range live {
+				live[i].Provider = "kimi"
+				live[i].Source = "live"
+			}
+			all = append(all, live...)
+		}
+	}
 
 	if len(all) == 0 {
 		return

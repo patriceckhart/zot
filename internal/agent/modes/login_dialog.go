@@ -17,7 +17,7 @@ type loginStep int
 const (
 	loginStepClosed    loginStep = iota
 	loginStepMethod              // pick apikey vs subscription
-	loginStepProvider            // pick anthropic vs openai
+	loginStepProvider            // pick anthropic vs openai vs kimi
 	loginStepWaiting             // browser open, waiting for callback
 	loginStepPasteCode           // user pastes the auth code here
 	loginStepDone                // success or error, waiting for key to dismiss
@@ -28,7 +28,7 @@ const (
 type loginDialog struct {
 	step     loginStep
 	method   string // "apikey" | "oauth"
-	provider string // "anthropic" | "openai"
+	provider string // "anthropic" | "openai" | "kimi"
 	message  string
 	success  bool
 	url      string
@@ -39,7 +39,7 @@ type loginDialog struct {
 	// provider, captured when Open() runs. Rendered above the
 	// method picker so the user can see whether they're already
 	// logged in (and how) before starting a new flow. Keys:
-	// "anthropic", "openai". Value is "apikey", "oauth", or ""
+	// "anthropic", "openai", "kimi". Value is "apikey", "oauth", or ""
 	// (not logged in).
 	status map[string]string
 }
@@ -65,7 +65,7 @@ func (d *loginDialog) Open(zotHome string) {
 	d.success = false
 	d.url = ""
 	d.cursor = 0
-	d.status = map[string]string{"anthropic": "", "openai": ""}
+	d.status = map[string]string{"anthropic": "", "openai": "", "kimi": ""}
 	// Best-effort: if the auth file can't be read, treat every
 	// provider as not-logged-in. The status line just won't show
 	// anything useful in that case, which is fine — the user
@@ -74,6 +74,7 @@ func (d *loginDialog) Open(zotHome string) {
 	if creds, err := auth.NewStore(path).Load(); err == nil {
 		d.status["anthropic"] = creds.Method("anthropic")
 		d.status["openai"] = creds.Method("openai")
+		d.status["kimi"] = creds.Method("kimi")
 	}
 }
 
@@ -93,7 +94,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 	case loginStepMethod:
 		opts := []string{
 			"api key",
-			"subscription (claude pro/max - chatgpt plus/pro)",
+			"subscription (claude pro/max - chatgpt plus/pro - kimi code)",
 		}
 		lines = append(lines, frameHeader(th, "login", width))
 		for _, l := range d.renderStatusLines(th) {
@@ -110,7 +111,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		}
 		lines = append(lines, frameRule(th, width))
 	case loginStepProvider:
-		opts := []string{"anthropic", "openai"}
+		opts := []string{"anthropic", "openai", "kimi"}
 		lines = append(lines, frameHeader(th, "login - "+d.method, width))
 		for _, l := range d.renderStatusLines(th) {
 			lines = append(lines, l)
@@ -201,6 +202,8 @@ func providerLabel(id string) string {
 		return "Anthropic (Claude Pro/Max)"
 	case "openai":
 		return "OpenAI (ChatGPT Plus/Pro)"
+	case "kimi":
+		return "Kimi Code"
 	}
 	return id
 }
@@ -218,7 +221,8 @@ func providerLabel(id string) string {
 func (d *loginDialog) renderStatusLines(th tui.Theme) []string {
 	anth := d.status["anthropic"]
 	op := d.status["openai"]
-	if anth == "" && op == "" {
+	kimi := d.status["kimi"]
+	if anth == "" && op == "" && kimi == "" {
 		return nil
 	}
 	row := func(id, method string) string {
@@ -240,6 +244,7 @@ func (d *loginDialog) renderStatusLines(th tui.Theme) []string {
 	return []string{
 		row("anthropic", anth),
 		row("openai", op),
+		row("kimi", kimi),
 		"",
 	}
 }
@@ -305,14 +310,14 @@ func (d *loginDialog) handleProviderKey(k tui.Key) loginDialogAction {
 			d.cursor--
 		}
 	case tui.KeyDown:
-		if d.cursor < 1 {
+		if d.cursor < 2 {
 			d.cursor++
 		}
 	case tui.KeyEsc:
 		d.Close()
 		return loginDialogAction{Close: true}
 	case tui.KeyEnter:
-		providers := []string{"anthropic", "openai"}
+		providers := []string{"anthropic", "openai", "kimi"}
 		d.provider = providers[d.cursor]
 		d.step = loginStepWaiting
 		if d.method == "apikey" {

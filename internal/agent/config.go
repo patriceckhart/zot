@@ -68,6 +68,12 @@ func ConfigPath() string { return filepath.Join(ZotHome(), "config.json") }
 // AuthPath returns the path to auth.json.
 func AuthPath() string { return filepath.Join(ZotHome(), "auth.json") }
 
+// KimiCLIFallbackDisabledPath returns a sentinel that disables falling
+// back to the official Kimi Code CLI token after `zot /logout kimi`.
+func KimiCLIFallbackDisabledPath() string {
+	return filepath.Join(ZotHome(), "kimi-cli-fallback-disabled")
+}
+
 // SessionsPath returns the directory holding session files.
 func SessionsPath() string { return filepath.Join(ZotHome(), "sessions") }
 
@@ -135,6 +141,13 @@ func ResolveCredentialFull(provider, explicit string) (cred, method, accountID s
 		if v := os.Getenv("OPENAI_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
+	case "kimi":
+		if v := os.Getenv("KIMI_API_KEY"); v != "" {
+			return v, "apikey", "", nil
+		}
+		if v := os.Getenv("MOONSHOT_API_KEY"); v != "" {
+			return v, "apikey", "", nil
+		}
 	}
 	c, err := AuthStoreFor().Load()
 	if err != nil {
@@ -157,8 +170,74 @@ func ResolveCredentialFull(provider, explicit string) (cred, method, accountID s
 			tok, _ := refreshIfExpired("openai", c.OpenAI.OAuth)
 			return tok.AccessToken, "oauth", tok.AccountID, nil
 		}
+	case "kimi":
+		if c.Kimi.APIKey != "" {
+			return c.Kimi.APIKey, "apikey", "", nil
+		}
+		if c.Kimi.OAuth != nil && c.Kimi.OAuth.AccessToken != "" {
+			tok, _ := refreshIfExpired("kimi", c.Kimi.OAuth)
+			return tok.AccessToken, "oauth", "", nil
+		}
+		if kimiCLIFallbackDisabled() {
+			break
+		}
+		if tok := loadKimiCodeCLIToken(); tok != nil && tok.AccessToken != "" {
+			tok, _ = refreshIfExpired("kimi", tok)
+			return tok.AccessToken, "oauth", "", nil
+		}
 	}
 	return "", "", "", fmt.Errorf("no credential for %s", provider)
+}
+
+func kimiCLIFallbackDisabled() bool {
+	_, err := os.Stat(KimiCLIFallbackDisabledPath())
+	return err == nil
+}
+
+func SetKimiCLIFallbackDisabled(disabled bool) error {
+	path := KimiCLIFallbackDisabledPath()
+	if !disabled {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("disabled\n"), 0o600)
+}
+
+func loadKimiCodeCLIToken() *auth.OAuthToken {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".kimi", "credentials", "kimi-code.json"))
+	if err != nil {
+		return nil
+	}
+	var raw struct {
+		AccessToken  string  `json:"access_token"`
+		RefreshToken string  `json:"refresh_token"`
+		TokenType    string  `json:"token_type"`
+		ExpiresAt    float64 `json:"expires_at"`
+		Scope        string  `json:"scope"`
+		ExpiresIn    float64 `json:"expires_in"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil || raw.AccessToken == "" {
+		return nil
+	}
+	sec := int64(raw.ExpiresAt)
+	nsec := int64((raw.ExpiresAt - float64(sec)) * 1e9)
+	return &auth.OAuthToken{
+		AccessToken:  raw.AccessToken,
+		RefreshToken: raw.RefreshToken,
+		TokenType:    raw.TokenType,
+		Scope:        raw.Scope,
+		ClientID:     auth.KimiOAuth.ClientID,
+		Expiry:       time.Unix(sec, nsec),
+	}
 }
 
 // loadOAuthToken reads the current OAuth token from auth.json for the
@@ -177,6 +256,14 @@ func loadOAuthToken(providerName string) *auth.OAuthToken {
 		if c.OpenAI.OAuth != nil {
 			return c.OpenAI.OAuth
 		}
+	case "kimi":
+		if c.Kimi.OAuth != nil {
+			return c.Kimi.OAuth
+		}
+		if kimiCLIFallbackDisabled() {
+			return nil
+		}
+		return loadKimiCodeCLIToken()
 	}
 	return nil
 }
@@ -205,6 +292,8 @@ func refreshIfExpired(providerName string, tok *auth.OAuthToken) (*auth.OAuthTok
 		op = auth.AnthropicOAuth
 	case "openai":
 		op = auth.OpenAIOAuth
+	case "kimi":
+		op = auth.KimiOAuth
 	default:
 		return tok, fmt.Errorf("unknown provider %q", providerName)
 	}

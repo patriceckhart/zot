@@ -17,7 +17,9 @@ const openaiDefaultBaseURL = "https://api.openai.com"
 type openaiClient struct {
 	apiKey  string
 	baseURL string
+	name    string
 	oauth   bool // when true, apiKey actually holds an OAuth access token
+	headers map[string]string
 	http    *http.Client
 }
 
@@ -29,6 +31,7 @@ func NewOpenAI(apiKey, baseURL string) Client {
 	return &openaiClient{
 		apiKey:  apiKey,
 		baseURL: strings.TrimRight(baseURL, "/"),
+		name:    "openai",
 		http:    &http.Client{Timeout: 0},
 	}
 }
@@ -42,12 +45,38 @@ func NewOpenAIOAuth(accessToken, baseURL string) Client {
 	return &openaiClient{
 		apiKey:  accessToken,
 		baseURL: strings.TrimRight(baseURL, "/"),
+		name:    "openai",
 		oauth:   true,
 		http:    &http.Client{Timeout: 0},
 	}
 }
 
-func (c *openaiClient) Name() string { return "openai" }
+// NewKimi creates a Kimi/Moonshot client. Kimi's chat API is OpenAI-compatible.
+func NewKimi(apiKey, baseURL string) Client {
+	return NewKimiWithHeaders(apiKey, baseURL, nil)
+}
+
+// NewKimiWithHeaders creates a Kimi/Moonshot client with extra headers.
+// Subscription tokens from Kimi Code need the official CLI's X-Msh-* headers.
+func NewKimiWithHeaders(apiKey, baseURL string, headers map[string]string) Client {
+	if baseURL == "" {
+		baseURL = "https://api.kimi.com/coding/v1"
+	}
+	return &openaiClient{
+		apiKey:  apiKey,
+		baseURL: strings.TrimRight(baseURL, "/"),
+		name:    "kimi",
+		headers: headers,
+		http:    &http.Client{Timeout: 0},
+	}
+}
+
+func (c *openaiClient) Name() string {
+	if c.name != "" {
+		return c.name
+	}
+	return "openai"
+}
 
 // ---- wire types ----
 
@@ -285,6 +314,10 @@ func buildOAIContentBlocks(blocks []Content, isError bool) []interface{} {
 // ---- streaming ----
 
 func (c *openaiClient) Stream(ctx context.Context, req Request) (<-chan Event, error) {
+	apiPath := "/v1/chat/completions"
+	if strings.HasSuffix(c.baseURL, "/v1") {
+		apiPath = "/chat/completions"
+	}
 	wire, err := c.buildRequest(req)
 	if err != nil {
 		return nil, err
@@ -293,13 +326,16 @@ func (c *openaiClient) Stream(ctx context.Context, req Request) (<-chan Event, e
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+apiPath, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("content-type", "application/json")
 	httpReq.Header.Set("accept", "text/event-stream")
 	httpReq.Header.Set("authorization", "Bearer "+c.apiKey)
+	for k, v := range c.headers {
+		httpReq.Header.Set(k, v)
+	}
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
@@ -321,7 +357,7 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 	defer resp.Body.Close()
 
 	model, _ := FindModel("", req.Model)
-	out <- EventStart{Model: req.Model, Provider: "openai"}
+	out <- EventStart{Model: req.Model, Provider: c.Name()}
 
 	raw := make(chan sseEvent, 16)
 	go readSSE(resp.Body, raw)

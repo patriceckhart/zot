@@ -78,6 +78,8 @@ func LoadUserModels(path string) []Model {
 			normalized = "openai"
 		case "anthropic-messages":
 			normalized = "anthropic"
+		case "moonshot", "moonshot-ai", "kimi-code":
+			normalized = "kimi"
 		}
 
 		for _, um := range prov.Models {

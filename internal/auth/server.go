@@ -111,8 +111,8 @@ func (s *Server) handleAPIKey(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		provider := r.URL.Query().Get("provider")
-		if provider != "anthropic" && provider != "openai" {
-			http.Error(w, "provider must be anthropic or openai", http.StatusBadRequest)
+		if provider != "anthropic" && provider != "openai" && provider != "kimi" {
+			http.Error(w, "provider must be anthropic, openai, or kimi", http.StatusBadRequest)
 			return
 		}
 		tpl.ExecuteTemplate(w, "apikey", map[string]any{"Provider": provider})
@@ -223,13 +223,14 @@ var tpl = template.Must(template.New("index").Parse(`<!doctype html><html lang="
 ` + logoTag + `
 <h1><span class="zot">zot</span> login</h1>
 <hr class="rule">
-<p>paste an api key for anthropic or openai. <span class="zot">zot</span> probes the provider once, then saves the key to <span class="mono">~/Library/Application Support/zot/auth.json</span>.</p>
+<p>paste an api key for anthropic, openai, or kimi. <span class="zot">zot</span> probes the provider once, then saves the key to <span class="mono">~/Library/Application Support/zot/auth.json</span>.</p>
 <p>
   <a href="/apikey?provider=anthropic">anthropic api key →</a><br>
-  <a href="/apikey?provider=openai">openai api key →</a>
+  <a href="/apikey?provider=openai">openai api key →</a><br>
+  <a href="/apikey?provider=kimi">kimi api key →</a>
 </p>
 <hr class="rule">
-<p class="muted">for a subscription login (claude pro/max - chatgpt plus/pro), close this tab and run /login inside <span class="zot">zot</span>.</p>
+<p class="muted">for a subscription login (claude pro/max - chatgpt plus/pro - kimi code), close this tab and run /login inside <span class="zot">zot</span>.</p>
 </body></html>`))
 
 func init() {

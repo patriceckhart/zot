@@ -7,7 +7,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/mattn/go-runewidth"
 	"github.com/patriceckhart/zot/internal/provider"
 )
 
@@ -1440,6 +1442,7 @@ func (v *View) renderNumberedFile(text, sourcePath string) []string {
 // in muted type, everything else on the default tool-output color.
 // Called from renderToolText when the first line starts with "$ ".
 func (v *View) renderBashResult(lines []string, width, defaultColor int) []string {
+	lines = normalizeBashOutputLines(lines)
 	// Identify the footer line (exit + timing). The bash tool writes
 	// it as the last non-empty line of the result.
 	footerIdx := -1
@@ -1475,6 +1478,108 @@ func (v *View) renderBashResult(lines []string, width, defaultColor int) []strin
 		}
 	}
 	return out
+}
+
+// normalizeBashOutputLines turns arbitrary terminal output into plain,
+// box-safe rows before wrapping. Unlike read/write/edit output, bash
+// stdout/stderr may contain tabs, carriage returns, ANSI/OSC escapes,
+// and other C0 controls from subprocesses. If those reach the bordered
+// tool box, the width calculator can undercount what the terminal will
+// draw and the right edge appears broken. Keep printable text, expand
+// tabs to spaces, split carriage-return progress rows, and drop escape
+// / control sequences.
+func normalizeBashOutputLines(lines []string) []string {
+	var out []string
+	for _, line := range lines {
+		for _, part := range strings.Split(strings.ReplaceAll(line, "\r", "\n"), "\n") {
+			out = append(out, normalizeBashOutputLine(part))
+		}
+	}
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
+}
+
+func normalizeBashOutputLine(s string) string {
+	var b strings.Builder
+	col := 0
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c == 0x1b { // ESC: strip CSI/OSC/DCS and simple escapes.
+			i = skipEscapeSequence(s, i)
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			i++
+			continue
+		}
+		switch r {
+		case '\t':
+			spaces := 8 - (col % 8)
+			if spaces == 0 {
+				spaces = 8
+			}
+			b.WriteString(strings.Repeat(" ", spaces))
+			col += spaces
+		case '\b':
+			// Backspace-overstrike output is common in spinners/progress bars.
+			// Dropping it is safer than moving the TUI cursor backwards.
+		case '\n', '\r':
+			// Already split by normalizeBashOutputLines.
+		default:
+			if r < 0x20 || r == 0x7f {
+				// Drop non-printing controls.
+				break
+			}
+			b.WriteRune(r)
+			col += runewidth.RuneWidth(r)
+		}
+		i += size
+	}
+	return b.String()
+}
+
+func skipEscapeSequence(s string, i int) int {
+	if i >= len(s) || s[i] != 0x1b {
+		return i + 1
+	}
+	if i+1 >= len(s) {
+		return len(s)
+	}
+	switch s[i+1] {
+	case '[': // CSI: ESC [ ... final byte 0x40-0x7e
+		j := i + 2
+		for j < len(s) {
+			c := s[j]
+			j++
+			if c >= 0x40 && c <= 0x7e {
+				break
+			}
+		}
+		return j
+	case ']': // OSC: ESC ] ... BEL or ST
+		return skipStringEscape(s, i+2)
+	case 'P', '_', '^', 'X': // DCS/APC/PM/SOS: ESC P ... ST, etc.
+		return skipStringEscape(s, i+2)
+	default:
+		// Two-byte escape (cursor save/restore, charset select, etc.).
+		return i + 2
+	}
+}
+
+func skipStringEscape(s string, i int) int {
+	for i < len(s) {
+		if s[i] == 0x07 { // BEL
+			return i + 1
+		}
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' { // ST
+			return i + 2
+		}
+		i++
+	}
+	return len(s)
 }
 
 // looksLikeUnifiedDiff reports whether text is a context diff as

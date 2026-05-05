@@ -31,6 +31,12 @@ func ProbeAPIKey(ctx context.Context, provider, key string) error {
 			return err
 		}
 		req.Header.Set("authorization", "Bearer "+key)
+	case "kimi":
+		req, err = http.NewRequestWithContext(ctx, "GET", "https://api.kimi.com/coding/v1/models", nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("authorization", "Bearer "+key)
 	default:
 		return fmt.Errorf("unknown provider %q", provider)
 	}
