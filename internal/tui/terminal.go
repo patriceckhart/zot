@@ -102,6 +102,13 @@ const (
 	SeqAltScreenOff    = "\x1b[?1049l"
 	SeqSynchronizedOn  = "\x1b[?2026h"
 	SeqSynchronizedOff = "\x1b[?2026l"
+	// SeqSaveCursor / SeqRestoreCursor use DECSC/DECRC. All terminals
+	// we target adjust the saved row when natural scrolling occurs, so
+	// these survive scroll-on-write inside the bottom band.
+	SeqSaveCursor    = "\x1b7"
+	SeqRestoreCursor = "\x1b8"
+	// SeqEraseToEnd erases from the cursor to the end of the screen.
+	SeqEraseToEnd = "\x1b[J"
 )
 
 // MoveTo moves the cursor to 1-indexed (row, col).

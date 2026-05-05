@@ -92,6 +92,7 @@ func (e *Editor) SubmitValue() string {
 // Also drops any stored pastes because the placeholders they back
 // are now gone from the visible text.
 func (e *Editor) SetValue(s string) {
+	s = normalizeEditorText(s)
 	e.Lines = strings.Split(s, "\n")
 	if len(e.Lines) == 0 {
 		e.Lines = []string{""}
@@ -175,6 +176,7 @@ func (e *Editor) HandleKey(k Key) (submit bool) {
 	case KeyCtrlW:
 		e.deleteWord()
 	case KeyPaste:
+		paste := normalizeEditorText(k.Paste)
 		// Large multi-line pastes are collapsed to a short
 		// placeholder token so the editor doesn't balloon to
 		// hundreds of rows. The full body is stashed in e.pastes,
@@ -183,19 +185,19 @@ func (e *Editor) HandleKey(k Key) (submit bool) {
 		// two or more newlines triggers collapse; one-liners and
 		// drag-dropped file paths fall through to the original
 		// insert path (including file-path quoting).
-		if pasteShouldCollapse(k.Paste) {
+		if pasteShouldCollapse(paste) {
 			if e.pastes == nil {
 				e.pastes = map[int]string{}
 			}
 			e.pasteSeq++
 			id := e.pasteSeq
-			e.pastes[id] = k.Paste
-			e.insert(formatPastePlaceholder(id, k.Paste))
+			e.pastes[id] = paste
+			e.insert(formatPastePlaceholder(id, paste))
 		} else {
 			// macOS Terminal / iTerm / Ghostty deliver drag-dropped
 			// files as bracketed-paste text. Detect that pattern
 			// and collapse long paths to a [file:basename] chip.
-			inserted := e.collapseOrQuoteFilePaths(k.Paste)
+			inserted := e.collapseOrQuoteFilePaths(paste)
 			e.insert(inserted)
 		}
 	case KeyEsc:
@@ -420,6 +422,7 @@ func singleQuote(s string) string {
 func (e *Editor) Insert(s string) { e.insert(s) }
 
 func (e *Editor) insert(s string) {
+	s = normalizeEditorText(s)
 	line := e.Lines[e.CursorR]
 	pre := substringBefore(line, e.CursorC)
 	post := substringAfter(line, e.CursorC)
@@ -848,6 +851,17 @@ func substringAfter(s string, col int) string {
 }
 
 func runeLen(s string) int { return len([]rune(s)) }
+
+// normalizeEditorText converts all common line endings to \n before text
+// reaches the renderer. A literal carriage return would move the terminal
+// cursor back to column 0 and overwrite the left side of the input row.
+func normalizeEditorText(s string) string {
+	if !strings.ContainsRune(s, '\r') {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
+}
 
 func visualColumn(s string, runeCol int) int {
 	r := []rune(s)

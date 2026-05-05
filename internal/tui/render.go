@@ -36,10 +36,9 @@ type Renderer struct {
 	// Main-screen flow renderer state. logChat is the full chat buffer
 	// already emitted into terminal scrollback. logBottom is the
 	// editable/status block currently drawn after the chat.
-	logChat    []string
-	logBottom  []string
-	logInit    bool
-	logCursorR int
+	logChat   []string
+	logBottom []string
+	logInit   bool
 }
 
 // NewRenderer returns a renderer that writes to out.
@@ -61,7 +60,6 @@ func (r *Renderer) Resize(cols, rows int) {
 		r.logChat = nil
 		r.logBottom = nil
 		r.logInit = false
-		r.logCursorR = 0
 		if r.out != nil {
 			_, _ = io.WriteString(r.out, SeqClearScreen)
 		}
@@ -78,7 +76,6 @@ func (r *Renderer) Clear() {
 	r.logChat = nil
 	r.logBottom = nil
 	r.logInit = false
-	r.logCursorR = 0
 	_, _ = io.WriteString(r.out, SeqDeleteKittyImages+SeqClearScreen+SeqClearScrollback+MoveTo(1, 1))
 }
 
@@ -305,17 +302,17 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 			w.WriteString(line)
 			w.WriteString("\r\n")
 		}
+		w.WriteString(SeqSaveCursor)
 		writeBlock(&w, bottomFrame)
 		r.logInit = true
 	} else {
-		// Move from the currently exposed cursor back to the top of the
-		// live bottom block, then erase the old block. We track the row
-		// inside the bottom block where we left the cursor last Draw.
+		// Return to the saved top-of-bottom-band anchor instead of relying
+		// on relative cursor movement from the last exposed editor cursor.
+		// If the terminal naturally scrolled between frames, save/restore is
+		// less prone to drift that leaves duplicated transcript blocks until
+		// ctrl+l forces a clear repaint.
+		w.WriteString(SeqRestoreCursor)
 		w.WriteString("\r")
-		if r.logCursorR > 0 {
-			w.WriteString("\x1b[" + itoa(r.logCursorR) + "A")
-		}
-		eraseRows(&w, len(r.logBottom))
 
 		prefix := len(r.logChat) <= len(chatFrame)
 		if prefix {
@@ -327,9 +324,11 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 			}
 		}
 		if prefix {
-			// Append only genuinely new chat rows. They become real terminal
+			// Erase old bottom (and anything below the saved anchor), then
+			// append only genuinely new chat rows. They become real terminal
 			// scrollback, and inline image escapes are emitted once here — not
 			// on every keystroke.
+			w.WriteString(SeqEraseToEnd)
 			for _, line := range chatFrame[len(r.logChat):] {
 				w.WriteString("\x1b[0m")
 				w.WriteString(SeqClearLine)
@@ -355,6 +354,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 				w.WriteString("\r\n")
 			}
 		}
+		w.WriteString(SeqSaveCursor)
 		writeBlock(&w, bottomFrame)
 	}
 
@@ -370,9 +370,6 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 			w.WriteString("\x1b[" + itoa(cursorCol) + "C")
 		}
 		w.WriteString(SeqShowCursor)
-		r.logCursorR = cursorBottomRow
-	} else {
-		r.logCursorR = len(bottomFrame) - 1
 	}
 
 	w.WriteString(SeqSynchronizedOff)
@@ -393,23 +390,6 @@ func writeBlock(w *strings.Builder, lines []string) {
 			w.WriteString("\r\n")
 		}
 	}
-}
-
-func eraseRows(w *strings.Builder, n int) {
-	if n <= 0 {
-		return
-	}
-	for i := 0; i < n; i++ {
-		w.WriteString("\x1b[0m")
-		w.WriteString(SeqClearLine)
-		if i < n-1 {
-			w.WriteString("\r\n")
-		}
-	}
-	if n > 1 {
-		w.WriteString("\x1b[" + itoa(n-1) + "A")
-	}
-	w.WriteString("\r")
 }
 
 func tailTruncated(lines []string, maxRows, cols int) []string {
