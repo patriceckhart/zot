@@ -109,6 +109,11 @@ type oaiMessage struct {
 	Name       string        `json:"name,omitempty"`
 	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
+	// ReasoningContent carries the model's chain-of-thought summary
+	// alongside an assistant tool-call message. Required by Kimi's
+	// chat completions endpoint when thinking is enabled and the
+	// assistant message contains a tool call; OpenAI ignores it.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type oaiTool struct {
@@ -186,6 +191,7 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		case RoleAssistant:
 			am := oaiMessage{Role: "assistant"}
 			var text strings.Builder
+			var reasoning strings.Builder
 			for _, b := range msg.Content {
 				switch v := b.(type) {
 				case TextBlock:
@@ -195,7 +201,7 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 					text.WriteString(v.Text)
 				case ToolCallBlock:
 					args := v.Arguments
-					if len(args) == 0 {
+					if len(args) == 0 || !json.Valid(args) {
 						args = json.RawMessage("{}")
 					}
 					am.ToolCalls = append(am.ToolCalls, oaiToolCall{
@@ -206,10 +212,20 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 							Arguments: string(args),
 						},
 					})
+				case ReasoningBlock:
+					if v.Summary != "" {
+						if reasoning.Len() > 0 {
+							reasoning.WriteString("\n")
+						}
+						reasoning.WriteString(v.Summary)
+					}
 				}
 			}
 			if text.Len() > 0 {
 				am.Content = text.String()
+			}
+			if reasoning.Len() > 0 && len(am.ToolCalls) > 0 {
+				am.ReasoningContent = reasoning.String()
 			}
 			out.Messages = append(out.Messages, am)
 		case RoleTool:
@@ -377,12 +393,13 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 		announced bool
 	}
 	var (
-		blocks      []*blockEntry
-		currentText *blockEntry             // most-recent text block, nil if none
-		toolByIdx   = map[int]*blockEntry{} // openai tool_call index -> block
-		usage       Usage
-		stop        StopReason = StopEnd
-		finalErr    error
+		blocks       []*blockEntry
+		currentText  *blockEntry             // most-recent text block, nil if none
+		toolByIdx    = map[int]*blockEntry{} // openai tool_call index -> block
+		reasoningBuf strings.Builder
+		usage        Usage
+		stop         StopReason = StopEnd
+		finalErr     error
 	)
 
 	appendText := func(delta string) {
@@ -416,13 +433,16 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 				}
 			case "tool_use":
 				args := b.toolArgs.String()
-				if args == "" {
+				if args == "" || !json.Valid([]byte(args)) {
 					args = "{}"
 				}
 				content = append(content, ToolCallBlock{
 					ID: b.toolID, Name: b.toolName, Arguments: json.RawMessage(args),
 				})
 			}
+		}
+		if reasoningBuf.Len() > 0 {
+			content = append(content, ReasoningBlock{Summary: reasoningBuf.String()})
 		}
 		return Message{Role: RoleAssistant, Content: content, Time: time.Now()}
 	}
@@ -453,8 +473,9 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 				Choices []struct {
 					Index int `json:"index"`
 					Delta struct {
-						Content   string `json:"content"`
-						ToolCalls []struct {
+						Content          string `json:"content"`
+						ReasoningContent string `json:"reasoning_content"`
+						ToolCalls        []struct {
 							Index    int    `json:"index"`
 							ID       string `json:"id"`
 							Type     string `json:"type"`
@@ -496,6 +517,9 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 				usage.CacheReadTokens = chunk.Usage.PromptTokensDetails.CachedTokens
 			}
 			for _, ch := range chunk.Choices {
+				if ch.Delta.ReasoningContent != "" {
+					reasoningBuf.WriteString(ch.Delta.ReasoningContent)
+				}
 				if ch.Delta.Content != "" {
 					appendText(ch.Delta.Content)
 					out <- EventTextDelta{Delta: ch.Delta.Content}
