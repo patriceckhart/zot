@@ -5,7 +5,7 @@
 Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 
 - one static binary.
-- two providers atm (anthropic, openai/codex).
+- built-in providers for anthropic, openai/codex, kimi, and ollama/openai-compatible local models.
 - four tools (read, write, edit, bash).
 - three run modes (interactive tui, print, json).
 - built-in telegram bot.
@@ -61,7 +61,7 @@ The easiest way is to just run `zot` and type `/login`. The TUI opens even witho
 ### Credential lookup order
 
 1. `--api-key` flag
-2. `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` env var
+2. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `KIMI_API_KEY`, or `MOONSHOT_API_KEY` env var
 3. `$ZOT_HOME/auth.json` (API key or OAuth token; mode 0600)
 
 `$ZOT_HOME` defaults to:
@@ -73,12 +73,14 @@ The easiest way is to just run `zot` and type `/login`. The TUI opens even witho
 
 Run `zot` and type `/login`. Pick one of two methods:
 
-- **API key**: a small local web server starts on `127.0.0.1:<free-port>`, your browser opens a form, you paste your `sk-ant-...` or `sk-...` key. zot probes the provider once and saves it to `auth.json` if accepted.
-- **Subscription**: use your Claude Pro/Max or ChatGPT Plus/Pro subscription. The OAuth flow pins the callback to a fixed port per provider (`localhost:53692` for Anthropic, `localhost:1455` for OpenAI) because those are the only ports their auth servers will redirect to.
+- **API key**: a small local web server starts on `127.0.0.1:<free-port>`, your browser opens a form, you paste your `sk-ant-...`, `sk-...`, or Kimi/Moonshot key. zot probes the provider once and saves it to `auth.json` if accepted.
+- **Subscription**: use your Claude Pro/Max, ChatGPT Plus/Pro, or Kimi Code subscription.
+  - Anthropic and OpenAI pin the browser callback to fixed provider-specific ports (`localhost:53692` for Anthropic, `localhost:1455` for OpenAI) because those are the only ports their auth servers will redirect to.
   - Anthropic uses the Claude Code OAuth flow. Messages go to `api.anthropic.com` with a bearer token and the Claude Code identity headers.
   - OpenAI uses the Codex CLI OAuth flow. Messages go to `chatgpt.com/backend-api/codex/responses` with the `chatgpt-account-id` extracted from the returned id_token.
+  - Kimi uses the Kimi Code device-code OAuth flow. zot opens the verification URL, polls until you approve it in the browser, then sends messages to `api.kimi.com/coding/v1` with the Kimi Code identity headers.
 
-> **Note on subscription login.** The OAuth client IDs used are the ones published in Anthropic's Claude Code CLI and OpenAI's Codex CLI. Reusing them from a third-party tool is against their terms of service and may be revoked at any time. Use it at your own risk; the API-key flow is the safe default.
+> **Note on subscription login.** The OAuth client IDs used are the ones published in Anthropic's Claude Code CLI, OpenAI's Codex CLI, and Kimi Code CLI. Reusing them from a third-party tool may be against their terms of service and may be revoked at any time. Use it at your own risk; the API-key flow is the safe default.
 
 ### Token refresh
 
@@ -125,7 +127,7 @@ zot --help
 
 | Flag | Description |
 |---|---|
-| `--provider anthropic\|openai` | Pick the provider. |
+| `--provider anthropic\|openai\|kimi\|ollama` | Pick the provider. |
 | `--model <id>` | Pick the model (see `--list-models`). |
 | `--api-key <key>` | Override the API key. |
 | `--base-url <url>` | Override the provider base URL (tests, self-hosted). |
@@ -179,7 +181,7 @@ Type `/` in the TUI to open the autocomplete popup. Available commands:
 |---|---|
 | `/help` | Show key bindings and commands. |
 | `/login` | Log in via API key or subscription (opens a dialog). |
-| `/logout [provider]` | Clear credentials for `anthropic`, `openai`, or all when omitted. |
+| `/logout [provider]` | Clear credentials for `anthropic`, `openai`, `kimi`, or all when omitted. `/logout kimi` also disables fallback to the official Kimi Code CLI token until you log in to Kimi through zot again. |
 | `/model` | Pick a model from a list (or `/model <id>` to set directly). |
 | `/sessions` | Resume a previous session for this directory. |
 | `/session` | Four ops on the current session: `export` to a portable `.zotsession` file, `import` one back in, `fork` from a past user message into a new branch, `tree` to switch between branches. Opens a picker without an argument; direct forms: `/session export [path]`, `/session import <path>`, `/session fork`, `/session tree`. Default export destination is `~/Downloads`. |
@@ -284,9 +286,40 @@ Place a `models.json` in `$ZOT_HOME` (macOS: `~/Library/Application Support/zot/
 
 Supported fields per model: `id` (required), `name`, `reasoning`, `contextWindow`, `maxTokens`, `baseUrl`, `priceInput`, `priceOutput`, `priceCacheRead`, `priceCacheWrite`.
 
-Provider keys are normalized: `openai-codex` and `openai-responses` map to `openai`, `anthropic-messages` maps to `anthropic`.
+Provider keys are normalized: `openai-codex` and `openai-responses` map to `openai`, `anthropic-messages` maps to `anthropic`, and `moonshot`, `moonshot-ai`, and `kimi-code` map to `kimi`.
 
 User-defined models show `source: user` in `--list-models` and take precedence over both the baked-in catalog and live-discovered models. Missing or invalid files are silently ignored.
+
+### Kimi Code
+
+zot has built-in Kimi support through Kimi's OpenAI-compatible chat API.
+
+```bash
+zot --provider kimi
+```
+
+By default this uses:
+
+- model: `kimi-for-coding`
+- base URL: `https://api.kimi.com/coding/v1`
+
+Credential lookup order for Kimi:
+
+1. `--api-key`
+2. `KIMI_API_KEY`
+3. `MOONSHOT_API_KEY`
+4. `$ZOT_HOME/auth.json`
+5. the official Kimi Code CLI token at `~/.kimi/credentials/kimi-code.json`, unless disabled by `/logout kimi`
+
+Use `/login` for either API-key login or Kimi Code subscription login. The subscription flow uses Kimi Code's device-code OAuth flow: zot opens the verification URL, waits for browser approval, stores the token in `auth.json`, and refreshes it automatically.
+
+For direct Moonshot API keys or a custom compatible endpoint:
+
+```bash
+zot --provider kimi --model kimi-k2-0905-preview --base-url https://api.moonshot.ai/v1 --api-key "$KIMI_API_KEY"
+```
+
+You can add additional Kimi/Moonshot model IDs to `models.json` under the `kimi` provider.
 
 ### Local models with ollama
 
@@ -495,7 +528,7 @@ internal/agent/tools/         read, write, edit, bash, sandbox
 internal/auth/                credential store, api-key probe, oauth, login server
 internal/core/                agent loop, sessions, cost tracking
 internal/extproto/            extension wire-format types
-internal/provider/            anthropic + openai streaming clients, model catalog
+internal/provider/            anthropic + openai-compatible streaming clients, model catalog
 internal/skills/              skill discovery, frontmatter parser, skill tool
 internal/tui/                 terminal raw-mode, input parser, editor, renderer, markdown, view
 pkg/zotcore/                  public Go SDK for embedding zot in-process
