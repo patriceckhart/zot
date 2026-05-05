@@ -113,7 +113,7 @@ func (a *extToolAdapter) NewExtensionTool(info ExtensionToolInfo) core.Tool {
 // dropped to keep the per-extension stream sane.
 func trimMessagesForResume(msgs []provider.Message, keepTail int) []provider.Message {
 	if keepTail <= 0 || len(msgs) <= keepTail {
-		return msgs
+		return provider.RepairOrphanedToolResults(msgs)
 	}
 	var out []provider.Message
 	start := len(msgs) - keepTail
@@ -128,7 +128,7 @@ func trimMessagesForResume(msgs []provider.Message, keepTail int) []provider.Mes
 		start++
 	}
 	out = append(out, msgs[start:]...)
-	return out
+	return provider.RepairOrphanedToolResults(out)
 }
 
 func fanoutAgentEvent(mgr *extensions.Manager, ev core.AgentEvent) {
@@ -586,7 +586,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return err
 		}
 		fullMsgCount := len(msgs)
-		msgs = trimMessagesForResume(msgs, 20)
+		msgs = trimMessagesForResume(msgs, 100)
 		persistMu.Lock()
 		// Flush any unsaved messages to the old session before swapping.
 		// Per-message persistence keeps sessBaselineMsgs current, so

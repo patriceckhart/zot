@@ -60,6 +60,55 @@ type ToolResultBlock struct {
 
 func (ToolResultBlock) isContent() {}
 
+// ReasoningBlock carries the assistant's chain-of-thought metadata so
+// providers that require it on follow-up requests (OpenAI Codex with
+// thinking enabled) can replay the same payload they emitted earlier.
+// Summary is the human-readable reasoning summary (may be empty); the
+// encrypted blob is opaque to zot. ID is the provider-issued reasoning
+// item id.
+type ReasoningBlock struct {
+	ID        string `json:"reasoning_id,omitempty"`
+	Summary   string `json:"summary,omitempty"`
+	Encrypted string `json:"encrypted_content,omitempty"`
+}
+
+func (ReasoningBlock) isContent() {}
+
+// RepairOrphanedToolResults removes tool_result content blocks (and
+// entire messages that become empty) when the matching tool_use ID
+// does not appear anywhere in the given messages. Resume tails,
+// compaction repair, and provider request builders all need this so
+// the upstream API never sees a tool_call_id with no corresponding
+// assistant tool_call earlier in the same request.
+func RepairOrphanedToolResults(msgs []Message) []Message {
+	useIDs := map[string]bool{}
+	for _, m := range msgs {
+		for _, c := range m.Content {
+			if tc, ok := c.(ToolCallBlock); ok {
+				useIDs[tc.ID] = true
+			}
+		}
+	}
+	out := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		var filtered []Content
+		for _, c := range m.Content {
+			if tr, ok := c.(ToolResultBlock); ok {
+				if !useIDs[tr.CallID] {
+					continue
+				}
+			}
+			filtered = append(filtered, c)
+		}
+		if len(filtered) > 0 {
+			copy := m
+			copy.Content = filtered
+			out = append(out, copy)
+		}
+	}
+	return out
+}
+
 // Message is a single turn in the conversation.
 type Message struct {
 	Role    Role              `json:"role"`

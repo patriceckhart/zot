@@ -20,6 +20,38 @@ func expandTabs(s string) string {
 	return strings.ReplaceAll(s, "\t", "    ")
 }
 
+// sanitizeUserBubbleLine prepares a single user-bubble row for safe
+// rendering. Pasted content from another terminal can contain
+// embedded ANSI escape sequences, control bytes, and tabs that
+// either reset the bubble's background colour or move the cursor in
+// ways that break the bubble's painted column.
+func sanitizeUserBubbleLine(s string) string {
+	if s == "" {
+		return s
+	}
+	s = expandTabs(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c == 0x1b { // ESC: drop CSI/OSC/DCS and simple escapes.
+			i = skipEscapeSequence(s, i)
+			continue
+		}
+		if c == '\r' || c == '\b' || c == 0x07 {
+			i++
+			continue
+		}
+		if c < 0x20 || c == 0x7f {
+			i++
+			continue
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
+}
+
 // pathFromToolArgs returns the "path" argument from a tool_call's
 // JSON arguments, or "" if the args aren't a JSON object or don't
 // include one. Used to pick a syntax language for rendering the
@@ -540,6 +572,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 			switch b := c.(type) {
 			case provider.TextBlock:
 				for _, l := range strings.Split(b.Text, "\n") {
+					l = sanitizeUserBubbleLine(l)
 					for _, w := range wrapLine(l, innerWidth, "") {
 						bubble = append(bubble, row(w))
 					}

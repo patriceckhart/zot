@@ -124,36 +124,7 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 // compaction when the tail preserves a tool_result but the tool_use
 // that produced it was summarized away.
 func repairOrphanedToolResults(msgs []provider.Message) []provider.Message {
-	// Collect all tool_use IDs present in the messages.
-	useIDs := map[string]bool{}
-	for _, m := range msgs {
-		for _, c := range m.Content {
-			if tc, ok := c.(provider.ToolCallBlock); ok {
-				useIDs[tc.ID] = true
-			}
-		}
-	}
-
-	// Filter out tool_result blocks referencing missing tool_use IDs.
-	out := make([]provider.Message, 0, len(msgs))
-	for _, m := range msgs {
-		var filtered []provider.Content
-		for _, c := range m.Content {
-			if tr, ok := c.(provider.ToolResultBlock); ok {
-				if !useIDs[tr.CallID] {
-					continue // orphaned
-				}
-			}
-			filtered = append(filtered, c)
-		}
-		if len(filtered) > 0 {
-			copy := m
-			copy.Content = filtered
-			out = append(out, copy)
-		}
-		// Drop messages that became empty after filtering.
-	}
-	return out
+	return provider.RepairOrphanedToolResults(msgs)
 }
 
 // serializeTranscript renders a list of provider.Message into a plain

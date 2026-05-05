@@ -594,12 +594,15 @@ func hydrateMessage(lineBytes []byte) (provider.Message, error) {
 	msg := provider.Message{Role: row.Message.Role, Time: row.Message.Time}
 	for _, raw := range row.Message.Content {
 		var head struct {
-			Text     string `json:"text"`
-			MimeType string `json:"mime_type"`
-			Data     []byte `json:"data"`
-			ID       string `json:"id"`
-			Name     string `json:"name"`
-			CallID   string `json:"call_id"`
+			Text        string `json:"text"`
+			MimeType    string `json:"mime_type"`
+			Data        []byte `json:"data"`
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			CallID      string `json:"call_id"`
+			ReasoningID string `json:"reasoning_id"`
+			Summary     string `json:"summary"`
+			Encrypted   string `json:"encrypted_content"`
 			// ToolCallBlock also has Arguments, ToolResultBlock has Content + IsError
 		}
 		if err := json.Unmarshal(raw, &head); err != nil {
@@ -607,6 +610,12 @@ func hydrateMessage(lineBytes []byte) (provider.Message, error) {
 		}
 		// Discriminate by presence of fields.
 		switch {
+		case head.ReasoningID != "" || head.Encrypted != "":
+			msg.Content = append(msg.Content, provider.ReasoningBlock{
+				ID:        head.ReasoningID,
+				Summary:   head.Summary,
+				Encrypted: head.Encrypted,
+			})
 		case head.Name != "" && head.ID != "":
 			var tc struct {
 				ID        string          `json:"id"`

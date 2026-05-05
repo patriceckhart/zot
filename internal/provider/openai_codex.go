@@ -106,6 +106,24 @@ type codexFunctionCallOutput struct {
 	Output string `json:"output"` // string (or ResponseFunctionCallOutputItemList for images; v1 only uses string)
 }
 
+// codexReasoningItem mirrors the Responses API "reasoning" output item.
+// We capture it on incoming streams and replay it verbatim on follow-up
+// requests: the API rejects assistant tool-call replays without it when
+// thinking is enabled.
+type codexReasoningItem struct {
+	Type             string `json:"type"` // "reasoning"
+	ID               string `json:"id,omitempty"`
+	EncryptedContent string `json:"encrypted_content,omitempty"`
+	// Summary is required by the Responses API even when no summary text
+	// was streamed; encode an empty array rather than omitting the field.
+	Summary []codexReasoningSummary `json:"summary"`
+}
+
+type codexReasoningSummary struct {
+	Type string `json:"type"` // "summary_text"
+	Text string `json:"text"`
+}
+
 type codexTool struct {
 	Type        string          `json:"type"` // "function"
 	Name        string          `json:"name"`
@@ -159,6 +177,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 	}
 
 	msgIdx := 0
+	req.Messages = RepairOrphanedToolResults(req.Messages)
 	for _, msg := range req.Messages {
 		switch msg.Role {
 		case RoleUser:
@@ -179,10 +198,25 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 			}
 			body.Input = append(body.Input, codexInputMessage{Role: "user", Content: content})
 		case RoleAssistant:
-			// Emit one output_message per text block and one function_call per tool call,
-			// preserving the order so model sees the same interleaving we captured.
+			// Emit one output_message per text block, one function_call per
+			// tool call, and one reasoning item per ReasoningBlock,
+			// preserving the order so the model sees the same interleaving
+			// we captured. The reasoning replay is what keeps OpenAI
+			// Codex from rejecting follow-up tool calls with
+			// "thinking is enabled but reasoning_content is missing".
 			for _, c := range msg.Content {
 				switch v := c.(type) {
+				case ReasoningBlock:
+					item := codexReasoningItem{
+						Type:             "reasoning",
+						ID:               v.ID,
+						EncryptedContent: v.Encrypted,
+						Summary:          []codexReasoningSummary{},
+					}
+					if v.Summary != "" {
+						item.Summary = []codexReasoningSummary{{Type: "summary_text", Text: v.Summary}}
+					}
+					body.Input = append(body.Input, item)
 				case TextBlock:
 					if v.Text == "" {
 						continue
@@ -199,7 +233,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 					})
 				case ToolCallBlock:
 					args := string(v.Arguments)
-					if args == "" {
+					if args == "" || !json.Valid([]byte(args)) {
 						args = "{}"
 					}
 					callID, _ := splitCallID(v.ID)
@@ -297,11 +331,14 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 	// item is either a "message" (text) or a "function_call". We track
 	// the in-flight item by its index.
 	type itemState struct {
-		kind      string // "message" | "function_call"
+		kind      string // "message" | "function_call" | "reasoning"
 		callID    string
 		name      string
 		argsBuf   strings.Builder
 		textBuf   strings.Builder
+		summary   strings.Builder
+		rawID     string
+		encrypted string
 		announced bool
 	}
 	var (
@@ -323,11 +360,20 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 				}
 			case "function_call":
 				args := it.argsBuf.String()
-				if args == "" {
+				if args == "" || !json.Valid([]byte(args)) {
 					args = "{}"
 				}
 				content = append(content, ToolCallBlock{
 					ID: it.callID, Name: it.name, Arguments: json.RawMessage(args),
+				})
+			case "reasoning":
+				if it.encrypted == "" && it.summary.Len() == 0 && it.rawID == "" {
+					continue
+				}
+				content = append(content, ReasoningBlock{
+					ID:        it.rawID,
+					Summary:   it.summary.String(),
+					Encrypted: it.encrypted,
 				})
 			}
 		}
@@ -364,10 +410,11 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 				var p struct {
 					OutputIndex int `json:"output_index"`
 					Item        struct {
-						Type   string `json:"type"` // "message" | "function_call"
-						ID     string `json:"id"`
-						CallID string `json:"call_id"`
-						Name   string `json:"name"`
+						Type             string `json:"type"` // "message" | "function_call" | "reasoning"
+						ID               string `json:"id"`
+						CallID           string `json:"call_id"`
+						Name             string `json:"name"`
+						EncryptedContent string `json:"encrypted_content"`
 					} `json:"item"`
 				}
 				_ = json.Unmarshal([]byte(ev.Data), &p)
@@ -383,6 +430,10 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 						it.announced = true
 						out <- EventToolStart{ID: it.callID, Name: it.name}
 					}
+				case "reasoning":
+					it.kind = "reasoning"
+					it.rawID = p.Item.ID
+					it.encrypted = p.Item.EncryptedContent
 				default:
 					continue
 				}
@@ -398,6 +449,17 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 					it.textBuf.WriteString(p.Delta)
 					out <- EventTextDelta{Delta: p.Delta}
 				}
+			case "response.reasoning_summary_text.delta":
+				var p struct {
+					OutputIndex int    `json:"output_index"`
+					Delta       string `json:"delta"`
+				}
+				_ = json.Unmarshal([]byte(ev.Data), &p)
+				if it, ok := items[p.OutputIndex]; ok && it.kind == "reasoning" {
+					it.summary.WriteString(p.Delta)
+				}
+			case "response.reasoning_summary_text.done":
+				// summary text already accumulated via deltas
 			case "response.function_call_arguments.delta":
 				var p struct {
 					OutputIndex int    `json:"output_index"`
@@ -411,10 +473,38 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 			case "response.output_item.done":
 				var p struct {
 					OutputIndex int `json:"output_index"`
+					Item        struct {
+						Type             string `json:"type"`
+						ID               string `json:"id"`
+						EncryptedContent string `json:"encrypted_content"`
+						Summary          []struct {
+							Type string `json:"type"`
+							Text string `json:"text"`
+						} `json:"summary"`
+					} `json:"item"`
 				}
 				_ = json.Unmarshal([]byte(ev.Data), &p)
-				if it, ok := items[p.OutputIndex]; ok && it.kind == "function_call" {
-					out <- EventToolEnd{ID: it.callID}
+				if it, ok := items[p.OutputIndex]; ok {
+					switch it.kind {
+					case "function_call":
+						out <- EventToolEnd{ID: it.callID}
+					case "reasoning":
+						if p.Item.EncryptedContent != "" {
+							it.encrypted = p.Item.EncryptedContent
+						}
+						if it.rawID == "" && p.Item.ID != "" {
+							it.rawID = p.Item.ID
+						}
+						for _, s := range p.Item.Summary {
+							if s.Text == "" {
+								continue
+							}
+							if it.summary.Len() > 0 {
+								it.summary.WriteString("\n")
+							}
+							it.summary.WriteString(s.Text)
+						}
+					}
 				}
 			case "response.completed", "response.done":
 				var p struct {

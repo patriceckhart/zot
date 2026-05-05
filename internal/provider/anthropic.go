@@ -262,6 +262,7 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 	// emitting them separately keeps each message bit-stable across
 	// turns, so the cache prefix matches for the entire history up
 	// to the newest block.
+	req.Messages = RepairOrphanedToolResults(req.Messages)
 	for _, msg := range req.Messages {
 		renameTools := c.oauthTok != ""
 		switch msg.Role {
@@ -363,7 +364,7 @@ func convertAnthContent(blocks []Content, renameTools bool) []interface{} {
 			})
 		case ToolCallBlock:
 			args := v.Arguments
-			if len(args) == 0 {
+			if len(args) == 0 || !json.Valid(args) {
 				args = json.RawMessage("{}")
 			}
 			name := v.Name

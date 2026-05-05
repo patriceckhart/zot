@@ -302,16 +302,27 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 			w.WriteString(line)
 			w.WriteString("\r\n")
 		}
-		w.WriteString(SeqSaveCursor)
 		writeBlock(&w, bottomFrame)
 		r.logInit = true
 	} else {
-		// Return to the saved top-of-bottom-band anchor instead of relying
-		// on relative cursor movement from the last exposed editor cursor.
-		// If the terminal naturally scrolled between frames, save/restore is
-		// less prone to drift that leaves duplicated transcript blocks until
-		// ctrl+l forces a clear repaint.
-		w.WriteString(SeqRestoreCursor)
+		// Walk back up to the top of the previous bottom block. The cursor
+		// was last positioned somewhere inside the bottom band by the
+		// previous Draw (final ShowCursor below); we don't trust the
+		// terminal's saved cursor across frames because terminal-driven
+		// scrolling would invalidate it. Instead, rebuild the relative
+		// position from r.cursorRow inside the previous bottomFrame.
+		prevBottomRows := len(r.logBottom)
+		prevCursorRow := r.cursorRow
+		if prevCursorRow < 0 || prevCursorRow >= prevBottomRows {
+			prevCursorRow = prevBottomRows - 1
+			if prevCursorRow < 0 {
+				prevCursorRow = 0
+			}
+		}
+		up := prevCursorRow
+		if prevBottomRows > 0 && up > 0 {
+			w.WriteString("\x1b[" + itoa(up) + "A")
+		}
 		w.WriteString("\r")
 
 		prefix := len(r.logChat) <= len(chatFrame)
@@ -324,10 +335,9 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 			}
 		}
 		if prefix {
-			// Erase old bottom (and anything below the saved anchor), then
-			// append only genuinely new chat rows. They become real terminal
-			// scrollback, and inline image escapes are emitted once here — not
-			// on every keystroke.
+			// Erase old bottom band entirely, then append only genuinely new
+			// chat rows above the new bottom band. New chat rows become real
+			// terminal scrollback; inline image escapes are emitted once here.
 			w.WriteString(SeqEraseToEnd)
 			for _, line := range chatFrame[len(r.logChat):] {
 				w.WriteString("\x1b[0m")
@@ -354,7 +364,6 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 				w.WriteString("\r\n")
 			}
 		}
-		w.WriteString(SeqSaveCursor)
 		writeBlock(&w, bottomFrame)
 	}
 
