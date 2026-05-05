@@ -1007,7 +1007,6 @@ func (i *Interactive) redraw() {
 	bottom = append(bottom, statusLines...)
 	bottom = append(bottom, "")
 	bottom = append(bottom, edLines...)
-	bottom = append(bottom, "")
 
 	_, rows := i.cfg.Terminal.Size()
 	chatRows := rows - len(bottom)

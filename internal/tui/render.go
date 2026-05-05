@@ -33,12 +33,18 @@ type Renderer struct {
 	// enabled via ZOT_INLINE_IMAGES; defaults to false.
 	prevHadImage bool
 
-	// Main-screen flow renderer state. logChat is the full chat buffer
-	// already emitted into terminal scrollback. logBottom is the
-	// editable/status block currently drawn after the chat.
-	logChat   []string
-	logBottom []string
-	logInit   bool
+	// Main-screen flow renderer state. logLines is the full logical
+	// buffer (chat + live bottom band) from the previous DrawLog call.
+	// logViewportTop/logHardwareRow track where that logical buffer sits
+	// in the terminal's visible viewport so we can diff safely, and bail
+	// out to clear+replay when the diff would touch rows that are no
+	// longer addressable.
+	logChat        []string
+	logBottom      []string
+	logLines       []string
+	logViewportTop int
+	logHardwareRow int
+	logInit        bool
 }
 
 // NewRenderer returns a renderer that writes to out.
@@ -59,6 +65,9 @@ func (r *Renderer) Resize(cols, rows int) {
 		r.prev = nil
 		r.logChat = nil
 		r.logBottom = nil
+		r.logLines = nil
+		r.logViewportTop = 0
+		r.logHardwareRow = 0
 		r.logInit = false
 		if r.out != nil {
 			_, _ = io.WriteString(r.out, SeqClearScreen)
@@ -75,6 +84,9 @@ func (r *Renderer) Clear() {
 	r.prev = nil
 	r.logChat = nil
 	r.logBottom = nil
+	r.logLines = nil
+	r.logViewportTop = 0
+	r.logHardwareRow = 0
 	r.logInit = false
 	_, _ = io.WriteString(r.out, SeqDeleteKittyImages+SeqClearScreen+SeqClearScrollback+MoveTo(1, 1))
 }
@@ -84,6 +96,7 @@ func (r *Renderer) Clear() {
 // visible full-screen flash would be too distracting.
 func (r *Renderer) Invalidate() {
 	r.prev = nil
+	r.logLines = nil
 }
 
 // Draw updates the terminal so that the visible frame ends with the
@@ -285,95 +298,96 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 		bottomFrame[i] = truncateToWidth(line, r.cols)
 	}
 
+	// Always reserve one real row below the editor/status band. This is
+	// renderer-owned (not a best-effort trailing blank in the caller's
+	// bottom block), so the logical-buffer diff keeps it visible and cursor
+	// placement remains relative to the editor itself.
+	const bottomMarginRows = 1
+	lines := make([]string, 0, len(chatFrame)+len(bottomFrame)+bottomMarginRows)
+	lines = append(lines, chatFrame...)
+	lines = append(lines, bottomFrame...)
+	for range bottomMarginRows {
+		lines = append(lines, "")
+	}
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+
+	cursorTargetRow := -1
+	if cursorBottomRow >= 0 && cursorBottomRow < len(bottomFrame) {
+		cursorTargetRow = len(chatFrame) + cursorBottomRow
+	}
+
 	var w strings.Builder
 	w.WriteString(SeqSynchronizedOn)
 	w.WriteString(SeqHideCursor)
 
-	if !r.logInit {
-		// First paint: start at top-left and print the transcript followed
-		// immediately by the live input/status block. No bottom padding,
-		// no footer layout.
-		w.WriteString(SeqClearScreen)
-		w.WriteString(SeqClearScrollback)
-		w.WriteString(MoveTo(1, 1))
-		for _, line := range chatFrame {
-			w.WriteString("\x1b[0m")
-			w.WriteString(SeqClearLine)
-			w.WriteString(line)
-			w.WriteString("\r\n")
-		}
-		writeBlock(&w, bottomFrame)
-		r.logInit = true
-	} else {
-		// Walk back up to the top of the previous bottom block. The cursor
-		// was last positioned somewhere inside the bottom band by the
-		// previous Draw (final ShowCursor below); we don't trust the
-		// terminal's saved cursor across frames because terminal-driven
-		// scrolling would invalidate it. Instead, rebuild the relative
-		// position from r.cursorRow inside the previous bottomFrame.
-		prevBottomRows := len(r.logBottom)
-		prevCursorRow := r.cursorRow
-		if prevCursorRow < 0 || prevCursorRow >= prevBottomRows {
-			prevCursorRow = prevBottomRows - 1
-			if prevCursorRow < 0 {
-				prevCursorRow = 0
-			}
-		}
-		up := prevCursorRow
-		if prevBottomRows > 0 && up > 0 {
-			w.WriteString("\x1b[" + itoa(up) + "A")
-		}
-		w.WriteString("\r")
-
-		prefix := len(r.logChat) <= len(chatFrame)
-		if prefix {
-			for i := range r.logChat {
-				if r.logChat[i] != chatFrame[i] {
-					prefix = false
-					break
-				}
-			}
-		}
-		if prefix {
-			// Erase old bottom band entirely, then append only genuinely new
-			// chat rows above the new bottom band. New chat rows become real
-			// terminal scrollback; inline image escapes are emitted once here.
-			w.WriteString(SeqEraseToEnd)
-			for _, line := range chatFrame[len(r.logChat):] {
-				w.WriteString("\x1b[0m")
-				w.WriteString(SeqClearLine)
-				w.WriteString(line)
-				w.WriteString("\r\n")
-			}
-		} else {
-			// Transcript changed in place (streaming text grows within the
-			// last assistant block, markdown finalises/reflows, ctrl+o
-			// expand/collapse, /clear, session load). In main-screen flow
-			// mode old chat lives in terminal scrollback; trying to move up
-			// and rewrite it is unreliable, especially once images or native
-			// scrolling are involved. Use the safe path: clear visible screen
-			// + scrollback, then replay the current transcript once.
+	writeFull := func(clear bool) {
+		if clear {
 			w.WriteString(SeqDeleteKittyImages)
 			w.WriteString(SeqClearScreen)
 			w.WriteString(SeqClearScrollback)
 			w.WriteString(MoveTo(1, 1))
-			for _, line := range chatFrame {
-				w.WriteString("\x1b[0m")
-				w.WriteString(SeqClearLine)
-				w.WriteString(line)
+		}
+		for idx, line := range lines {
+			if idx > 0 {
 				w.WriteString("\r\n")
 			}
+			w.WriteString("\x1b[0m")
+			w.WriteString(SeqClearLine)
+			w.WriteString(line)
 		}
-		writeBlock(&w, bottomFrame)
+		r.logHardwareRow = len(lines) - 1
+		r.logViewportTop = len(lines) - r.rows
+		if r.logViewportTop < 0 {
+			r.logViewportTop = 0
+		}
 	}
 
-	// writeBlock leaves the cursor on the last bottom row. Move to the
-	// requested cursor position inside that block.
-	if cursorBottomRow >= 0 && cursorBottomRow < len(bottomFrame) {
-		up := (len(bottomFrame) - 1) - cursorBottomRow
-		if up > 0 {
-			w.WriteString("\x1b[" + itoa(up) + "A")
+	moveToLogicalRow := func(targetRow int) {
+		if targetRow < 0 {
+			targetRow = 0
 		}
+		if targetRow >= len(lines) {
+			targetRow = len(lines) - 1
+		}
+		viewportBottom := r.logViewportTop + r.rows - 1
+		if targetRow > viewportBottom {
+			currentScreenRow := r.logHardwareRow - r.logViewportTop
+			if currentScreenRow < 0 {
+				currentScreenRow = 0
+			}
+			if currentScreenRow >= r.rows {
+				currentScreenRow = r.rows - 1
+			}
+			moveToBottom := r.rows - 1 - currentScreenRow
+			if moveToBottom > 0 {
+				w.WriteString("\x1b[" + itoa(moveToBottom) + "B")
+			}
+			scroll := targetRow - viewportBottom
+			for s := 0; s < scroll; s++ {
+				w.WriteString("\r\n")
+			}
+			r.logViewportTop += scroll
+			r.logHardwareRow = targetRow
+			return
+		}
+		currentScreenRow := r.logHardwareRow - r.logViewportTop
+		targetScreenRow := targetRow - r.logViewportTop
+		lineDiff := targetScreenRow - currentScreenRow
+		if lineDiff > 0 {
+			w.WriteString("\x1b[" + itoa(lineDiff) + "B")
+		} else if lineDiff < 0 {
+			w.WriteString("\x1b[" + itoa(-lineDiff) + "A")
+		}
+		r.logHardwareRow = targetRow
+	}
+
+	positionCursor := func() {
+		if cursorTargetRow < 0 || cursorTargetRow >= len(lines) {
+			return
+		}
+		moveToLogicalRow(cursorTargetRow)
 		w.WriteString("\r")
 		if cursorCol > 0 {
 			w.WriteString("\x1b[" + itoa(cursorCol) + "C")
@@ -381,11 +395,129 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 		w.WriteString(SeqShowCursor)
 	}
 
+	full := !r.logInit || len(r.logLines) == 0
+	if full {
+		writeFull(true)
+		r.logInit = true
+	} else {
+		firstChanged := -1
+		lastChanged := -1
+		maxLines := len(lines)
+		if len(r.logLines) > maxLines {
+			maxLines = len(r.logLines)
+		}
+		for idx := 0; idx < maxLines; idx++ {
+			oldLine := ""
+			if idx < len(r.logLines) {
+				oldLine = r.logLines[idx]
+			}
+			newLine := ""
+			if idx < len(lines) {
+				newLine = lines[idx]
+			}
+			if oldLine != newLine {
+				if firstChanged == -1 {
+					firstChanged = idx
+				}
+				lastChanged = idx
+			}
+		}
+
+		if firstChanged == -1 {
+			// No content changes; the final cursor positioning below may still
+			// move the hardware cursor if the editor cursor changed.
+		} else if len(lines) < len(r.logLines) || firstChanged < r.logViewportTop {
+			// Shrinks and changes above the visible viewport cannot be safely
+			// patched in terminal scrollback. Replay the current logical buffer
+			// instead of risking stale duplicated rows.
+			writeFull(true)
+		} else {
+			prevViewportTop := r.logViewportTop
+			viewportTop := prevViewportTop
+			hardwareRow := r.logHardwareRow
+			prevViewportBottom := prevViewportTop + r.rows - 1
+			appendStart := len(lines) > len(r.logLines) && firstChanged == len(r.logLines) && firstChanged > 0
+			moveTarget := firstChanged
+			if appendStart {
+				moveTarget = firstChanged - 1
+			}
+
+			if moveTarget > prevViewportBottom {
+				currentScreenRow := hardwareRow - prevViewportTop
+				if currentScreenRow < 0 {
+					currentScreenRow = 0
+				}
+				if currentScreenRow >= r.rows {
+					currentScreenRow = r.rows - 1
+				}
+				moveToBottom := r.rows - 1 - currentScreenRow
+				if moveToBottom > 0 {
+					w.WriteString("\x1b[" + itoa(moveToBottom) + "B")
+				}
+				scroll := moveTarget - prevViewportBottom
+				for s := 0; s < scroll; s++ {
+					w.WriteString("\r\n")
+				}
+				prevViewportTop += scroll
+				viewportTop += scroll
+				hardwareRow = moveTarget
+			}
+
+			currentScreenRow := hardwareRow - prevViewportTop
+			targetScreenRow := moveTarget - viewportTop
+			lineDiff := targetScreenRow - currentScreenRow
+			if lineDiff > 0 {
+				w.WriteString("\x1b[" + itoa(lineDiff) + "B")
+			} else if lineDiff < 0 {
+				w.WriteString("\x1b[" + itoa(-lineDiff) + "A")
+			}
+			if appendStart {
+				w.WriteString("\r\n")
+			} else {
+				w.WriteString("\r")
+			}
+
+			renderEnd := lastChanged
+			if renderEnd >= len(lines) {
+				renderEnd = len(lines) - 1
+			}
+			for idx := firstChanged; idx <= renderEnd; idx++ {
+				if idx > firstChanged {
+					w.WriteString("\r\n")
+				}
+				w.WriteString("\x1b[0m")
+				w.WriteString(SeqClearLine)
+				w.WriteString(lines[idx])
+			}
+			r.logHardwareRow = renderEnd
+			r.logViewportTop = viewportTop
+			if minTop := r.logHardwareRow - r.rows + 1; minTop > r.logViewportTop {
+				r.logViewportTop = minTop
+			}
+			if r.logViewportTop < 0 {
+				r.logViewportTop = 0
+			}
+		}
+	}
+
+	// Re-anchor the terminal viewport at the true end of the logical
+	// buffer on every frame. During busy turns most redraws only mutate
+	// spinner/live rows above the editor; without touching the final margin
+	// row, the terminal can visually lose the bottom padding even though it
+	// still exists in r.logLines.
+	if len(lines) > 0 {
+		moveToLogicalRow(len(lines) - 1)
+		w.WriteString("\r")
+		w.WriteString("\x1b[0m")
+		w.WriteString(SeqClearLine)
+	}
+	positionCursor()
 	w.WriteString(SeqSynchronizedOff)
 	_, _ = io.WriteString(r.out, w.String())
 
 	r.logChat = append(r.logChat[:0], chatFrame...)
 	r.logBottom = append(r.logBottom[:0], bottomFrame...)
+	r.logLines = append(r.logLines[:0], lines...)
 	r.cursorRow = cursorBottomRow
 	r.cursorCol = cursorCol
 }
