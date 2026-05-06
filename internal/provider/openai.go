@@ -195,6 +195,9 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 			for _, b := range msg.Content {
 				switch v := b.(type) {
 				case TextBlock:
+					if strings.TrimSpace(v.Text) == "" {
+						continue
+					}
 					if text.Len() > 0 {
 						text.WriteString("\n")
 					}
@@ -226,6 +229,14 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 			}
 			if reasoning.Len() > 0 && len(am.ToolCalls) > 0 {
 				am.ReasoningContent = reasoning.String()
+			}
+			// Kimi rejects assistant messages with neither visible text nor
+			// tool calls ("assistant must not be empty"). This can happen when
+			// a previous stream produced only reasoning_content, which zot keeps
+			// internally for provider replay but cannot send back as standalone
+			// assistant content on OpenAI-compatible chat-completions APIs.
+			if am.Content == nil && len(am.ToolCalls) == 0 {
+				continue
 			}
 			out.Messages = append(out.Messages, am)
 		case RoleTool:

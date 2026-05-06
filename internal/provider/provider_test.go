@@ -121,6 +121,29 @@ func TestAnthropicStreamHappyPath(t *testing.T) {
 	}
 }
 
+func TestOpenAIBuildRequestSkipsReasoningOnlyAssistantMessages(t *testing.T) {
+	c := NewKimi("token", "").(*openaiClient)
+	wire, err := c.buildRequest(Request{
+		Model: "kimi-for-coding",
+		Messages: []Message{
+			{Role: RoleUser, Content: []Content{TextBlock{Text: "first"}}},
+			{Role: RoleAssistant, Content: []Content{ReasoningBlock{Summary: "thinking only"}}},
+			{Role: RoleUser, Content: []Content{TextBlock{Text: "second"}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, msg := range wire.Messages {
+		if msg.Role == "assistant" && msg.Content == nil && len(msg.ToolCalls) == 0 {
+			t.Fatalf("message %d is empty assistant: %+v", i, msg)
+		}
+	}
+	if got := len(wire.Messages); got != 2 {
+		t.Fatalf("messages=%d want 2 after skipping reasoning-only assistant", got)
+	}
+}
+
 func TestOpenAIStreamHappyPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")
