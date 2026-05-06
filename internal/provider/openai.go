@@ -356,12 +356,12 @@ func (c *openaiClient) Stream(ctx context.Context, req Request) (<-chan Event, e
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("openai: %w", err)
+		return nil, fmt.Errorf("%s: %w", c.Name(), err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("openai: http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return nil, fmt.Errorf("%s: http %d: %s", c.Name(), resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 
 	out := make(chan Event, 16)

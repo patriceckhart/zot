@@ -357,7 +357,11 @@ func (r Resolved) NewClient() provider.Client {
 	case "ollama":
 		return provider.NewOpenAI(r.Credential, r.BaseURL)
 	case "kimi":
-		return provider.NewKimiWithHeaders(r.Credential, r.BaseURL, kimiCodeHeaders())
+		inner := provider.NewKimiWithHeaders(r.Credential, r.BaseURL, kimiCodeHeaders())
+		if r.AuthMethod == "oauth" {
+			return r.wrapWithRefresh(inner)
+		}
+		return inner
 	case "openai":
 		if r.AuthMethod == "oauth" {
 			inner := provider.NewOpenAICodex(r.Credential, r.AccountID, r.BaseURL)
