@@ -92,7 +92,7 @@ try {
 
   Msg "verifying checksum"
   $checksums = Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $checksumUrl | Select-Object -ExpandProperty Content
-  $expected  = ($checksums -split "`n" | Where-Object { $_ -match [regex]::Escape($archive) + "$" } | Select-Object -First 1)
+  $expected  = ($checksums -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match ("\s" + [regex]::Escape($archive) + "$") } | Select-Object -First 1)
   if (-not $expected) { Die "no checksum for $archive in checksums.txt" }
   $expectedHash = ($expected -split "\s+")[0]
 
