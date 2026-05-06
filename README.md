@@ -262,6 +262,18 @@ Every interactive or print/json run (unless `--no-session`) writes a JSONL trans
 
 The context meter in the status line uses the model's advertised context window to show how much of it your last turn consumed.
 
+### Model fallback (rescue)
+
+When a turn fails because of a recoverable provider error — expired token (`401`), permission denied (`403`), rate limit (`429`), provider outage (`502`/`503`/`504`), or a transient network failure — zot opens a **rescue** picker over the chat instead of just painting a red banner.
+
+The picker is the same vertical list / fuzzy filter UI as `/model`, but it only shows models from providers you're currently logged in to (env vars, `auth.json`, Kimi CLI fallback, ollama). The failed model is excluded. Press `↑`/`↓` to choose, `enter` to retry the **same prompt** on the new model, `esc` to dismiss.
+
+Before the actual provider request fires, the OpenAI / Anthropic / Kimi / OpenAI-Codex clients also do up to two silent retries with short backoff (250ms, 750ms) on `502`/`503`/`504` and connection-reset / EOF-before-headers errors. Most edge-proxy blips disappear without you ever seeing the rescue picker.
+
+A rescue retry always **drops launch-time `--api-key` and `--base-url`** before rebuilding the agent. Those overrides are usually the reason the rescue triggered (bad key, typo'd base URL, corporate gateway only valid for the originally-picked provider), so the retry re-resolves credentials from env vars / `auth.json` / provider defaults instead. The status bar tags the swap as `rescue retry: switched to <provider> / <model> (ignored --api-key / --base-url)` so the behavior is visible. Use `/model` if you want overrides to stick.
+
+No configuration is required — the candidate list is built dynamically from your active credentials. Bad-request / context-length / serialization errors are NOT routed to the rescue picker, because switching models won't fix them; those still surface as a normal error.
+
 ### Custom models
 
 Place a `models.json` in `$ZOT_HOME` (macOS: `~/Library/Application Support/zot/`, Linux: `~/.local/state/zot/`) to add models that aren't in the baked-in catalog or to override existing entries:

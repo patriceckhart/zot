@@ -63,6 +63,15 @@ type InteractiveConfig struct {
 	// If providerOverride is empty, the current provider is kept.
 	BuildAgentFor func(providerOverride, modelOverride string) (*core.Agent, string, string, error)
 
+	// BuildAgentForRescue rebuilds the agent for the rescue picker that
+	// opens after a recoverable provider failure. Unlike BuildAgentFor,
+	// this builder drops launch-time --api-key and --base-url overrides
+	// because those are usually the reason rescue triggered. Re-resolves
+	// credentials from env vars / auth.json / provider defaults so the
+	// retry has a real chance of succeeding. Falls back to BuildAgentFor
+	// when nil so embedders that don't wire it keep working.
+	BuildAgentForRescue func(providerOverride, modelOverride string) (*core.Agent, string, string, error)
+
 	// LoggedInProviders returns the list of provider names that
 	// currently have credentials. Used by /model to filter the
 	// picker to only show reachable models.
@@ -268,6 +277,7 @@ type Interactive struct {
 
 	dialog            *loginDialog
 	modelDialog       *modelDialog
+	rescueDialog      *rescueDialog
 	sessionDialog     *sessionDialog
 	jumpDialog        *jumpDialog
 	btwDialog         *btwDialog
@@ -323,6 +333,13 @@ type Interactive struct {
 	// on a background goroutine. Keeping this off the input goroutine
 	// lets ctrl+c/exit remain responsive for very large JSONL sessions.
 	sessionLoading bool
+
+	// pendingRescuePrompt / pendingRescueImages stash the prompt and
+	// images that should be re-run after the user picks a model in
+	// the rescue dialog. Cleared once applyRescueSelection consumes
+	// them (or when the dialog is dismissed via esc).
+	pendingRescuePrompt string
+	pendingRescueImages []provider.ImageBlock
 }
 
 // welcomeVersionDuration is how long the welcome banner shows the
@@ -347,6 +364,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		dirty:             make(chan struct{}, 8),
 		dialog:            newLoginDialog(),
 		modelDialog:       newModelDialog(),
+		rescueDialog:      newRescueDialog(),
 		sessionDialog:     newSessionDialog(),
 		jumpDialog:        newJumpDialog(),
 		btwDialog:         newBtwDialog(),
@@ -852,6 +870,8 @@ func (i *Interactive) redraw() {
 		dialog = i.dialog.Render(i.cfg.Theme, cols)
 	case i.modelDialog.Active():
 		dialog = i.modelDialog.Render(i.cfg.Theme, cols)
+	case i.rescueDialog.Active():
+		dialog = i.rescueDialog.Render(i.cfg.Theme, cols)
 	case i.sessionDialog.Active():
 		// Reserve rows for the editor (~3), status line (1-2),
 		// dialog chrome (header + hint + rule + indicators, ~5),
@@ -1434,6 +1454,19 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if act.Select {
 			i.applyModelSelection(act.Provider, act.Model)
 		}
+		return false
+	}
+	if i.rescueDialog.Active() {
+		if k.Kind == tui.KeyCtrlC {
+			i.rescueDialog.Close()
+			i.invalidate()
+			return false
+		}
+		act := i.rescueDialog.HandleKey(k)
+		if act.Select {
+			i.applyRescueSelection(act.Provider, act.Model, act.Prompt)
+		}
+		i.invalidate()
 		return false
 	}
 	if i.sessionDialog.Active() {
@@ -2835,6 +2868,25 @@ func (i *Interactive) scrollToLastTurn(msgs []provider.Message) {
 }
 
 func (i *Interactive) applyModelSelection(prov, model string) {
+	i.swapModel(prov, model, i.cfg.BuildAgentFor, false)
+}
+
+// applyRescueModelSelection is like applyModelSelection but routes
+// through BuildAgentForRescue so launch-time --api-key / --base-url
+// overrides are dropped before the new agent is built. Falls back to
+// the regular builder when the host doesn't wire a rescue builder.
+func (i *Interactive) applyRescueModelSelection(prov, model string) {
+	builder := i.cfg.BuildAgentForRescue
+	if builder == nil {
+		builder = i.cfg.BuildAgentFor
+	}
+	i.swapModel(prov, model, builder, true)
+}
+
+// swapModel applies a /model selection (or a rescue selection) using
+// the supplied builder. rescue=true tags the success message so the
+// user can see that launch-time overrides were ignored.
+func (i *Interactive) swapModel(prov, model string, builder func(string, string) (*core.Agent, string, string, error), rescue bool) {
 	if model == "" {
 		return
 	}
@@ -2845,8 +2897,11 @@ func (i *Interactive) applyModelSelection(prov, model string) {
 		i.mu.Unlock()
 		return
 	}
-	// Same provider? Just swap the model on the existing agent.
-	if i.agent != nil && m.Provider == i.cfg.Provider {
+	// Same provider AND not a rescue retry: just swap the model on
+	// the existing agent — no rebuild needed because the underlying
+	// client is reusable. Rescue retries always rebuild so a stale
+	// auth header / base URL can't carry over.
+	if !rescue && i.agent != nil && m.Provider == i.cfg.Provider {
 		i.mu.Lock()
 		i.cfg.Model = m.ID
 		i.agent.Model = m.ID
@@ -2858,8 +2913,7 @@ func (i *Interactive) applyModelSelection(prov, model string) {
 		}
 		return
 	}
-	// Different provider: rebuild agent (needs credentials for target provider).
-	if i.cfg.BuildAgentFor == nil {
+	if builder == nil {
 		i.mu.Lock()
 		i.statusErr = "cannot switch provider: no builder configured"
 		i.mu.Unlock()
@@ -2876,7 +2930,7 @@ func (i *Interactive) applyModelSelection(prov, model string) {
 		carryCost = i.agent.Cost()
 	}
 
-	ag, p, md, err := i.cfg.BuildAgentFor(m.Provider, m.ID)
+	ag, p, md, err := builder(m.Provider, m.ID)
 	if err != nil {
 		i.mu.Lock()
 		i.statusErr = err.Error()
@@ -2899,7 +2953,11 @@ func (i *Interactive) applyModelSelection(prov, model string) {
 	i.agent = ag
 	i.cfg.Provider = p
 	i.cfg.Model = md
-	i.statusOK = "switched to " + p + " / " + md
+	if rescue {
+		i.statusOK = "rescue retry: switched to " + p + " / " + md + " (ignored --api-key / --base-url)"
+	} else {
+		i.statusOK = "switched to " + p + " / " + md
+	}
 	i.statusErr = ""
 	// Render cache keys are width+content based, so the new agent's
 	// identical messages will reuse the existing entries. Nothing
@@ -3113,6 +3171,33 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 		if err != nil && ctx.Err() == nil {
 			i.statusErr = err.Error()
 		}
+		// Decide whether to offer a model rescue picker for recoverable
+		// provider failures (auth/rate/temporary). The picker opens after
+		// the mutex is released so it can take its own locks freely.
+		var (
+			offer       bool
+			rescueWhy   string
+			rescueImgs  []provider.ImageBlock
+			rescueModel string
+			rescueProv  string
+			rescueFprov string
+		)
+		if err != nil && ctx.Err() == nil {
+			if ok, reason := classifyRescueError(err); ok {
+				offer = true
+				rescueWhy = reason
+				rescueImgs = images
+				rescueModel = i.cfg.Model
+				rescueProv = i.cfg.Provider
+				rescueFprov = extractFailedProvider(err)
+				if rescueFprov == "" {
+					rescueFprov = i.cfg.Provider
+				}
+				// Suppress the red banner — the rescue dialog already
+				// surfaces the failure.
+				i.statusErr = ""
+			}
+		}
 		// Detect HTTP 413 "payload too large" responses. The provider
 		// rejected the request because the request body exceeded its
 		// per-request limit. Token-based auto-compact can miss this
@@ -3162,12 +3247,64 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 		switch {
 		case hasNext:
 			i.startTurn(parent, next)
+		case offer:
+			i.openRescueDialog(rescueProv, rescueFprov, rescueModel, rescueWhy, prompt, rescueImgs)
 		case payloadTooLarge:
 			i.runCompact(parent, true)
 		case shouldAutoCompact:
 			i.runCompact(parent, true)
 		}
 	}()
+}
+
+// openRescueDialog surfaces the rescue model picker after a recoverable
+// provider failure. The pending prompt + images are stashed on the
+// Interactive so a later applyRescueSelection can re-run the same turn
+// against the freshly-picked model. activeProvider/failedProvider are
+// usually the same, but some clients embed different prefixes in their
+// errors than the configured provider id, so we accept both.
+func (i *Interactive) openRescueDialog(activeProvider, failedProvider, failedModel, reason, prompt string, images []provider.ImageBlock) {
+	if i.rescueDialog == nil {
+		return
+	}
+	loggedIn := []string{}
+	if i.cfg.LoggedInProviders != nil {
+		loggedIn = i.cfg.LoggedInProviders()
+	}
+	fprov := failedProvider
+	if fprov == "" {
+		fprov = activeProvider
+	}
+	i.mu.Lock()
+	i.pendingRescuePrompt = prompt
+	i.pendingRescueImages = images
+	i.mu.Unlock()
+	i.rescueDialog.Open(failedModel, loggedIn, fprov, failedModel, reason, prompt)
+	i.invalidate()
+}
+
+// applyRescueSelection switches model (cross-provider if needed) and
+// re-runs the same prompt+images that just failed. Mirrors
+// applyModelSelection's transcript-carry logic so the user keeps full
+// session continuity across the swap.
+func (i *Interactive) applyRescueSelection(prov, model, prompt string) {
+	if model == "" {
+		return
+	}
+	i.applyRescueModelSelection(prov, model)
+	i.mu.Lock()
+	images := i.pendingRescueImages
+	if prompt == "" {
+		prompt = i.pendingRescuePrompt
+	}
+	i.pendingRescuePrompt = ""
+	i.pendingRescueImages = nil
+	i.mu.Unlock()
+	parent := i.runCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	i.startTurnWithImages(parent, prompt, images)
 }
 
 func stripAutoCompactNotes(notes []string) []string {
@@ -3365,9 +3502,15 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			i.statusOK = "cancelled"
 			return
 		}
-		if e.Err != nil && !strings.Contains(e.Err.Error(), "context canceled") {
-			i.statusErr = e.Err.Error()
-		}
+		// Don't surface mid-loop stream errors as a red banner here.
+		// EvTurnEnd fires after every step in a multi-step tool loop,
+		// so a transient 503 / network blip would briefly paint a red
+		// banner over the still-streaming chat before the agent loop
+		// either retries or exits. The final error (if any) is set by
+		// startTurnWithImages once Prompt() returns, and recoverable
+		// failures are routed to the rescue picker instead — which
+		// keeps the chat clean while the agent is working.
+		_ = e.Err
 	}
 }
 

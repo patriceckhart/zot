@@ -475,6 +475,32 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
 	}
 
+	// Rebuild agent for the rescue picker after a recoverable failure.
+	// Unlike buildAgentFor, this drops launch-time --api-key and
+	// --base-url overrides because those are typically the cause of the
+	// rescue (a bad key, a typo'd base URL, or a corporate gateway that
+	// only the originally-picked provider needed). Re-resolving without
+	// them lets the rescue retry use env vars / auth.json / provider
+	// defaults the way zot would have without the overrides.
+	buildAgentForRescue := func(providerOverride, modelOverride string) (*core.Agent, string, string, error) {
+		next := args
+		next.APIKey = ""
+		next.BaseURL = ""
+		if providerOverride != "" {
+			next.Provider = providerOverride
+		}
+		if modelOverride != "" {
+			next.Model = modelOverride
+		}
+		resolved, err := Resolve(next, true)
+		if err != nil {
+			return nil, "", "", err
+		}
+		resolved.UseSandbox(sharedSandbox)
+		resolved.MergeExtensionTools(extToolAdapter)
+		return wireAgentExt(resolved.NewAgent()), resolved.Provider, resolved.Model, nil
+	}
+
 	var ag *core.Agent
 	if r.HasCredential() {
 		ag = wireAgentExt(r.NewAgent())
@@ -571,6 +597,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	baseBuildAgentFor := buildAgentFor
 	buildAgentFor = func(providerOverride, modelOverride string) (*core.Agent, string, string, error) {
 		a, p, m, err := baseBuildAgentFor(providerOverride, modelOverride)
+		return wireAgentPersist(a), p, m, err
+	}
+	baseBuildAgentForRescue := buildAgentForRescue
+	buildAgentForRescue = func(providerOverride, modelOverride string) (*core.Agent, string, string, error) {
+		a, p, m, err := baseBuildAgentForRescue(providerOverride, modelOverride)
 		return wireAgentPersist(a), p, m, err
 	}
 
@@ -687,6 +718,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		BuildAgent:                 buildAgent,
 		SetKimiCLIFallbackDisabled: SetKimiCLIFallbackDisabled,
 		BuildAgentFor:              buildAgentFor,
+		BuildAgentForRescue:        buildAgentForRescue,
 		LoggedInProviders: func() []string {
 			var out []string
 			for _, p := range []string{"anthropic", "openai", "kimi"} {

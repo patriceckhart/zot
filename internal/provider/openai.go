@@ -354,18 +354,21 @@ func (c *openaiClient) Stream(ctx context.Context, req Request) (<-chan Event, e
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+apiPath, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("accept", "text/event-stream")
-	httpReq.Header.Set("authorization", "Bearer "+c.apiKey)
-	for k, v := range c.headers {
-		httpReq.Header.Set(k, v)
+	newReq := func() (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+apiPath, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("content-type", "application/json")
+		httpReq.Header.Set("accept", "text/event-stream")
+		httpReq.Header.Set("authorization", "Bearer "+c.apiKey)
+		for k, v := range c.headers {
+			httpReq.Header.Set(k, v)
+		}
+		return httpReq, nil
 	}
 
-	resp, err := c.http.Do(httpReq)
+	resp, err := doStreamWithRetry(ctx, c.http, newReq)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", c.Name(), err)
 	}

@@ -290,19 +290,22 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	newReq := func() (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("content-type", "application/json")
+		httpReq.Header.Set("accept", "text/event-stream")
+		httpReq.Header.Set("authorization", "Bearer "+c.token)
+		httpReq.Header.Set("chatgpt-account-id", c.accountID)
+		httpReq.Header.Set("openai-beta", "responses=experimental")
+		httpReq.Header.Set("originator", "zot")
+		httpReq.Header.Set("user-agent", fmt.Sprintf("zot (%s %s)", runtime.GOOS, runtime.GOARCH))
+		return httpReq, nil
 	}
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("accept", "text/event-stream")
-	httpReq.Header.Set("authorization", "Bearer "+c.token)
-	httpReq.Header.Set("chatgpt-account-id", c.accountID)
-	httpReq.Header.Set("openai-beta", "responses=experimental")
-	httpReq.Header.Set("originator", "zot")
-	httpReq.Header.Set("user-agent", fmt.Sprintf("zot (%s %s)", runtime.GOOS, runtime.GOARCH))
 
-	resp, err := c.http.Do(httpReq)
+	resp, err := doStreamWithRetry(ctx, c.http, newReq)
 	if err != nil {
 		return nil, fmt.Errorf("openai-codex: %w", err)
 	}

@@ -453,29 +453,32 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) (<-chan Event
 		}
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("anthropic-version", anthropicAPIVersion)
-	if c.oauthTok != "" {
-		// Claude-Code-shaped request: identical headers and values as the
-		// official CLI. Any drift triggers Anthropic's anti-abuse check and
-		// rate-limits (or outright blocks) the request.
-		httpReq.Header.Set("accept", "application/json")
-		httpReq.Header.Set("authorization", "Bearer "+c.oauthTok)
-		httpReq.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14")
-		httpReq.Header.Set("anthropic-dangerous-direct-browser-access", "true")
-		httpReq.Header.Set("user-agent", "claude-cli/"+claudeCodeVersion)
-		httpReq.Header.Set("x-app", "cli")
-		// Remove x-api-key entirely by NOT setting it.
-	} else {
-		httpReq.Header.Set("accept", "text/event-stream")
-		httpReq.Header.Set("x-api-key", c.apiKey)
+	newReq := func() (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/messages", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("content-type", "application/json")
+		httpReq.Header.Set("anthropic-version", anthropicAPIVersion)
+		if c.oauthTok != "" {
+			// Claude-Code-shaped request: identical headers and values as the
+			// official CLI. Any drift triggers Anthropic's anti-abuse check and
+			// rate-limits (or outright blocks) the request.
+			httpReq.Header.Set("accept", "application/json")
+			httpReq.Header.Set("authorization", "Bearer "+c.oauthTok)
+			httpReq.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14")
+			httpReq.Header.Set("anthropic-dangerous-direct-browser-access", "true")
+			httpReq.Header.Set("user-agent", "claude-cli/"+claudeCodeVersion)
+			httpReq.Header.Set("x-app", "cli")
+			// Remove x-api-key entirely by NOT setting it.
+		} else {
+			httpReq.Header.Set("accept", "text/event-stream")
+			httpReq.Header.Set("x-api-key", c.apiKey)
+		}
+		return httpReq, nil
 	}
 
-	resp, err := c.http.Do(httpReq)
+	resp, err := doStreamWithRetry(ctx, c.http, newReq)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: %w", err)
 	}
