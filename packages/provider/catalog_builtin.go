@@ -310,6 +310,7 @@ var builtinCatalog = []Model{
 	{Provider: "opencode-go", ID: "minimax-m2.7", DisplayName: "MiniMax M2.7", ContextWindow: 204800, MaxOutput: 131072, Reasoning: true, PriceInput: 0.3, PriceOutput: 1.2, PriceCacheRead: 0.06, BaseURL: "https://opencode.ai/zen/go/v1"},
 	{Provider: "opencode-go", ID: "qwen3.5-plus", DisplayName: "Qwen3.5 Plus", ContextWindow: 262144, MaxOutput: 65536, Reasoning: true, PriceInput: 0.2, PriceOutput: 1.2, PriceCacheRead: 0.02, PriceCacheWrite: 0.25, BaseURL: "https://opencode.ai/zen/go/v1"},
 	{Provider: "opencode-go", ID: "qwen3.6-plus", DisplayName: "Qwen3.6 Plus", ContextWindow: 262144, MaxOutput: 65536, Reasoning: true, PriceInput: 0.5, PriceOutput: 3, PriceCacheRead: 0.05, PriceCacheWrite: 0.625, BaseURL: "https://opencode.ai/zen/go/v1"},
+	{Provider: "opencode-go", ID: "qwen3.7-plus", DisplayName: "Qwen3.7 Plus", ContextWindow: 1000000, MaxOutput: 65536, Reasoning: true, PriceInput: 0.32, PriceOutput: 1.28, PriceCacheRead: 0.064, PriceCacheWrite: 0.4, BaseURL: "https://opencode.ai/zen/go/v1"},
 	// openrouter: discovered live via DiscoverOpenRouter, none baked in.
 	// ----- together -----
 	{Provider: "together", ID: "MiniMaxAI/MiniMax-M2.5", DisplayName: "MiniMax-M2.5", ContextWindow: 204800, MaxOutput: 131072, Reasoning: true, PriceInput: 0.3, PriceOutput: 1.2, PriceCacheRead: 0.06, BaseURL: "https://api.together.ai/v1"},
@@ -677,4 +678,5 @@ var builtinCatalog = []Model{
 	{Provider: "opencode", ID: "nemotron-3-super-free", DisplayName: "Nemotron 3 Super Free", ContextWindow: 204800, MaxOutput: 128000, Reasoning: true, PriceInput: 0, PriceOutput: 0, PriceCacheRead: 0, BaseURL: "https://opencode.ai/zen/v1"},
 	{Provider: "opencode", ID: "qwen3.5-plus", DisplayName: "Qwen3.5 Plus", ContextWindow: 262144, MaxOutput: 65536, Reasoning: true, PriceInput: 0.2, PriceOutput: 1.2, PriceCacheRead: 0.02, PriceCacheWrite: 0.25, BaseURL: "https://opencode.ai/zen"},
 	{Provider: "opencode", ID: "qwen3.6-plus", DisplayName: "Qwen3.6 Plus", ContextWindow: 262144, MaxOutput: 65536, Reasoning: true, PriceInput: 0.5, PriceOutput: 3, PriceCacheRead: 0.05, PriceCacheWrite: 0.625, BaseURL: "https://opencode.ai/zen"},
+	{Provider: "opencode", ID: "qwen3.7-plus", DisplayName: "Qwen3.7 Plus", ContextWindow: 1000000, MaxOutput: 65536, Reasoning: true, PriceInput: 0.32, PriceOutput: 1.28, PriceCacheRead: 0.064, PriceCacheWrite: 0.4, BaseURL: "https://opencode.ai/zen"},
 }
