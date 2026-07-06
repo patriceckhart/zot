@@ -199,7 +199,7 @@ func usesAdaptiveThinking(m Model) bool {
 		return true
 	}
 	id := strings.ToLower(m.ID)
-	for _, marker := range []string{"opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8"} {
+	for _, marker := range []string{"opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8", "sonnet-5", "fable-5"} {
 		if strings.Contains(id, marker) {
 			return true
 		}

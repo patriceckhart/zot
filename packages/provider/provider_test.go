@@ -118,6 +118,29 @@ func TestAnthropicAdaptiveThinking(t *testing.T) {
 		t.Fatalf("want effort=xhigh, got %+v", wire.OutputConfig)
 	}
 
+	// Sonnet 5 -> adaptive thinking, effort set, no budget, no temperature.
+	wire, err = c.buildRequest(Request{
+		Model:       "claude-sonnet-5",
+		Reasoning:   "high",
+		Temperature: &temp,
+		Messages:    []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.Thinking == nil || wire.Thinking.Type != "adaptive" {
+		t.Fatalf("want adaptive thinking for Sonnet 5, got %+v", wire.Thinking)
+	}
+	if wire.Thinking.BudgetTokens != 0 {
+		t.Fatalf("Sonnet 5 adaptive must not send budget_tokens, got %d", wire.Thinking.BudgetTokens)
+	}
+	if wire.OutputConfig == nil || wire.OutputConfig.Effort != "high" {
+		t.Fatalf("want Sonnet 5 effort=high, got %+v", wire.OutputConfig)
+	}
+	if wire.Temperature != nil {
+		t.Fatalf("Sonnet 5 adaptive must drop temperature, got %v", *wire.Temperature)
+	}
+
 	// Opus 4.5 -> budget-based thinking, no output_config, temperature kept.
 	wire, err = c.buildRequest(Request{
 		Model:       "claude-opus-4-5",
@@ -216,6 +239,19 @@ func TestAnthropicStreamHappyPath(t *testing.T) {
 	}
 }
 
+func TestClaudeSonnet5Catalog(t *testing.T) {
+	m, err := FindModel("anthropic", "claude-sonnet-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.DisplayName != "Claude Sonnet 5" || m.ContextWindow != 1000000 || m.MaxOutput != 128000 || !m.Reasoning || !m.AdaptiveThinking {
+		t.Fatalf("unexpected Sonnet 5 model: %+v", m)
+	}
+	if m.PriceInput != 2 || m.PriceOutput != 10 || m.PriceCacheRead != 0.2 || m.PriceCacheWrite != 2.5 {
+		t.Fatalf("unexpected Sonnet 5 pricing: %+v", m)
+	}
+}
+
 func TestOpenAICompatAnthropicReasoningEffort(t *testing.T) {
 	c := NewOpenRouter("token", "").(*openaiClient)
 	wire, err := c.buildRequest(Request{
@@ -228,6 +264,18 @@ func TestOpenAICompatAnthropicReasoningEffort(t *testing.T) {
 	}
 	if wire.ReasoningEffort != "xhigh" {
 		t.Fatalf("want xhigh for adaptive Anthropic model over OpenAI-compatible wire, got %q", wire.ReasoningEffort)
+	}
+
+	wire, err = c.buildRequest(Request{
+		Model:     "anthropic/claude-sonnet-5",
+		Reasoning: "maximum",
+		Messages:  []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.ReasoningEffort != "xhigh" {
+		t.Fatalf("want xhigh for Claude Sonnet 5 over OpenAI-compatible wire, got %q", wire.ReasoningEffort)
 	}
 
 	wire, err = c.buildRequest(Request{
