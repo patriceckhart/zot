@@ -143,6 +143,14 @@ type SubmitSlashFromExt struct {
 	Text string `json:"text"`
 }
 
+// SubmitFromExt is a spontaneous frame an extension can send to queue
+// a model prompt in the interactive host. The manager routes it through
+// HostHooks.Submit, so the TUI handles busy state and turn startup.
+type SubmitFromExt struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
 type ShutdownAckFromExt struct {
 	Type string `json:"type"`
 }

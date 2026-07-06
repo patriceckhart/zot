@@ -316,6 +316,20 @@ Example:
 If `error` is non-empty, zot renders it as a red status line
 regardless of `action`.
 
+#### `submit` (one-way, any time)
+
+Submits text as a user prompt in the interactive host. If the agent is
+idle, zot starts a turn immediately. If a turn is already running, zot
+queues the prompt behind it using the same queue path as typed input.
+Empty or whitespace-only text is ignored.
+
+```json
+{"type":"submit","text":"Summarize the selected workspace."}
+```
+
+In print / JSON / RPC modes this frame is ignored because there is no
+interactive editor or prompt queue.
+
 #### `panel_render` (one-way, while a panel is open)
 
 Pushes a fresh frame for an already-open panel.

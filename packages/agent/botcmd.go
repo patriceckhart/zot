@@ -345,10 +345,10 @@ func telegramSpec() *botSpec {
 			}
 			return cfg.BotToken != "", nil
 		},
-		printHelp:  printTelegramBotHelp,
-		setup:      telegramBotSetup,
-		status:     telegramBotStatus,
-		reset:      telegramBotReset,
+		printHelp: printTelegramBotHelp,
+		setup:     telegramBotSetup,
+		status:    telegramBotStatus,
+		reset:     telegramBotReset,
 		newAdapter: func(zotHome string) (bot.BotAdapter, error) {
 			cfg, err := telegram.LoadConfig(zotHome)
 			if err != nil {

@@ -781,6 +781,14 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 			}
 		case "clear_notes":
 			m.hooks.ClearNotes(ext.Manifest.Name)
+		case "submit":
+			var s extproto.SubmitFromExt
+			if err := json.Unmarshal(line, &s); err == nil {
+				text := strings.TrimSpace(s.Text)
+				if text != "" {
+					m.hooks.Submit(text)
+				}
+			}
 		case "submit_slash":
 			// Spontaneous request to invoke a slash command in the
 			// TUI. Refused unless the payload looks like a slash
