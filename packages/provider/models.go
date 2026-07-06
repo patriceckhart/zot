@@ -51,6 +51,14 @@ type Model struct {
 // talk to; models that are only reachable through the OpenAI Responses
 // API (o1-pro, o3-pro, gpt-5-pro) are omitted.
 var Catalog = []Model{
+	// ---- Anthropic / Claude 5.x ----
+	{
+		Provider: "amazon-bedrock", ID: "anthropic.claude-sonnet-5", DisplayName: "Claude Sonnet 5",
+		ContextWindow: 1000000, MaxOutput: 64000, Reasoning: true,
+		PriceInput: 3, PriceOutput: 15, PriceCacheRead: 0.3, PriceCacheWrite: 3.75,
+		BaseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+	},
+
 	// ---- Anthropic / Claude 4.x ----
 	{
 		Provider: "anthropic", ID: "claude-sonnet-4-5", DisplayName: "Claude Sonnet 4.5 (latest)",
