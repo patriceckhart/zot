@@ -50,6 +50,7 @@ var slashCatalog = []slashCommand{
 	{Name: "/swarm", Desc: "supervise background agents that share this working directory"},
 	{Name: "/reload-ext", Desc: "hot-reload all extensions (re-read manifests and respawn)"},
 	{Name: "/telegram", Desc: "connect, disconnect, or show status of the telegram bridge"},
+	{Name: "/matrix", Desc: "connect, disconnect, or show status of the matrix bridge"},
 	{Name: "/settings", Desc: "open settings"},
 	{Name: "/clear", Desc: "clear the chat transcript"},
 	{Name: "/exit", Desc: "exit zot"},

@@ -29,6 +29,8 @@ builds:
         goarch: arm64
     flags:
       - -trimpath
+    tags:
+      - goolm
     ldflags:
       - -s -w
       - -X main.version={{.Version}}

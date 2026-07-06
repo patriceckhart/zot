@@ -15,6 +15,8 @@ import (
 	"github.com/patriceckhart/zot/packages/agent/extensions"
 	"github.com/patriceckhart/zot/packages/agent/extproto"
 	"github.com/patriceckhart/zot/packages/agent/modes/telegram"
+	"github.com/patriceckhart/zot/packages/agent/modes/matrix"
+	"github.com/patriceckhart/zot/packages/agent/modes/bot"
 	"github.com/patriceckhart/zot/packages/agent/skills"
 	"github.com/patriceckhart/zot/packages/agent/swarm"
 	"github.com/patriceckhart/zot/packages/agent/tools"
@@ -399,6 +401,8 @@ type Interactive struct {
 	settingsDialog    *settingsDialog
 	quickModelAssign  int
 	telegramBridge    *telegram.Bridge
+	matrixDialog      *matrixDialog
+	matrixBridge      *matrix.Bridge
 	sessionOpsDialog  *sessionOpsDialog
 	sessionTreeDialog *sessionTreeDialog
 	extPanel          *extPanelDialog
@@ -527,6 +531,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		confirmDialog:     newConfirmDialog(),
 		logoutDialog:      newLogoutDialog(),
 		telegramDialog:    newTelegramDialog(),
+		matrixDialog:      newMatrixDialog(),
 		settingsDialog:    newSettingsDialog(),
 		sessionOpsDialog:  newSessionOpsDialog(),
 		sessionTreeDialog: newSessionTreeDialog(),
@@ -573,6 +578,9 @@ func (i *Interactive) Run(ctx context.Context) error {
 	defer func() {
 		if i.telegramBridge != nil {
 			i.telegramBridge.Stop()
+		}
+		if i.matrixBridge != nil {
+			i.matrixBridge.Stop()
 		}
 	}()
 
@@ -1127,6 +1135,8 @@ func (i *Interactive) redraw() {
 		dialog = i.logoutDialog.Render(i.cfg.Theme, cols)
 	case i.telegramDialog.Active():
 		dialog = i.telegramDialog.Render(i.cfg.Theme, cols)
+	case i.matrixDialog.Active():
+		dialog = i.matrixDialog.Render(i.cfg.Theme, cols)
 	case i.settingsDialog.Active():
 		dialog = i.settingsDialog.Render(i.cfg.Theme, cols)
 	case i.sessionOpsDialog.Active():
@@ -1249,6 +1259,7 @@ func (i *Interactive) redraw() {
 		ContextMax:     ctxMax,
 		AutoCompacting: i.autoCompacting,
 		Telegram:       i.telegramBridge != nil && i.telegramBridge.Active(),
+		Matrix:         i.matrixBridge != nil && i.matrixBridge.Active(),
 		Cols:           cols,
 	})
 	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
@@ -1924,6 +1935,19 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	}
+	if i.matrixDialog.Active() {
+		if k.Kind == tui.KeyCtrlC {
+			i.matrixDialog.Close()
+			i.invalidate()
+			return false
+		}
+		mact := i.matrixDialog.HandleKey(k)
+		if mact.Select {
+			i.doMatrix(mact.Action)
+		}
+		i.invalidate()
+		return false
+	}
 	if i.settingsDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.settingsDialog.Close()
@@ -2420,6 +2444,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// network write doesn't delay the local turn.
 		if i.telegramBridge != nil && i.telegramBridge.Active() {
 			go i.telegramBridge.OnUserTyped(text)
+		}
+		if i.matrixBridge != nil && i.matrixBridge.Active() {
+			go i.matrixBridge.OnUserTyped(text)
 		}
 		// If a turn is already in flight, queue this prompt inside the
 		// agent loop so it is delivered at the next safe model-call
@@ -3951,6 +3978,12 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 			break
 		}
 		i.openTelegramDialog()
+	case "/matrix", "/mx":
+		if len(parts) >= 2 {
+			i.doMatrix(parts[1])
+			break
+		}
+		i.openMatrixDialog()
 	case "/session":
 		if len(parts) >= 2 {
 			action := parts[1]
@@ -4673,6 +4706,7 @@ func (i *Interactive) swapModel(prov, model string, builder func(string, string)
 	// cross-provider path still works on a vanilla setup.
 	i.applyAutoSwarmTool(i.autoSwarmEnabled())
 	i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
+	i.applyMatrixTools(i.matrixBridge != nil && i.matrixBridge.Active())
 	if i.cfg.PersistModel != nil {
 		i.cfg.PersistModel(p, md)
 	}
@@ -4702,6 +4736,7 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 		i.mu.Unlock()
 		i.applyAutoSwarmTool(i.autoSwarmEnabled())
 		i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
+		i.applyMatrixTools(i.matrixBridge != nil && i.matrixBridge.Active())
 		i.dialog.ShowResult(true, "")
 	}
 }
@@ -5912,6 +5947,297 @@ func (h *telegramHost) Notify(level, message string) {
 	h.iv.invalidate()
 }
 
+// openMatrixDialog shows the picker for `/matrix` with no arg.
+func (i *Interactive) openMatrixDialog() {
+	items := i.matrixMenuItems()
+	if len(items) == 0 {
+		i.mu.Lock()
+		i.statusErr = "matrix not configured. run `zot matrix-bot setup` first."
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.matrixDialog.Open(items)
+	i.invalidate()
+}
+
+// matrixMenuItems builds the dialog entries for the current bridge
+// state. Returns empty when no matrix.json exists so the caller can
+// show a helpful status line instead of an empty menu.
+func (i *Interactive) matrixMenuItems() []matrixItem {
+	cfg, err := matrix.LoadConfig(i.cfg.ZotHome)
+	if err != nil || cfg.AccessToken == "" {
+		return nil
+	}
+	var items []matrixItem
+	if i.matrixBridge != nil && i.matrixBridge.Active() {
+		items = append(items, matrixItem{label: "disconnect", action: "disconnect", hint: "stop mirroring"})
+		st := i.matrixBridge.State()
+		hint := "active"
+		if st.UserID != "" {
+			hint += " as " + st.UserID
+		}
+		if st.E2EE {
+			hint += " (e2ee)"
+		}
+		items = append(items, matrixItem{label: "status", action: "status", hint: hint})
+	} else {
+		label := "connect"
+		hint := "start mirroring dms into this session"
+		if cfg.AllowedUserID == "" {
+			hint = "awaiting pairing (DM the bot once connected)"
+		}
+		items = append(items, matrixItem{label: label, action: "connect", hint: hint})
+		items = append(items, matrixItem{label: "status", action: "status", hint: "disconnected"})
+	}
+	return items
+}
+
+// doMatrix dispatches one of the three explicit actions. Called
+// from /matrix <action> or after the picker selects a row.
+func (i *Interactive) doMatrix(action string) {
+	switch action {
+	case "connect":
+		i.matrixConnect()
+	case "disconnect":
+		i.matrixDisconnect()
+	case "status":
+		i.matrixStatus()
+	default:
+		i.mu.Lock()
+		i.statusErr = "unknown matrix action: " + action + " (use connect, disconnect, or status)"
+		i.mu.Unlock()
+		i.invalidate()
+	}
+}
+
+// matrixConnect starts the bridge. Refuses if it's already running
+// or if the on-disk matrix.json is missing an access token.
+func (i *Interactive) matrixConnect() {
+	if i.matrixBridge != nil && i.matrixBridge.Active() {
+		i.mu.Lock()
+		i.statusOK = "matrix already connected"
+		i.statusErr = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	cfg, err := matrix.LoadConfig(i.cfg.ZotHome)
+	if err != nil {
+		i.mu.Lock()
+		i.statusErr = "matrix: " + err.Error()
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	if cfg.AccessToken == "" {
+		i.mu.Lock()
+		i.statusErr = "matrix: not configured. run `zot matrix-bot setup` first."
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	// Refuse to start when a background daemon is already syncing
+	// the same account. Two concurrent sync consumers race on the
+	// sync cursor and events get dropped.
+	if pid, alive, _ := matrix.IsRunning(i.cfg.ZotHome); alive && pid > 0 {
+		i.mu.Lock()
+		i.statusErr = fmt.Sprintf("matrix: bot daemon already running (pid %d). stop it with `zot matrix-bot stop` first.", pid)
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.matrixBridge = &matrix.Bridge{
+		Config:  cfg,
+		Save:    func(next matrix.Config) error { return matrix.SaveConfig(i.cfg.ZotHome, next) },
+		Host:    &matrixHost{iv: i},
+		ZotHome: i.cfg.ZotHome,
+	}
+	if err := i.matrixBridge.Start(i.runCtx); err != nil {
+		i.matrixBridge = nil
+		i.mu.Lock()
+		i.statusErr = "matrix connect failed: " + err.Error()
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.applyMatrixTools(true)
+	state := i.matrixBridge.State()
+	label := "matrix connected as " + state.UserID
+	if state.E2EE {
+		label += " (e2ee)"
+	}
+	if state.PairedID == "" {
+		label += " — DM the bot from your client to claim it"
+	}
+	i.mu.Lock()
+	i.statusOK = label
+	i.statusErr = ""
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// matrixDisconnect stops the bridge. No-op when already stopped.
+func (i *Interactive) matrixDisconnect() {
+	if i.matrixBridge == nil || !i.matrixBridge.Active() {
+		i.mu.Lock()
+		i.statusOK = "matrix already disconnected"
+		i.statusErr = ""
+		i.mu.Unlock()
+		i.invalidate()
+		return
+	}
+	i.matrixBridge.Stop()
+	i.applyMatrixTools(false)
+	i.mu.Lock()
+	i.statusOK = "matrix disconnected"
+	i.statusErr = ""
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// matrixSenderAdapter wraps the bridge so the tools package can
+// drive it without importing matrix directly.
+type matrixSenderAdapter struct {
+	bridge *matrix.Bridge
+}
+
+func (a matrixSenderAdapter) SendImage(ctx context.Context, path, caption string) error {
+	if a.bridge == nil {
+		return fmt.Errorf("matrix bridge is not connected")
+	}
+	return a.bridge.SendImage(ctx, path, caption)
+}
+
+func (a matrixSenderAdapter) SendDocument(ctx context.Context, path, caption string) error {
+	if a.bridge == nil {
+		return fmt.Errorf("matrix bridge is not connected")
+	}
+	return a.bridge.SendDocument(ctx, path, caption)
+}
+
+func (a matrixSenderAdapter) Active() bool {
+	return a.bridge != nil && a.bridge.Active()
+}
+
+// applyMatrixTools registers (active=true) or removes (active=false)
+// the matrix_send_image and matrix_send_file tools on the running
+// agent so the model only sees them while the bridge is connected.
+// Mirrors applyTelegramTools' snapshot+mutate pattern.
+func (i *Interactive) applyMatrixTools(active bool) {
+	if i.agent == nil {
+		return
+	}
+	current := i.agent.Tools
+	next := core.Registry{}
+	for name, t := range current {
+		if name == "matrix_send_image" || name == "matrix_send_file" {
+			continue
+		}
+		next[name] = t
+	}
+	if active {
+		sender := matrixSenderAdapter{bridge: i.matrixBridge}
+		next["matrix_send_image"] = &tools.MatrixSendImageTool{
+			CWD: i.cfg.CWD, Sandbox: i.cfg.Sandbox, Sender: sender,
+		}
+		next["matrix_send_file"] = &tools.MatrixSendFileTool{
+			CWD: i.cfg.CWD, Sandbox: i.cfg.Sandbox, Sender: sender,
+		}
+	}
+	i.agent.SetTools(next)
+}
+
+// matrixStatus writes a one-liner describing the bridge state.
+func (i *Interactive) matrixStatus() {
+	var msg string
+	if i.matrixBridge != nil && i.matrixBridge.Active() {
+		s := i.matrixBridge.State()
+		msg = "matrix: connected (tui bridge)"
+		if s.UserID != "" {
+			msg += " as " + s.UserID
+		}
+		if s.E2EE {
+			msg += " (e2ee)"
+		}
+		if s.PairedID != "" {
+			msg += " - paired with " + s.PairedID
+		} else {
+			msg += " - awaiting pairing"
+		}
+	} else if pid, alive, _ := matrix.IsRunning(i.cfg.ZotHome); alive && pid > 0 {
+		msg = fmt.Sprintf("matrix: background daemon running (pid %d) - /matrix connect won't work until you stop it", pid)
+	} else {
+		cfg, _ := matrix.LoadConfig(i.cfg.ZotHome)
+		if cfg.AccessToken == "" {
+			msg = "matrix: not configured. run `zot matrix-bot setup` first."
+		} else {
+			msg = "matrix: disconnected"
+			if cfg.UserID != "" {
+				msg += " (" + cfg.UserID + " ready to connect)"
+			}
+		}
+	}
+	i.mu.Lock()
+	i.statusOK = msg
+	i.statusErr = ""
+	i.mu.Unlock()
+	i.invalidate()
+}
+
+// matrixHost adapts *Interactive to matrix.Host so the bridge can
+// call back into the TUI without importing modes directly.
+type matrixHost struct{ iv *Interactive }
+
+func (h *matrixHost) SubmitOrQueue(prompt string, images []provider.ImageBlock) {
+	h.iv.SubmitOrQueue(prompt, images)
+}
+
+func (h *matrixHost) CancelTurn() { h.iv.CancelTurn() }
+
+func (h *matrixHost) Status() string {
+	h.iv.mu.Lock()
+	providerName := h.iv.cfg.Provider
+	model := h.iv.cfg.Model
+	cwd := h.iv.cfg.CWD
+	usage := h.iv.cumUsage
+	subscription := h.iv.cfg.AuthMethod == "oauth"
+	ctxUsed := h.iv.lastCtxInput
+	busy := h.iv.busy
+	queued := len(h.iv.queued)
+	h.iv.mu.Unlock()
+
+	ctxMax := 0
+	if m, err := provider.FindModel(providerName, model); err == nil {
+		ctxMax = m.ContextWindow
+	}
+	return bot.FormatStatus(bot.StatusSnapshot{
+		Provider:     providerName,
+		Model:        model,
+		CWD:          cwd,
+		Usage:        usage,
+		Subscription: subscription,
+		ContextUsed:  ctxUsed,
+		ContextMax:   ctxMax,
+		Busy:         busy,
+		Queued:       queued,
+	})
+}
+
+func (h *matrixHost) Notify(level, message string) {
+	h.iv.mu.Lock()
+	switch level {
+	case "error", "warn":
+		h.iv.statusErr = message
+		h.iv.statusOK = ""
+	default:
+		h.iv.statusOK = message
+		h.iv.statusErr = ""
+	}
+	h.iv.mu.Unlock()
+	h.iv.invalidate()
+}
+
 // openSessionOpsDialog shows the picker for `/session` with no arg.
 // Always offers export, import, fork, tree; the handlers bail with
 // a clear status message when the precondition isn't met (empty
@@ -6351,20 +6677,32 @@ func (i *Interactive) assistantMessageSideEffects(m provider.Message) {
 	if i.cfg.OnAssistant != nil {
 		i.cfg.OnAssistant(m)
 	}
+	text := assistantVisibleText(m)
+	if strings.TrimSpace(text) == "" {
+		return
+	}
 	if i.telegramBridge != nil && i.telegramBridge.Active() {
-		var sb strings.Builder
-		for _, c := range m.Content {
-			if tb, ok := c.(provider.TextBlock); ok {
-				if sb.Len() > 0 {
-					sb.WriteString("\n")
-				}
-				sb.WriteString(tb.Text)
+		go i.telegramBridge.OnAssistantText(text)
+	}
+	if i.matrixBridge != nil && i.matrixBridge.Active() {
+		go i.matrixBridge.OnAssistantText(text)
+	}
+}
+
+// assistantVisibleText concatenates the text blocks of an assistant
+// message into a single string, used by both the telegram and matrix
+// bridge mirrors.
+func assistantVisibleText(m provider.Message) string {
+	var sb strings.Builder
+	for _, c := range m.Content {
+		if tb, ok := c.(provider.TextBlock); ok {
+			if sb.Len() > 0 {
+				sb.WriteString("\n")
 			}
-		}
-		if text := sb.String(); strings.TrimSpace(text) != "" {
-			go i.telegramBridge.OnAssistantText(text)
+			sb.WriteString(tb.Text)
 		}
 	}
+	return sb.String()
 }
 
 // paintPaceRate is how many runes the streaming pacer releases per

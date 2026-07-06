@@ -2320,6 +2320,10 @@ type StatusBarParams struct {
 	// glance that dms are being mirrored into this session.
 	Telegram bool
 
+	// Matrix true when the matrix bridge is connected. Adds a
+	// "matrix connected" tag to the cwd line.
+	Matrix bool
+
 	Cols int // terminal width; drives right-alignment of cwd
 }
 
@@ -2438,6 +2442,9 @@ func StatusBar(p StatusBarParams) []string {
 	}
 	if p.Telegram {
 		tags += "telegram connected "
+	}
+	if p.Matrix {
+		tags += "matrix connected "
 	}
 	if tags != "" && cwd != "" {
 		cwd = tags + "- " + cwd

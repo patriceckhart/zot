@@ -768,9 +768,75 @@ From then on, any DM you send is forwarded to the agent as a user prompt. Attach
 
 Bot mode respects the usual zot flags: `--provider`, `--model`, `--cwd`, `--reasoning`, `--continue`, `--no-session`, `--no-tools`, and so on. Run `zot tg run -c --model claude-opus-4-1` to resume the latest session on Opus, for example.
 
+## Matrix bot (bridge)
+
+zot can also run as a Matrix bot so you can DM it from any Matrix client. It mirrors the Telegram bridge and is built on the same protocol-agnostic core, but talks the Matrix Client-Server API via [mautrix-go](https://github.com/mautrix/go). Two flavours, identical to Telegram: **from inside the TUI** (`/matrix`) or **as a standalone background daemon** (`zot matrix-bot`). The two cannot run at once against the same account — they'd race on the sync cursor.
+
+### From inside the TUI
+
+Type `/matrix` (alias `/mx`) in the running TUI to open a picker with **connect**, **disconnect**, and **status**. When connected:
+
+- DMs from the paired user become prompts in the **same** session; group-room messages are ignored unless the bot is directly mentioned (`@mxid` or display name), and the mention is stripped before forwarding.
+- TUI-typed prompts mirror into the paired room as `you: ...` and assistant replies come back bare for Matrix-originated turns.
+- The status bar shows a `matrix connected` tag while the bridge is active.
+- `/matrix connect` / `/matrix disconnect` / `/matrix status` (or `/mx`) also work as direct commands.
+
+The in-TUI bridge refuses to start while the standalone daemon is running.
+
+### Standalone daemon
+
+```bash
+zot matrix-bot setup     # homeserver + access token (or username+password), verify, save
+zot matrix-bot run       # foreground: sync in this terminal (ctrl+c to stop)
+zot matrix-bot start     # background: detach and return immediately
+zot matrix-bot stop      # SIGTERM the background bot (SIGKILL after 5s)
+zot matrix-bot logs -f   # tail $ZOT_HOME/logs/matrix.log
+zot matrix-bot status    # config (token masked) + running/stopped
+zot matrix-bot reset     # forget credentials + E2EE key store
+# short alias: `zot mx ...` is accepted for every subcommand
+```
+
+State files (never shared with Telegram's `bot.*` files):
+
+| file | purpose |
+|---|---|
+| `$ZOT_HOME/matrix.json` | homeserver, user id, access token, paired user, sync cursor (mode 0600) |
+| `$ZOT_HOME/matrix.pid` | pid of the running bot (written by `run`/`start`) |
+| `$ZOT_HOME/logs/matrix.log` | stdout+stderr from `start` |
+| `$ZOT_HOME/matrix-crypto/store.db` | E2EE key material (only with a passphrase) |
+
+Setup flow:
+
+1. Run `zot matrix-bot setup`. Enter your homeserver URL, then either paste an access token (Element → Settings → Help → Access Token) or log in with username + password.
+2. Optionally set a crypto passphrase to enable E2EE.
+3. Run `zot matrix-bot run` (foreground) or `zot matrix-bot start` (background) in the directory you want the agent to operate in.
+4. Invite the bot to a DM from your Matrix client. With `auto_join` on (set by `setup`) the bot accepts the invite; the first user to DM it claims the bridge (`allowed_user_id`). Every other user is rejected with a reply.
+
+From then on, DMs are forwarded to the agent. Attached images (`m.image`) are downloaded and passed to vision-capable models. In-room commands: `/help`, `/status`, `/stop` (cancel the current turn) plus plain `stop`.
+
+### End-to-end encryption (opt-in)
+
+Matrix DMs are encrypted by default in most clients. zot's E2EE support is opt-in at runtime (via `crypto_passphrase`) and uses the **pure-Go** olm implementation (`goolm`) so the build stays CGO-free. Since `v0.2.63` the standard build (`make build`, `make install`, `make release`, GoReleaser releases) includes `-tags goolm` by default, so released binaries and source installs support E2EE out of the box.
+
+If you build zot without the tag (e.g. `go install pkg@latest`, which doesn't accept build tags), the bot compiles and works for **unencrypted** rooms, but if you configured a `crypto_passphrase` the bot errors out with a clear message rather than silently downgrading. To get E2EE in that case:
+
+```bash
+CGO_ENABLED=0 go build -tags goolm ./cmd/zot   # E2EE-capable binary
+```
+
+The E2EE key store lives in `$ZOT_HOME/matrix-crypto/store.db` (pickled with your passphrase); `zot matrix-bot reset` wipes it.
+
+> **Encrypted media upload** is not yet wired (sending an image to an encrypted room uploads it as a plain attachment). Receiving encrypted media works. This is tracked as a follow-up.
+
+### Security
+
+The access token is a **bearer credential** stored mode 0600 in `matrix.json`. If it leaks, log the bot's device out from your Matrix client and run `zot matrix-bot setup` again (or `zot matrix-bot reset`). `status` always masks the token.
+
 ### Architecture: protocol-agnostic bot core
 
-The messenger functionality is split in two layers. A generic, protocol-agnostic core lives in `packages/agent/modes/bot`: it owns the turn queue, agent prompting, built-in command dispatch (`/start`, `/help`, `/status`, `/stop`), status formatting, and per-turn credential refresh. Concrete transports implement the small `BotAdapter` interface (inbound polling, sending replies, a typing indicator, and optional protocol-specific status text); the Telegram support in `packages/agent/modes/telegram` is one such adapter.
+The messenger functionality is split in two layers. A generic, protocol-agnostic core lives in `packages/agent/modes/bot`: it owns the turn queue, agent prompting, built-in command dispatch (`/start`, `/help`, `/status`, `/stop`), status formatting, and per-turn credential refresh. Concrete transports implement the small `BotAdapter` interface (inbound polling, sending replies, a typing indicator, and optional protocol-specific status text); the Telegram support in `packages/agent/modes/telegram` and the Matrix support in `packages/agent/modes/matrix` are two such adapters.
+
+The standalone-daemon CLI (`zot telegram-bot` / `zot matrix-bot`) is **spec-driven**: each protocol registers a `botSpec` (`packages/agent/botspec.go`) that pairs its setup/status/reset flows and adapter constructor with the shared `run`/`start`/`stop`/`logs` plumbing. Adding a third protocol is ~40 lines of spec plus the adapter package.
 
 This means additional messaging backends (Discord, Slack, Signal, and similar) can be added by implementing `BotAdapter` in a new package and wiring up a subcommand. No changes to the runner, agent, or core are required. Channel IDs are opaque strings owned by the adapter, so the shared runner stays free of protocol-specific types.
 
@@ -798,6 +864,7 @@ packages/agent/extproto/              extension wire-format types
 packages/agent/modes/                 interactive tui, print, json, dialogs
 packages/agent/modes/bot/             protocol-agnostic bot runner (BotAdapter interface)
 packages/agent/modes/telegram/        telegram adapter, api client, daemon
+packages/agent/modes/matrix/          matrix adapter (mautrix-go), config, E2EE, in-TUI bridge
 packages/agent/tools/                 read, write, edit, bash, sandbox
 packages/agent/skills/                skill discovery, frontmatter parser, skill tool
 packages/agent/swarm/                 background subagent runtime

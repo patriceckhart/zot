@@ -10,28 +10,6 @@ import (
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
-// TelegramSender is the small affordance the telegram-send tools call
-// into. The real implementation lives in the interactive runtime and
-// forwards to the active *telegram.Bridge; tests can pass any stub.
-//
-// The kind argument distinguishes "photo" (compressed inline image
-// preview) from "document" (raw file attachment, no compression). For
-// images Telegram resizes to its preview format, which loses detail
-// but renders inline; documents preserve the original bytes but show
-// up as a file the recipient downloads.
-type TelegramSender interface {
-	// SendImage uploads path as an inline-rendered photo with an
-	// optional caption. Returns an error if the bridge is not
-	// active or the upload fails.
-	SendImage(ctx context.Context, path, caption string) error
-	// SendDocument uploads path as a raw attachment.
-	SendDocument(ctx context.Context, path, caption string) error
-	// Active reports whether a paired Telegram chat is currently
-	// reachable. Tools surface a clear error to the model when it
-	// tries to send without a connected bridge.
-	Active() bool
-}
-
 // TelegramSendImageTool exposes the bridge's photo-send affordance to
 // the model so a turn that comes in over Telegram can produce a real
 // image reply (a screenshot, a generated chart, a downloaded asset)

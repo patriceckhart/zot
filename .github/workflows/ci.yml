@@ -46,3 +46,9 @@ jobs:
 
       - name: go test
         run: go test -race ./...
+
+      - name: go test (E2EE build tag)
+        # The default build (Makefile, goreleaser) ships with
+        # -tags goolm so Matrix E2EE works out of the box. Verify
+        # that configuration compiles and tests pass here too.
+        run: go test -race -tags goolm ./...
