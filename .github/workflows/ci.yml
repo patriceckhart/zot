@@ -47,6 +47,9 @@ jobs:
       - name: go test
         run: go test -race ./...
 
+      - name: go test (CGO disabled)
+        run: CGO_ENABLED=0 go test ./...
+
       - name: go test (E2EE build tag)
         # The default build (Makefile, goreleaser) ships with
         # -tags goolm so Matrix E2EE works out of the box. Verify
