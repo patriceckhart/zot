@@ -619,6 +619,20 @@ ZOT_FLAT_TOOLS=0 zot   # boxes, even if config.json says "flat"
 
 Either way, theme colors still drive the rendering (the header uses your accent/foreground, output uses the tool-output color) and `ctrl+o` still expands a truncated result.
 
+### Tool arg width
+
+The header line for a tool call shows the tool name plus a one-line summary of its primary argument — a `path`, a `command`, or a query. That summary is truncated to 60 cells by default (`web_answer What is the best architecture to implement resilience wit...`). On a wide terminal that can clip long queries more than you'd like, so set the `ZOT_TOOL_ARG_WIDTH` env var to raise (or lower) the limit:
+
+```sh
+ZOT_TOOL_ARG_WIDTH=120 zot   # allow up to 120 cells before truncating
+```
+
+| Value | Effect |
+|---|---|
+| unset (default) | Truncate the arg summary at 60 cells. |
+| integer in `[20, 500]` | Truncate at that many cells instead. |
+| anything else | Ignored; falls back to the 60-cell default. |
+
 ## Compact input
 
 By default a message you send renders as a padded, background-tinted bubble: a blank tinted row above and below the text, with a `▌` accent bar down the left. So even a one-line prompt occupies three rows. Set `compact_input` to collapse it to a single quiet `▌ your text` gutter line per wrapped row — no padding rows, no background tint.

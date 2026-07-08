@@ -2131,19 +2131,48 @@ func toolResultBlock(th Theme, text string, width int, color int) []string {
 	return out
 }
 
+// defaultToolArgWidth is the number of cells the tool-call header
+// truncates the primary argument (path/command/query) to when the
+// ZOT_TOOL_ARG_WIDTH environment variable is unset or invalid.
+const defaultToolArgWidth = 60
+
+// toolArgWidth returns the maximum cell width for the truncated
+// primary argument shown in a tool-call header. It defaults to
+// defaultToolArgWidth but can be raised or lowered with the
+// ZOT_TOOL_ARG_WIDTH environment variable, which is useful for wide
+// terminals where the default clips long queries too aggressively.
+// Values outside the sane range [20, 500] are ignored so a stray or
+// malformed setting can never produce an unreadable header or an
+// out-of-range slice.
+func toolArgWidth() int {
+	v := strings.TrimSpace(os.Getenv("ZOT_TOOL_ARG_WIDTH"))
+	if v == "" {
+		return defaultToolArgWidth
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 20 || n > 500 {
+		return defaultToolArgWidth
+	}
+	return n
+}
+
 // ShortArgs renders a tool call's arguments into a one-line
 // suffix for the "tool name <args>" header. tool is the tool
 // name so we can add shape-specific decorations: for read we
 // append the requested line range (e.g. "path:1-200") pulled
 // from the offset/limit args, which is useful context at a
 // glance without expanding the result body. Other tools keep
-// the legacy "path or command, truncated at 60 cells" shape.
+// the legacy "path or command, truncated" shape.
+//
+// The truncation width defaults to 60 cells but can be tuned via
+// the ZOT_TOOL_ARG_WIDTH environment variable (see toolArgWidth).
 //
 // Exported because the interactive mode pre-populates the
 // ToolCallView.Args field with this value as soon as the tool
 // call is announced, so the live overlay's header matches what
 // the finalised transcript will later render.
 func ShortArgs(tool string, raw json.RawMessage) string {
+	width := toolArgWidth()
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return ""
@@ -2152,8 +2181,8 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 	if !ok {
 		b, _ := json.Marshal(v)
 		s := oneLineToolLabel(string(b))
-		if len(s) > 60 {
-			s = s[:57] + "..."
+		if len(s) > width {
+			s = s[:width-3] + "..."
 		}
 		return s
 	}
@@ -2167,8 +2196,8 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 	if primary == "" {
 		b, _ := json.Marshal(v)
 		s := oneLineToolLabel(string(b))
-		if len(s) > 60 {
-			s = s[:57] + "..."
+		if len(s) > width {
+			s = s[:width-3] + "..."
 		}
 		return s
 	}
@@ -2193,7 +2222,7 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 
 	// Truncate the primary arg leaving room for the suffix so the
 	// range stays visible even on absurdly long paths.
-	max := 60 - len(suffix)
+	max := width - len(suffix)
 	if max < 10 {
 		max = 10
 	}
