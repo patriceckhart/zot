@@ -231,9 +231,9 @@ func classifyRescueError(err error) (bool, string) {
 	msg := err.Error()
 	low := strings.ToLower(msg)
 
-	// Don't trigger on payload-too-large; that path already has its
-	// own auto-compact handling.
-	if isPayloadTooLargeError(err) {
+	// Don't trigger on context overflow; that path already has its own
+	// auto-compact handling.
+	if isContextOverflowError(err) {
 		return false, ""
 	}
 

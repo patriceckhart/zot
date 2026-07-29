@@ -5476,13 +5476,13 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 				i.statusErr = ""
 			}
 		}
-		// Detect HTTP 413 "payload too large" responses. The provider
-		// rejected the request because the request body exceeded its
-		// per-request limit. Token-based auto-compact can miss this
-		// because the limit is on raw bytes, not tokens. Re-queue the
-		// prompt so it survives the condense pass and trigger one.
-		payloadTooLarge := err != nil && ctx.Err() == nil && isPayloadTooLargeError(err)
-		if payloadTooLarge {
+		// Detect responses that reject the current context, either as an
+		// HTTP 413 payload limit or a model context-window error. Token-
+		// based auto-compact can miss both when metadata is stale or the
+		// limit is measured in raw bytes. Re-queue the prompt so it
+		// survives the condense pass and trigger one.
+		contextOverflow := err != nil && ctx.Err() == nil && isContextOverflowError(err)
+		if contextOverflow {
 			i.statusErr = ""
 			i.queued = append([]string{prompt}, i.queued...)
 			i.extNotes = append(i.extNotes, autoCompactNoteLine(i.cfg.Theme, "request was too large. condensing history before retrying ..."))
@@ -5509,7 +5509,7 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 		}
 		// If the turn was cancelled or errored, drop the queue so the
 		// user isn't bombarded with stale messages after an interrupt.
-		if ctx.Err() != nil || err != nil {
+		if ctx.Err() != nil || (err != nil && !contextOverflow) {
 			i.queued = nil
 			if i.agent != nil {
 				i.agent.DrainQueuedMessages()
@@ -5535,7 +5535,7 @@ func (i *Interactive) startTurnWithImages(parent context.Context, prompt string,
 			i.startTurn(parent, next)
 		case offer:
 			i.openRescueDialog(rescueProv, rescueFprov, rescueModel, rescueWhy, prompt, rescueImgs)
-		case payloadTooLarge:
+		case contextOverflow:
 			i.runCompact(parent, true)
 		case shouldAutoCompact:
 			i.runCompact(parent, true)
@@ -5614,17 +5614,24 @@ func autoCompactNoteLine(th tui.Theme, msg string) string {
 	return "  " + th.FG256(th.Warning, "⚠ "+msg)
 }
 
-// isPayloadTooLargeError matches HTTP 413 responses surfaced by the
-// provider clients. The error formatting differs slightly between
-// providers (anthropic and openai both prepend the status code), so
-// we look for the canonical 413 marker as well as the conventional
-// 'payload too large' phrase.
-func isPayloadTooLargeError(err error) bool {
+// isContextOverflowError matches provider responses that reject the
+// current request because its raw payload or tokenized input is too
+// large. Providers surface this as either HTTP 413 or semantic context
+// errors with differing codes and messages.
+func isContextOverflowError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "http 413") || strings.Contains(msg, " 413") || strings.HasPrefix(msg, "413 ") || strings.Contains(msg, "payload too large") || strings.Contains(msg, "request entity too large")
+	return strings.Contains(msg, "http 413") ||
+		strings.Contains(msg, " 413") ||
+		strings.HasPrefix(msg, "413 ") ||
+		strings.Contains(msg, "payload too large") ||
+		strings.Contains(msg, "request entity too large") ||
+		strings.Contains(msg, "input exceeds the context window") ||
+		strings.Contains(msg, "context window exceeded") ||
+		strings.Contains(msg, "maximum context length") ||
+		strings.Contains(msg, "context_length_exceeded")
 }
 
 const defaultAutoCompactThreshold = 85
