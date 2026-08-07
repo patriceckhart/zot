@@ -29,7 +29,30 @@ func TestAvailableReasoningLevels(t *testing.T) {
 				Provider: "anthropic", Reasoning: true,
 				ReasoningLevelMap: map[string]string{"minimum": "low", "high": "", "max": "max"},
 			},
-			want: []string{"", "low", "medium", "xhigh"},
+			want: []string{"", "low", "medium", "xhigh", "max"},
+		},
+		{
+			name: "custom provider expands above high",
+			model: Model{
+				Reasoning: true,
+				ReasoningLevelMap: map[string]string{
+					"minimum": "",
+					"low":     "",
+					"medium":  "",
+					"high":    "high",
+					"xhigh":   "xhigh",
+					"max":     "max",
+				},
+			},
+			want: []string{"", "high", "xhigh", "max"},
+		},
+		{
+			name: "override adds max without removing defaults",
+			model: Model{
+				Reasoning:         true,
+				ReasoningLevelMap: map[string]string{"max": "max"},
+			},
+			want: []string{"", "low", "medium", "high", "max"},
 		},
 	}
 	for _, tt := range tests {
@@ -58,6 +81,18 @@ func TestClampReasoningForModel(t *testing.T) {
 			model: Model{Reasoning: true, ReasoningLevelMap: map[string]string{"minimum": "high"}},
 			level: "minimum",
 			want:  "high",
+		},
+		{
+			name: "custom map keeps max",
+			model: Model{
+				Reasoning: true,
+				ReasoningLevelMap: map[string]string{
+					"minimum": "", "low": "", "medium": "",
+					"high": "high", "xhigh": "xhigh", "max": "max",
+				},
+			},
+			level: "max",
+			want:  "max",
 		},
 	}
 	for _, tt := range tests {
@@ -88,6 +123,28 @@ func TestOpenAIRequestUsesReasoningLevelMap(t *testing.T) {
 	}
 }
 
+func TestOpenAIRequestSendsMappedMaxEffort(t *testing.T) {
+	SetLiveModels([]Model{{
+		Provider:  "custom",
+		ID:        "deepseek-reasoner",
+		Reasoning: true,
+		ReasoningLevelMap: map[string]string{
+			"minimum": "", "low": "", "medium": "",
+			"high": "high", "xhigh": "xhigh", "max": "max",
+		},
+	}})
+	t.Cleanup(func() { SetLiveModels(nil) })
+
+	client := NewOpenAI("test", "").(*openaiClient)
+	request, err := client.buildRequest(Request{Model: "deepseek-reasoner", Reasoning: "max"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.ReasoningEffort != "max" {
+		t.Fatalf("reasoning effort = %q, want max", request.ReasoningEffort)
+	}
+}
+
 func TestReasoningEffortMappings(t *testing.T) {
 	cases := []struct {
 		level      string
@@ -104,10 +161,10 @@ func TestReasoningEffortMappings(t *testing.T) {
 		{"low", "gpt-5.6-sol", "low", "low", "low", 2048, "low"},
 		{"medium", "gpt-5.6-sol", "medium", "medium", "medium", 8192, "medium"},
 		{"high", "gpt-5.6-sol", "high", "high", "high", 16384, "high"},
-		{"maximum", "gpt-5.6-sol", "high", "xhigh", "xhigh", 32768, "xhigh"},
-		{"xhigh", "gpt-5.6-sol", "high", "xhigh", "xhigh", 32768, "xhigh"},
-		{"max", "gpt-5.6-sol", "high", "max", "max", 32768, "max"},
-		{"max", "gpt-5.5", "high", "max", "xhigh", 32768, "max"},
+		{"maximum", "gpt-5.6-sol", "xhigh", "xhigh", "xhigh", 32768, "xhigh"},
+		{"xhigh", "gpt-5.6-sol", "xhigh", "xhigh", "xhigh", 32768, "xhigh"},
+		{"max", "gpt-5.6-sol", "max", "max", "max", 32768, "max"},
+		{"max", "gpt-5.5", "max", "max", "xhigh", 32768, "max"},
 	}
 	for _, tc := range cases {
 		if got := NormalizeReasoning(tc.level); got != tc.normalized {

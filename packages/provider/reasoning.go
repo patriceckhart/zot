@@ -219,8 +219,12 @@ func OpenAIReasoningEffort(level string) string {
 		return "low"
 	case "medium":
 		return "medium"
-	case "high", "xhigh", "max":
+	case "high":
 		return "high"
+	case "xhigh":
+		return "xhigh"
+	case "max":
+		return "max"
 	default:
 		return ""
 	}
