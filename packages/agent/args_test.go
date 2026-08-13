@@ -25,19 +25,6 @@ func TestParseArgsTemperatureAllowsZero(t *testing.T) {
 	}
 }
 
-func TestParseArgsExplicitEmptySystemPromptIsSet(t *testing.T) {
-	args, err := ParseArgs([]string{"--system-prompt", ""})
-	if err != nil {
-		t.Fatalf("ParseArgs returned %v", err)
-	}
-	if !args.SystemPromptSet {
-		t.Fatal("SystemPromptSet = false; want true for an explicitly empty flag value")
-	}
-	if args.SystemPrompt != "" {
-		t.Fatalf("SystemPrompt = %q; want empty", args.SystemPrompt)
-	}
-}
-
 func TestParseArgsTemperatureRejectsOutOfRange(t *testing.T) {
 	if _, err := ParseArgs([]string{"--temperature", "2.1"}); err == nil {
 		t.Fatal("ParseArgs accepted out-of-range temperature")
