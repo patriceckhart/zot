@@ -2,6 +2,19 @@ package agent
 
 import "testing"
 
+func TestParseArgsExplicitEmptySystemPromptIsSet(t *testing.T) {
+	args, err := ParseArgs([]string{"--system-prompt", ""})
+	if err != nil {
+		t.Fatalf("ParseArgs returned %v", err)
+	}
+	if !args.SystemPromptSet {
+		t.Fatal("SystemPromptSet = false; want true for an explicitly empty flag value")
+	}
+	if args.SystemPrompt != "" {
+		t.Fatalf("SystemPrompt = %q; want empty", args.SystemPrompt)
+	}
+}
+
 func TestParseArgsTemperatureAllowsZero(t *testing.T) {
 	args, err := ParseArgs([]string{"--temperature", "0"})
 	if err != nil {

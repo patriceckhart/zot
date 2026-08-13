@@ -93,6 +93,17 @@ func writeTestZotfile(t *testing.T, manifest string) string {
 	return dir
 }
 
+func TestApplyZotfileAgentPromptPreservesEmptyReplacement(t *testing.T) {
+	args := Args{SystemPrompt: "cli prompt"}
+	applyZotfileAgentPrompt(&args, true, " \n")
+	if !args.SystemPromptSet {
+		t.Fatal("SystemPromptSet = false; want true for an empty replacement AGENT.md")
+	}
+	if args.SystemPrompt != "" {
+		t.Fatalf("SystemPrompt = %q; want empty", args.SystemPrompt)
+	}
+}
+
 func TestLoadZotfileAllowsMissingAgentMD(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"zotfile":1,"name":"test"}`), 0o600); err != nil {

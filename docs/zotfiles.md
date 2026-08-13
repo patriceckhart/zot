@@ -115,7 +115,7 @@ Set `replace_system_prompt` to `true` in the manifest to use `AGENT.md` as the r
 }
 ```
 
-Replacement is intended for fully specialized agents. The default layering behavior is usually preferable because it retains zot's normal identity and tool-use guidance.
+Replacement is intended for fully specialized agents. The default layering behavior is usually preferable because it retains zot's normal identity and tool-use guidance. With replacement enabled, an empty `AGENT.md` intentionally omits the built-in identity while retaining generated context.
 
 ## Bundled skills
 

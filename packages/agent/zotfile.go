@@ -151,12 +151,7 @@ func runLocalZotfile(ref string, args Args, version string) error {
 	agentPrompt, err := os.ReadFile(agentPath)
 	switch {
 	case err == nil:
-		text := strings.TrimSpace(string(agentPrompt))
-		if zf.Manifest.ReplaceSystemPrompt {
-			args.SystemPrompt = text
-		} else {
-			args.AppendSystemPrompt = append(args.AppendSystemPrompt, text)
-		}
+		applyZotfileAgentPrompt(&args, zf.Manifest.ReplaceSystemPrompt, string(agentPrompt))
 	case os.IsNotExist(err):
 		// AGENT.md is optional; missing file leaves the system prompt unchanged.
 	default:
@@ -179,6 +174,16 @@ func runLocalZotfile(ref string, args Args, version string) error {
 	args.AgentDataDir = agentData
 	args.PermissionSet = &perms
 	return runWithArgs(args, version)
+}
+
+func applyZotfileAgentPrompt(args *Args, replace bool, prompt string) {
+	text := strings.TrimSpace(prompt)
+	if replace {
+		args.SystemPrompt = text
+		args.SystemPromptSet = true
+		return
+	}
+	args.AppendSystemPrompt = append(args.AppendSystemPrompt, text)
 }
 
 func zotInspect(ref string) error {

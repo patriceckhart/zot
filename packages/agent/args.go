@@ -42,8 +42,11 @@ type Args struct {
 	inheritedAuthMethod string
 	inheritedAccountID  string
 
-	BaseURL            string // override provider base URL (for tests/self-hosted)
-	SystemPrompt       string
+	BaseURL      string // override provider base URL (for tests/self-hosted)
+	SystemPrompt string
+	// SystemPromptSet records whether --system-prompt was provided. An empty
+	// value is an intentional override, distinct from leaving the flag absent.
+	SystemPromptSet    bool
 	AppendSystemPrompt []string
 	Reasoning          string
 	Temperature        *float32
@@ -202,6 +205,7 @@ func ParseArgs(in []string) (Args, error) {
 				return a, err
 			}
 			a.SystemPrompt = v
+			a.SystemPromptSet = true
 		case "--append-system-prompt":
 			v, err := want(&i, arg)
 			if err != nil {

@@ -50,8 +50,13 @@ type Config struct {
 	// process cwd.
 	CWD string
 
-	// SystemPrompt overrides the built-in system prompt.
+	// SystemPrompt overrides the built-in system prompt when non-empty or when
+	// SystemPromptSet is true.
 	SystemPrompt string
+
+	// SystemPromptSet allows an empty SystemPrompt to intentionally omit the
+	// built-in identity. It is unnecessary for non-empty prompts.
+	SystemPromptSet bool
 
 	// AppendSystemPrompt is appended to the built-in (or overridden)
 	// system prompt. Useful for project-specific instructions.
@@ -105,22 +110,7 @@ type Runtime struct {
 // New constructs a Runtime from cfg. Returns an error if no
 // credential is available for the requested provider.
 func New(cfg Config) (*Runtime, error) {
-	args := agent.Args{
-		Mode:               agent.ModeJSON, // headless
-		Provider:           cfg.Provider,
-		Model:              cfg.Model,
-		CWD:                cfg.CWD,
-		APIKey:             cfg.APIKey,
-		BaseURL:            cfg.BaseURL,
-		SystemPrompt:       cfg.SystemPrompt,
-		AppendSystemPrompt: cfg.AppendSystemPrompt,
-		Reasoning:          cfg.Reasoning,
-		Temperature:        cfg.Temperature,
-		MaxSteps:           cfg.MaxSteps,
-		Tools:              cfg.Tools,
-		NoTools:            cfg.NoTools,
-		NoSess:             true, // SDK callers manage persistence themselves
-	}
+	args := argsFromConfig(cfg)
 	if args.MaxSteps == 0 {
 		args.MaxSteps = 50
 	}
@@ -138,6 +128,26 @@ func New(cfg Config) (*Runtime, error) {
 		model:    r.Model,
 		cwd:      r.CWD,
 	}, nil
+}
+
+func argsFromConfig(cfg Config) agent.Args {
+	return agent.Args{
+		Mode:               agent.ModeJSON, // headless
+		Provider:           cfg.Provider,
+		Model:              cfg.Model,
+		CWD:                cfg.CWD,
+		APIKey:             cfg.APIKey,
+		BaseURL:            cfg.BaseURL,
+		SystemPrompt:       cfg.SystemPrompt,
+		SystemPromptSet:    cfg.SystemPromptSet || cfg.SystemPrompt != "",
+		AppendSystemPrompt: cfg.AppendSystemPrompt,
+		Reasoning:          cfg.Reasoning,
+		Temperature:        cfg.Temperature,
+		MaxSteps:           cfg.MaxSteps,
+		Tools:              cfg.Tools,
+		NoTools:            cfg.NoTools,
+		NoSess:             true, // SDK callers manage persistence themselves
+	}
 }
 
 // Provider returns the active provider id.
