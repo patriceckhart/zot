@@ -112,6 +112,7 @@ func TestResolveExplicitEmptySystemPromptOverridesPersistentPrompt(t *testing.T)
 		Model:           "gpt-5",
 		CWD:             cwd,
 		SystemPromptSet: true,
+		SystemPrompt:    "",
 		NoContextFiles:  true,
 		NoSkill:         true,
 	}, false)
