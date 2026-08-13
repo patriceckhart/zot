@@ -21,7 +21,8 @@ type ToolSummary struct {
 type SystemPromptOpts struct {
 	CWD        string
 	Tools      []ToolSummary
-	Custom     string   // if set, replaces the built-in identity and docs guidance
+	Custom     string   // when CustomSet, replaces the built-in identity and docs guidance
+	CustomSet  bool     // preserves an intentionally empty custom prompt
 	Append     []string // extra text appended at the end
 	Now        time.Time
 	ZotDocsDir string
@@ -58,7 +59,7 @@ func BuildSystemPrompt(o SystemPromptOpts) string {
 
 	var sb strings.Builder
 
-	if o.Custom != "" {
+	if o.CustomSet || o.Custom != "" {
 		sb.WriteString(o.Custom)
 	} else {
 		sb.WriteString(defaultIdentity)

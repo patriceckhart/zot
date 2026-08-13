@@ -63,6 +63,7 @@ type Resolved struct {
 	// resolve.
 	systemAppend     []string
 	systemCustom     string
+	systemCustomSet  bool
 	toolDescriptions map[string]string
 }
 
@@ -102,6 +103,7 @@ func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
 		CWD:        r.CWD,
 		Tools:      toolSummariesFromRegistry(r.ToolRegistry, r.toolDescriptions),
 		Custom:     r.systemCustom,
+		CustomSet:  r.systemCustomSet,
 		Append:     append_,
 		ZotDocsDir: filepath.Join(ZotHome(), "docs"),
 	})
@@ -619,14 +621,17 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	//   2. $ZOT_HOME/SYSTEM.md (persistent user override)
 	//   3. built-in default (defaultIdentity + defaultGuidelines)
 	custom := args.SystemPrompt
-	if custom == "" {
+	customSet := args.SystemPromptSet || custom != ""
+	if !customSet {
 		custom = readUserSystemPrompt(ZotHome())
+		customSet = custom != ""
 	}
 
 	sys := BuildSystemPrompt(SystemPromptOpts{
 		CWD:        args.CWD,
 		Tools:      summaries,
 		Custom:     custom,
+		CustomSet:  customSet,
 		Append:     append_,
 		ZotDocsDir: docsDir,
 	})
@@ -660,6 +665,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		ContextFiles:     contextFiles,
 		systemAppend:     append_,
 		systemCustom:     custom,
+		systemCustomSet:  customSet,
 		toolDescriptions: descMapFromSummaries(summaries),
 	}, nil
 }

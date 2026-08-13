@@ -98,6 +98,34 @@ func TestResolveNoContextFilesSkipsAgentsInstructions(t *testing.T) {
 	}
 }
 
+func TestResolveExplicitEmptySystemPromptOverridesPersistentPrompt(t *testing.T) {
+	zotHome := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("ZOT_HOME", zotHome)
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	if err := os.WriteFile(filepath.Join(zotHome, "SYSTEM.md"), []byte("persistent instructions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := Resolve(Args{
+		Provider:        "openai",
+		Model:           "gpt-5",
+		CWD:             cwd,
+		SystemPromptSet: true,
+		SystemPrompt:    "",
+		NoContextFiles:  true,
+		NoSkill:         true,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{"persistent instructions", defaultIdentity, "Zot's own docs are installed under"} {
+		if strings.Contains(r.SystemPrompt, unwanted) {
+			t.Fatalf("explicit empty system prompt unexpectedly contains %q:\n%s", unwanted, r.SystemPrompt)
+		}
+	}
+}
+
 // TestResolveFallsBackWhenConfiguredModelIsGone reproduces the
 // startup failure caught by the user's screenshot: the persisted
 // config.json points at a model id that's no longer in the active
