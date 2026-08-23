@@ -58,6 +58,21 @@ This extension reads MCP server configurations from standard locations (same for
 
 The model initially sees one small loader tool, `mcp__search_tools`. It searches cached MCP tool names and descriptions locally, activates up to eight relevant definitions by default, and then calls the selected MCP tool normally. This keeps large MCP installations compatible with providers that limit request or tool-schema size.
 
+### Phone pairing (Build Remote Agent)
+
+Optional spectator: install https://grokbuildremote.com/ (`gbr-agent` **v0.6.0+**),
+run `gbr-agent pair` then `gbr-agent run`, clone
+https://github.com/LinespottingOrg/GrokBuildRemote-Agents and `npm install` in
+`mcp/gbr-mcp`. Add the `gbr` stdio server below (absolute path to
+`bin/gbr-mcp.js`). Attach is only `http://127.0.0.1:8788` or that MCP —
+not a second pair protocol. Independent product. Not affiliated with xAI or
+SpaceX. Never put mailbox keys in `mcp.json`.
+
+```bash
+curl -sS http://127.0.0.1:8788/health
+curl -sS http://127.0.0.1:8788/v1/sessions
+```
+
 ## Configuration
 
 Config files are loaded from two locations (project overrides global per-server):
@@ -84,6 +99,16 @@ Standard MCP config — same as Claude Desktop, with zot-specific extensions:
       "connectTimeout": 30,                // connection timeout (seconds)
       "requestTimeout": 60,                // per-request timeout (seconds)
       "idleTimeout": 300                   // idle timeout before stopping (seconds)
+    },
+
+    // Build Remote Agent (gbr/1). Pair with `gbr-agent pair` + `gbr-agent run`.
+    // Attach is loopback only — http://127.0.0.1:8788 or this stdio MCP.
+    // Independent product. Not affiliated with xAI or SpaceX.
+    // https://grokbuildremote.com/
+    "gbr": {
+      "command": "node",
+      "args": ["GrokBuildRemote-Agents/mcp/gbr-mcp/bin/gbr-mcp.js"],
+      "description": "Build Remote Agent Bot API (loopback). Requires gbr-agent run. Never put mailbox keys here."
     },
 
     // ── Streamable HTTP transport (modern HTTP) ─────────────────────────────
