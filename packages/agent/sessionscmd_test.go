@@ -107,6 +107,24 @@ func TestSessionsPruneDryRunPreservesSessions(t *testing.T) {
 	}
 }
 
+func TestSessionsPruneDisplaysHumanReadableGroupSizes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ZOT_HOME", home)
+	missing := filepath.Join(home, "missing-project")
+	createPruneTestSessionWithText(t, home, missing, strings.Repeat("a", 2048))
+
+	var out, errOut bytes.Buffer
+	if err := runSessionsPrune(sessionsPruneOptions{dryRun: true}, strings.NewReader(""), &out, &errOut, os.Stat); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "KiB") {
+		t.Fatalf("output = %q, want binary size unit", out.String())
+	}
+	if strings.Contains(out.String(), " bytes)") {
+		t.Fatalf("output = %q, want human-readable size instead of raw bytes", out.String())
+	}
+}
+
 func TestSessionsPruneInteractiveDeletesSelectedGroup(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ZOT_HOME", home)
@@ -286,13 +304,18 @@ func TestParseSessionsPruneOptions(t *testing.T) {
 
 func createPruneTestSession(t *testing.T, root, cwd string) string {
 	t.Helper()
+	return createPruneTestSessionWithText(t, root, cwd, "hello")
+}
+
+func createPruneTestSessionWithText(t *testing.T, root, cwd, text string) string {
+	t.Helper()
 	session, err := core.NewSession(root, cwd, "test", "test-model", "test-version")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := session.AppendMessage(provider.Message{
 		Role:    provider.RoleUser,
-		Content: []provider.Content{provider.TextBlock{Text: "hello"}},
+		Content: []provider.Content{provider.TextBlock{Text: text}},
 	}); err != nil {
 		t.Fatal(err)
 	}

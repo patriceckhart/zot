@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/patriceckhart/zot/packages/core"
+	"github.com/patriceckhart/zot/packages/provider"
 )
 
 type sessionsPruneOptions struct {
@@ -266,7 +267,7 @@ func runSessionsPrune(opts sessionsPruneOptions, in io.Reader, out, errOut io.Wr
 		fmt.Fprintln(out, "missing session directories:")
 	}
 	for idx, group := range candidates {
-		fmt.Fprintf(out, "  %d. %s (%s, %d bytes)\n", idx+1, group.CWD, sessionCount(len(group.Paths)), group.SizeBytes)
+		fmt.Fprintf(out, "  %d. %s (%s, %s)\n", idx+1, group.CWD, sessionCount(len(group.Paths)), provider.FormatBytes(group.SizeBytes))
 	}
 	if opts.dryRun {
 		fmt.Fprintf(out, "dry run: %s in %s would be deleted\n", sessionCount(totalSessions(candidates)), directoryCount(len(candidates)))
