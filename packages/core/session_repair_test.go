@@ -102,3 +102,17 @@ func TestRepairToolUseResultPairsEmpty(t *testing.T) {
 		t.Fatalf("expected empty, got %d", len(out))
 	}
 }
+
+func TestRepairToolUseResultPairsSkipsServerTools(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hi"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{
+			provider.ToolCallBlock{ID: "srv", Name: "openrouter:datetime", Server: true},
+			provider.TextBlock{Text: "noon"},
+		}},
+	}
+	out := repairToolUseResultPairs(msgs)
+	if len(out) != len(msgs) {
+		t.Fatalf("server tools should not get stub results, len %d -> %d", len(msgs), len(out))
+	}
+}

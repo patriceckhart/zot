@@ -121,13 +121,14 @@ func sortedModels(in []provider.Model) []provider.Model {
 
 // normalizeModelQuery lowercases and strips punctuation so fuzzy
 // substring matching works on both the query and haystacks. "opus46"
-// and "opus-4-6" both become "opus46".
+// and "opus-4-6" both become "opus46". "@" is kept so typing "preset"
+// or "@preset" matches OpenRouter ids like "@preset/flash".
 func normalizeModelQuery(s string) string {
 	var sb strings.Builder
 	sb.Grow(len(s))
 	for _, r := range s {
 		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r == '@', r >= 'a' && r <= 'z', r >= '0' && r <= '9':
 			sb.WriteRune(r)
 		case r >= 'A' && r <= 'Z':
 			sb.WriteRune(r + ('a' - 'A'))

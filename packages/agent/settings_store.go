@@ -68,6 +68,15 @@ func (configSettingsStore) SetJailByDefault(enabled bool) error {
 	return SaveConfig(cfg)
 }
 
+func (configSettingsStore) SetOpenRouterServerTools(enabled bool) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.OpenRouterServerToolsEnabled = &enabled
+	return SaveConfig(cfg)
+}
+
 func (configSettingsStore) SetRecursiveFileSuggest(enabled bool) error {
 	cfg, err := LoadConfig()
 	if err != nil {

@@ -218,6 +218,55 @@ func TestResolveExplicitFlagStaleDoesNotRepairConfig(t *testing.T) {
 	}
 }
 
+func TestNewAgentInjectsOpenRouterServerToolsWhenSettingOn(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	if err := SaveConfig(Config{Provider: "openrouter", Model: "openai/gpt-4.1"}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Resolve(Args{NoSkill: true}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := r.NewAgent()
+	for _, name := range []string{
+		"openrouter:web_search",
+		"openrouter:web_fetch",
+		"openrouter:advisor",
+		"openrouter:subagent",
+		"openrouter:fusion",
+		"openrouter:image_generation",
+		"openrouter:datetime",
+		"openrouter:experimental__search_models",
+	} {
+		if _, err := ag.Tools.Get(name); err != nil {
+			t.Errorf("missing advertised server tool %q: %v", name, err)
+		}
+	}
+	for _, name := range []string{"openrouter:shell", "openrouter:bash", "openrouter:apply_patch", "openrouter:tool_search"} {
+		if _, err := ag.Tools.Get(name); err == nil {
+			t.Errorf("chat-completions-incompatible tool %q should not be advertised", name)
+		}
+	}
+}
+
+func TestNewAgentOmitsOpenRouterServerToolsWhenSettingOff(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	off := false
+	if err := SaveConfig(Config{Provider: "openrouter", Model: "openai/gpt-4.1", OpenRouterServerToolsEnabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Resolve(Args{NoSkill: true}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := r.NewAgent()
+	if _, err := ag.Tools.Get("openrouter:web_search"); err == nil {
+		t.Fatal("web_search advertised while setting is off")
+	}
+}
+
 func TestResolveOpenRouterPreservesSavedRoutedModelID(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	t.Setenv("OPENROUTER_API_KEY", "test-key")

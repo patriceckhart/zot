@@ -72,6 +72,10 @@ type InteractiveConfig struct {
 	// The current sandbox may differ after a session-scoped /jail or /unjail.
 	JailByDefault *bool
 
+	// OpenRouterServerToolsEnabled mirrors the persisted preference.
+	// nil means the default, on.
+	OpenRouterServerToolsEnabled *bool
+
 	// RecursiveFileSuggest mirrors the persisted recursive_file_suggest
 	// flag at startup. When true the @-mention picker fuzzy-searches the
 	// whole project tree instead of browsing one directory at a time.
@@ -334,6 +338,7 @@ type SettingsStore interface {
 	SetInlineImages(enabled bool) error
 	SetAutoSwarm(enabled bool) error
 	SetJailByDefault(enabled bool) error
+	SetOpenRouterServerTools(enabled bool) error
 	SetRecursiveFileSuggest(enabled bool) error
 	SetRespectGitignore(enabled bool) error
 	SetCompactMode(enabled bool) error
@@ -678,6 +683,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	if cfg.AutoSwarmEnabled != nil && *cfg.AutoSwarmEnabled {
 		i.applyAutoSwarmTool(true)
 	}
+	i.applyOpenRouterServerTools(i.openRouterServerToolsEnabled())
 	return i
 }
 
@@ -3383,6 +3389,12 @@ func (i *Interactive) openSettingsDialog() {
 	}
 
 	jailByDefault := i.cfg.JailByDefault != nil && *i.cfg.JailByDefault
+	openRouterServerTools := i.openRouterServerToolsEnabled()
+	openRouterServerToolsDisabled := i.cfg.Provider != "openrouter"
+	openRouterServerToolsHint := ""
+	if openRouterServerToolsDisabled {
+		openRouterServerToolsHint = "only available when the current provider is OpenRouter"
+	}
 	recursiveFiles := i.cfg.RecursiveFileSuggest != nil && *i.cfg.RecursiveFileSuggest
 	respectGitignore := i.cfg.RespectGitignore == nil || *i.cfg.RespectGitignore
 	compactMode := i.compactModeEnabled()
@@ -3500,6 +3512,14 @@ func (i *Interactive) openSettingsDialog() {
 			label: "jail new sessions by default",
 			desc:  "confine tools to the session working directory unless /unjail is used",
 			value: jailByDefault,
+		},
+		{
+			key:      "openrouter_server_tools_enabled",
+			label:    "OpenRouter Server Tools",
+			desc:     "Only on OpenRouter advertise server tools like web search, datetime, advisor, and the rest so the model can call them",
+			value:    openRouterServerTools && !openRouterServerToolsDisabled,
+			disabled: openRouterServerToolsDisabled,
+			hint:     openRouterServerToolsHint,
 		},
 		{
 			key:   "recursive_file_suggest",
@@ -3859,6 +3879,22 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		}
 		i.mu.Lock()
 		i.statusOK = "jail by default " + onOff(value)
+		i.statusErr = ""
+		i.mu.Unlock()
+	case "openrouter_server_tools_enabled":
+		val := value
+		i.cfg.OpenRouterServerToolsEnabled = &val
+		if i.cfg.SettingsStore != nil {
+			if err := i.cfg.SettingsStore.SetOpenRouterServerTools(value); err != nil {
+				i.mu.Lock()
+				i.statusErr = "settings: " + err.Error()
+				i.mu.Unlock()
+				return
+			}
+		}
+		i.applyOpenRouterServerTools(value)
+		i.mu.Lock()
+		i.statusOK = "OpenRouter server tools " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "recursive_file_suggest":
@@ -5365,6 +5401,7 @@ func (i *Interactive) swapModel(prov, model string, builder func(string, string)
 	// helpers are no-ops when their feature is inactive, so the
 	// cross-provider path still works on a vanilla setup.
 	i.applyAutoSwarmTool(i.autoSwarmEnabled())
+	i.applyOpenRouterServerTools(i.openRouterServerToolsEnabled())
 	i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
 	if i.cfg.PersistModel != nil {
 		i.cfg.PersistModel(p, md)
@@ -5394,6 +5431,7 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 		i.statusOK = "logged in to " + ev.Provider + " via " + ev.Method
 		i.mu.Unlock()
 		i.applyAutoSwarmTool(i.autoSwarmEnabled())
+		i.applyOpenRouterServerTools(i.openRouterServerToolsEnabled())
 		i.applyTelegramTools(i.telegramBridge != nil && i.telegramBridge.Active())
 		i.dialog.ShowResult(true, "")
 	}
@@ -6573,6 +6611,30 @@ func (i *Interactive) applyAutoSwarmSystemPrompt(active bool) {
 // survive a toggle.
 func (i *Interactive) autoSwarmEnabled() bool {
 	return i.cfg.AutoSwarmEnabled != nil && *i.cfg.AutoSwarmEnabled
+}
+
+func (i *Interactive) openRouterServerToolsEnabled() bool {
+	return i.cfg.OpenRouterServerToolsEnabled == nil || *i.cfg.OpenRouterServerToolsEnabled
+}
+
+func (i *Interactive) applyOpenRouterServerTools(active bool) {
+	if i.agent == nil {
+		return
+	}
+	current := i.agent.Tools
+	next := core.Registry{}
+	for name, t := range current {
+		if tools.IsOpenRouterServerTool(name) {
+			continue
+		}
+		next[name] = t
+	}
+	if active && i.cfg.Provider == "openrouter" {
+		for _, t := range tools.OpenRouterServerTools() {
+			next[t.Name()] = t
+		}
+	}
+	i.agent.SetTools(next)
 }
 
 func (i *Interactive) applyAutoSwarmTool(active bool) {

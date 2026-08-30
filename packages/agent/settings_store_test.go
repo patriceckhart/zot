@@ -23,6 +23,37 @@ func TestConfigSettingsStorePersistsShowInstructionsAtStartup(t *testing.T) {
 	}
 }
 
+func TestConfigSettingsStorePersistsOpenRouterServerTools(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (configSettingsStore{}).SetOpenRouterServerTools(false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OpenRouterServerToolsEnabled == nil || *cfg.OpenRouterServerToolsEnabled {
+		t.Fatal("openrouter_server_tools_enabled was not persisted as disabled")
+	}
+	if cfg.Theme != "dark" {
+		t.Fatalf("unrelated config changed: theme = %q, want dark", cfg.Theme)
+	}
+}
+
+func TestOpenRouterServerToolsEnabledDefaultsOn(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	if err := SaveConfig(Config{}); err != nil {
+		t.Fatal(err)
+	}
+	if !OpenRouterServerToolsEnabled() {
+		t.Fatal("nil preference should default to enabled")
+	}
+}
+
 func TestConfigSettingsStorePersistsJailByDefault(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {

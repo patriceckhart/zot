@@ -323,7 +323,7 @@ func repairToolUseResultPairs(msgs []provider.Message) []provider.Message {
 		// Collect tool_use ids in this assistant message.
 		var ids []string
 		for _, c := range m.Content {
-			if tc, ok := c.(provider.ToolCallBlock); ok {
+			if tc, ok := c.(provider.ToolCallBlock); ok && !tc.Server {
 				ids = append(ids, tc.ID)
 			}
 		}
@@ -852,6 +852,7 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 				Name             string          `json:"name"`
 				Arguments        json.RawMessage `json:"arguments"`
 				ThoughtSignature string          `json:"thought_signature"`
+				Server           bool            `json:"server"`
 			}
 			_ = json.Unmarshal(raw, &tc)
 			msg.Content = append(msg.Content, provider.ToolCallBlock{
@@ -859,6 +860,7 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 				Name:             tc.Name,
 				Arguments:        tc.Arguments,
 				ThoughtSignature: tc.ThoughtSignature,
+				Server:           tc.Server,
 			})
 		case head.CallID != "":
 			var tr struct {

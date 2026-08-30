@@ -23,7 +23,7 @@ func TestKimiK3DeferredToolsLoadAtToolResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(wire.Tools) != 1 || wire.Tools[0].Function.Name != "search_tools" {
+	if len(wire.Tools) != 1 || wire.Tools[0].Function == nil || wire.Tools[0].Function.Name != "search_tools" {
 		t.Fatalf("top-level tools = %+v, want only search_tools", wire.Tools)
 	}
 	var loaded []oaiTool
@@ -32,7 +32,7 @@ func TestKimiK3DeferredToolsLoadAtToolResult(t *testing.T) {
 			loaded = message.Tools
 		}
 	}
-	if len(loaded) != 1 || loaded[0].Function.Name != "lookup_weather" {
+	if len(loaded) != 1 || loaded[0].Function == nil || loaded[0].Function.Name != "lookup_weather" {
 		t.Fatalf("loaded tools = %+v, want lookup_weather", loaded)
 	}
 }
@@ -69,7 +69,9 @@ func TestKimiK3DeferredToolsSkippedForNonMoonshotProvider(t *testing.T) {
 	}
 	var names []string
 	for _, tool := range wire.Tools {
-		names = append(names, tool.Function.Name)
+		if tool.Function != nil {
+			names = append(names, tool.Function.Name)
+		}
 	}
 	if len(names) != 2 || names[0] != "search_tools" || names[1] != "lookup_weather" {
 		t.Fatalf("top-level tools = %v, want [search_tools lookup_weather]", names)
@@ -89,7 +91,9 @@ func TestDeferredToolsFallbackToActiveTopLevelDefinitions(t *testing.T) {
 			}
 			names := make([]string, 0, len(wire.Tools))
 			for _, tool := range wire.Tools {
-				names = append(names, tool.Function.Name)
+				if tool.Function != nil {
+					names = append(names, tool.Function.Name)
+				}
 			}
 			return names, nil
 		},

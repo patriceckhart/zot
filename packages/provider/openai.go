@@ -133,9 +133,11 @@ type oaiToolCallFn struct {
 }
 
 type oaiToolCall struct {
-	ID       string        `json:"id"`
-	Type     string        `json:"type"` // "function"
-	Function oaiToolCallFn `json:"function"`
+	ID        string          `json:"id"`
+	Type      string          `json:"type"` // "function" or "openrouter:..."
+	Function  oaiToolCallFn   `json:"function,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
 type oaiMessage struct {
@@ -153,12 +155,13 @@ type oaiMessage struct {
 }
 
 type oaiTool struct {
-	Type     string `json:"type"` // "function"
-	Function struct {
+	Type       string          `json:"type"` // "function" or "openrouter:..."
+	Parameters json.RawMessage `json:"parameters,omitempty"`
+	Function   *struct {
 		Name        string          `json:"name"`
 		Description string          `json:"description,omitempty"`
 		Parameters  json.RawMessage `json:"parameters"`
-	} `json:"function"`
+	} `json:"function,omitempty"`
 }
 
 type oaiStreamOptions struct {
@@ -176,6 +179,8 @@ type oaiRequest struct {
 	MaxTokens        *int              `json:"max_tokens,omitempty"`
 	MaxCompletionTok *int              `json:"max_completion_tokens,omitempty"`
 	ReasoningEffort  string            `json:"reasoning_effort,omitempty"`
+	SessionID        string            `json:"session_id,omitempty"`
+	MaxToolCalls     int               `json:"max_tool_calls,omitempty"`
 }
 
 // ---- request building ----
@@ -202,6 +207,12 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		Stream:        true,
 		StreamOptions: &oaiStreamOptions{IncludeUsage: true},
 		Temperature:   req.Temperature,
+	}
+	if req.SessionID != "" {
+		out.SessionID = req.SessionID
+	}
+	if req.MaxToolCalls > 0 {
+		out.MaxToolCalls = req.MaxToolCalls
 	}
 
 	maxTok := req.MaxTokens
@@ -310,6 +321,9 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 					}
 					text.WriteString(v.Text)
 				case ToolCallBlock:
+					if v.Server {
+						continue
+					}
 					args := v.Arguments
 					if len(args) == 0 || !json.Valid(args) {
 						args = json.RawMessage("{}")
@@ -407,12 +421,25 @@ func supportsDeferredTools(provider string) bool {
 	return provider == "moonshotai" || provider == "moonshotai-cn"
 }
 
+func isOpenRouterServerToolType(typ string) bool {
+	return strings.HasPrefix(typ, "openrouter:")
+}
+
 func makeOAITool(t Tool) oaiTool {
+	if isOpenRouterServerToolType(t.Name) {
+		return oaiTool{Type: t.Name, Parameters: t.Schema}
+	}
 	var tool oaiTool
 	tool.Type = "function"
-	tool.Function.Name = t.Name
-	tool.Function.Description = t.Description
-	tool.Function.Parameters = t.Schema
+	tool.Function = &struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description,omitempty"`
+		Parameters  json.RawMessage `json:"parameters"`
+	}{
+		Name:        t.Name,
+		Description: t.Description,
+		Parameters:  t.Schema,
+	}
 	return tool
 }
 
@@ -554,6 +581,7 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 		toolName  string
 		toolArgs  strings.Builder
 		announced bool
+		server    bool
 	}
 	var (
 		blocks       []*blockEntry
@@ -600,7 +628,7 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 					args = "{}"
 				}
 				content = append(content, ToolCallBlock{
-					ID: b.toolID, Name: b.toolName, Arguments: json.RawMessage(args),
+					ID: b.toolID, Name: b.toolName, Arguments: json.RawMessage(args), Server: b.server,
 				})
 			}
 		}
@@ -639,10 +667,12 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 						Content          string `json:"content"`
 						ReasoningContent string `json:"reasoning_content"`
 						ToolCalls        []struct {
-							Index    int    `json:"index"`
-							ID       string `json:"id"`
-							Type     string `json:"type"`
-							Function struct {
+							Index     int             `json:"index"`
+							ID        string          `json:"id"`
+							Type      string          `json:"type"`
+							Name      string          `json:"name"`
+							Arguments json.RawMessage `json:"arguments"`
+							Function  struct {
 								Name      string `json:"name"`
 								Arguments string `json:"arguments"`
 							} `json:"function"`
@@ -699,8 +729,22 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 					if tc.ID != "" {
 						t.toolID = tc.ID
 					}
+					if isOpenRouterServerToolType(tc.Type) {
+						t.server = true
+						if tc.Name != "" {
+							t.toolName = tc.Name
+						} else if t.toolName == "" {
+							t.toolName = tc.Type
+						}
+						if len(tc.Arguments) > 0 {
+							t.toolArgs.Write(tc.Arguments)
+						}
+					}
 					if tc.Function.Name != "" {
 						t.toolName = tc.Function.Name
+						if isOpenRouterServerToolType(tc.Function.Name) {
+							t.server = true
+						}
 					}
 					if !t.announced && t.toolID != "" && t.toolName != "" {
 						t.announced = true
@@ -720,10 +764,19 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 					stop = StopLength
 				case "tool_calls", "function_call":
 					stop = StopToolUse
+					hasClientTool := false
 					for _, b := range blocks {
 						if b.kind == "tool_use" && b.announced {
 							out <- EventToolEnd{ID: b.toolID}
+							if !b.server {
+								hasClientTool = true
+							}
 						}
+					}
+					if !hasClientTool {
+						// OpenRouter executed every tool server-side; the
+						// client must not send tool_result messages.
+						stop = StopEnd
 					}
 				}
 			}

@@ -174,54 +174,71 @@ func refreshLlamaCPPModels(ctx context.Context, commandMode apiKeyCommandMode) e
 
 func refreshModels() {
 	cached, _ := provider.LoadCache(ModelCachePath())
-	if cached.IsFresh() {
-		return
-	}
+	cacheFresh := cached.IsFresh()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	var all []provider.Model
+	var openrouterCred string
+	var haveOpenRouter bool
+	if cred, _, err := resolveCredentialForBackground(ctx, "openrouter"); err == nil {
+		openrouterCred = cred
+		haveOpenRouter = true
+	}
 
-	if cred, method, err := resolveCredentialForBackground(ctx, "anthropic"); err == nil && method == "apikey" {
-		// /v1/models on Anthropic is API-key only; OAuth tokens can
-		// also list models via the bearer header, but we skip OAuth
-		// here to avoid surprise rate-limit hits on subscription keys.
-		if live, err := provider.DiscoverAnthropic(ctx, cred, ""); err == nil {
-			all = append(all, live...)
-		}
-	}
-	if cred, method, err := resolveCredentialForBackground(ctx, "openai"); err == nil && method == "apikey" {
-		if live, err := provider.DiscoverOpenAI(ctx, cred, ""); err == nil {
-			all = append(all, live...)
-		}
-	}
-	if cred, method, err := resolveCredentialForBackground(ctx, "kimi"); err == nil && method == "apikey" {
-		if live, err := provider.DiscoverOpenAI(ctx, cred, "https://api.kimi.com/coding/v1"); err == nil {
-			for i := range live {
-				live[i].Provider = "kimi"
-				live[i].Source = "live"
+	if cacheFresh {
+		all = append(all, cached.Models...)
+	} else {
+		if cred, method, err := resolveCredentialForBackground(ctx, "anthropic"); err == nil && method == "apikey" {
+			// /v1/models on Anthropic is API-key only; OAuth tokens can
+			// also list models via the bearer header, but we skip OAuth
+			// here to avoid surprise rate-limit hits on subscription keys.
+			if live, err := provider.DiscoverAnthropic(ctx, cred, ""); err == nil {
+				all = append(all, live...)
 			}
-			all = append(all, live...)
+		}
+		if cred, method, err := resolveCredentialForBackground(ctx, "openai"); err == nil && method == "apikey" {
+			if live, err := provider.DiscoverOpenAI(ctx, cred, ""); err == nil {
+				all = append(all, live...)
+			}
+		}
+		if cred, method, err := resolveCredentialForBackground(ctx, "kimi"); err == nil && method == "apikey" {
+			if live, err := provider.DiscoverOpenAI(ctx, cred, "https://api.kimi.com/coding/v1"); err == nil {
+				for i := range live {
+					live[i].Provider = "kimi"
+					live[i].Source = "live"
+				}
+				all = append(all, live...)
+			}
+		}
+		if cred, method, err := resolveCredentialForBackground(ctx, "google"); err == nil && method == "apikey" {
+			if live, err := provider.DiscoverGoogle(ctx, cred, ""); err == nil {
+				all = append(all, live...)
+			}
+		}
+		if haveOpenRouter {
+			// /models is public; gate on a credential so the picker only
+			// fills with OpenRouter's hundreds of routes for users who use it.
+			if live, err := provider.DiscoverOpenRouter(ctx, ""); err == nil {
+				all = append(all, live...)
+			}
+		}
+		if _, _, err := resolveCredentialForBackground(ctx, "gondola"); err == nil {
+			// Gondola's catalog is also public. Gate discovery on a credential so
+			// its text models only fill the picker for users of the provider.
+			if live, err := provider.DiscoverGondola(ctx, ""); err == nil {
+				all = append(all, live...)
+			}
 		}
 	}
-	if cred, method, err := resolveCredentialForBackground(ctx, "google"); err == nil && method == "apikey" {
-		if live, err := provider.DiscoverGoogle(ctx, cred, ""); err == nil {
-			all = append(all, live...)
-		}
-	}
-	if _, _, err := resolveCredentialForBackground(ctx, "openrouter"); err == nil {
-		// /models is public; gate on a credential so the picker only
-		// fills with OpenRouter's hundreds of routes for users who use it.
-		if live, err := provider.DiscoverOpenRouter(ctx, ""); err == nil {
-			all = append(all, live...)
-		}
-	}
-	if _, _, err := resolveCredentialForBackground(ctx, "gondola"); err == nil {
-		// Gondola's catalog is also public. Gate discovery on a credential so
-		// its text models only fill the picker for users of the provider.
-		if live, err := provider.DiscoverGondola(ctx, ""); err == nil {
-			all = append(all, live...)
+
+	// Presets are per-account and require auth. Fetch them even when the
+	// public /models cache is still fresh so @preset/{slug} shows up in
+	// the picker without waiting out CacheTTL.
+	if haveOpenRouter {
+		if presets, err := provider.DiscoverOpenRouterPresets(ctx, openrouterCred, ""); err == nil {
+			all = mergeOpenRouterPresets(all, presets)
 		}
 	}
 
@@ -233,4 +250,17 @@ func refreshModels() {
 		FetchedAt: time.Now().UTC(),
 		Models:    all,
 	})
+}
+
+// mergeOpenRouterPresets replaces any previously cached OpenRouter preset
+// models with the freshly listed set, keeping every non-preset entry.
+func mergeOpenRouterPresets(existing, presets []provider.Model) []provider.Model {
+	out := make([]provider.Model, 0, len(existing)+len(presets))
+	for _, m := range existing {
+		if m.Provider == "openrouter" && strings.HasPrefix(m.ID, "@preset/") {
+			continue
+		}
+		out = append(out, m)
+	}
+	return append(out, presets...)
 }

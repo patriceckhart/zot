@@ -51,6 +51,7 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 		System:      summarizationSystem,
 		MaxTokens:   4096,
 		Temperature: a.Temperature,
+		SessionID:   a.SessionID,
 		Messages: []provider.Message{
 			{
 				Role:    provider.RoleUser,

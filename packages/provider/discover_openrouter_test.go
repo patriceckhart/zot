@@ -51,3 +51,38 @@ func TestDiscoverOpenRouterPrefersServedContextLength(t *testing.T) {
 		t.Errorf("no-top ContextWindow = %d; want 128000 (model value, no top_provider)", got)
 	}
 }
+
+func TestDiscoverOpenRouterPresets(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/presets" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("Authorization = %q; want Bearer test-key", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[
+			{"name":"Flash","slug":"flash","status":"active"},
+			{"name":"Old","slug":"old","status":"archived"},
+			{"name":"Off","slug":"off","status":"disabled"},
+			{"name":"NoSlug","slug":"","status":"active"}
+		],"total_count":4}`))
+	}))
+	defer srv.Close()
+
+	models, err := DiscoverOpenRouterPresets(context.Background(), "test-key", srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("got %d presets; want 1 active", len(models))
+	}
+	m := models[0]
+	if m.Provider != "openrouter" || m.ID != "@preset/flash" {
+		t.Errorf("preset = %+v; want openrouter @preset/flash", m)
+	}
+	if m.DisplayName != "Flash (preset)" {
+		t.Errorf("DisplayName = %q", m.DisplayName)
+	}
+}

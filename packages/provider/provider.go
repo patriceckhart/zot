@@ -49,6 +49,10 @@ type ToolCallBlock struct {
 	Name             string          `json:"name"`
 	Arguments        json.RawMessage `json:"arguments"`
 	ThoughtSignature string          `json:"thought_signature,omitempty"`
+	// Server is true when the provider executes this tool itself
+	// (OpenRouter server tools). The agent must not run these locally
+	// or send a client tool_result for them.
+	Server bool `json:"server,omitempty"`
 }
 
 func (ToolCallBlock) isContent() {}
@@ -257,6 +261,12 @@ type Request struct {
 	// "max". Empty disables reasoning. The max tier is sent natively only to
 	// models that support it and clamped elsewhere.
 	Reasoning string
+	// SessionID, when set, is the conversation id. Providers that support
+	// sticky routing (OpenRouter session_id) forward it; others ignore it.
+	SessionID string
+	// MaxToolCalls, when set, caps OpenRouter's server-tool agent loop.
+	// Zero omits the field.
+	MaxToolCalls int
 }
 
 // Client is an LLM streaming client.

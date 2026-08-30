@@ -76,6 +76,26 @@ func TestBeforeToolExecuteInvalidJSONIgnored(t *testing.T) {
 	}
 }
 
+func TestExecuteToolsSkipsServerToolCalls(t *testing.T) {
+	rec := &recordingTool{}
+	a := NewAgent(nil, "test", "", Registry{"echo": rec})
+	msg, hadError := a.executeTools(context.Background(), provider.Message{
+		Role: provider.RoleAssistant,
+		Content: []provider.Content{
+			provider.ToolCallBlock{ID: "srv", Name: "openrouter:datetime", Server: true},
+		},
+	}, func(AgentEvent) {})
+	if hadError {
+		t.Fatal("server tool produced error")
+	}
+	if len(msg.Content) != 0 {
+		t.Fatalf("server tools must not produce client results, got %+v", msg.Content)
+	}
+	if rec.lastArgs != nil {
+		t.Fatal("client tool executed for a server tool call")
+	}
+}
+
 // TestBeforeToolExecuteBlockSurfacesReason verifies a refusal from
 // the interceptor returns an error ToolResult with the reason text.
 func TestBeforeToolExecuteBlockSurfacesReason(t *testing.T) {

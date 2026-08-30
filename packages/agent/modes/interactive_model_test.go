@@ -81,6 +81,19 @@ func TestReasoningCommandOpensDirectSelector(t *testing.T) {
 	}
 }
 
+func TestNormalizeModelQueryKeepsPresetAtSign(t *testing.T) {
+	if got := normalizeModelQuery("@preset/flash"); got != "@presetflash" {
+		t.Fatalf("id = %q; want @presetflash", got)
+	}
+	if got := normalizeModelQuery("preset"); got != "preset" {
+		t.Fatalf("query = %q; want preset", got)
+	}
+	haystack := normalizeModelQuery("openrouter @preset/flash Flash (preset)")
+	if !strings.Contains(haystack, normalizeModelQuery("preset")) {
+		t.Fatalf("%q does not contain preset", haystack)
+	}
+}
+
 func TestModelDialogAdvertisesReasoningSelector(t *testing.T) {
 	d := newModelDialog()
 	d.Open("", nil, "high")

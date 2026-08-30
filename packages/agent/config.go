@@ -68,6 +68,11 @@ type Config struct {
 	// The live session can still override this with /jail or /unjail.
 	JailByDefault *bool `json:"jail_by_default,omitempty"`
 
+	// OpenRouterServerToolsEnabled advertises OpenRouter server tools
+	// (web search, datetime, advisor, …) when the provider is OpenRouter.
+	// Default on: nil/missing means enabled. Toggle from /settings.
+	OpenRouterServerToolsEnabled *bool `json:"openrouter_server_tools_enabled,omitempty"`
+
 	// RecursiveFileSuggest controls the @-mention file picker. When true
 	// the picker fuzzy-searches the whole project tree below the working
 	// directory; nil/missing/false keeps the default directory-by-

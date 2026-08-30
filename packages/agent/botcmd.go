@@ -304,10 +304,14 @@ func openOrCreateSessionForBot(args Args, r Resolved, ag *core.Agent, version st
 				return nil, nil, err
 			}
 			ag.SetMessages(msgs)
+			bindAgentSession(ag, s)
 			return s, nil, nil
 		}
 	}
 	s, err := core.NewSession(ZotHome(), args.CWD, r.Provider, r.Model, version)
+	if err == nil {
+		bindAgentSession(ag, s)
+	}
 	return s, nil, err
 }
 

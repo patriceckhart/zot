@@ -977,12 +977,37 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 
 // NewAgent constructs a core.Agent from r. Requires a credential.
 func (r Resolved) NewAgent() *core.Agent {
-	a := core.NewAgent(r.NewClient(), r.Model, r.SystemPrompt, r.ToolRegistry)
+	reg := r.ToolRegistry
+	if r.Provider == "openrouter" && OpenRouterServerToolsEnabled() {
+		reg = withOpenRouterServerTools(reg)
+	}
+	a := core.NewAgent(r.NewClient(), r.Model, r.SystemPrompt, reg)
 	a.MaxSteps = r.MaxSteps
 	a.MaxTokens = r.MaxOutput
 	a.Reasoning = r.Reasoning
 	a.Temperature = r.Temperature
 	return a
+}
+
+// OpenRouterServerToolsEnabled reports the persisted preference.
+// nil/missing means enabled.
+func OpenRouterServerToolsEnabled() bool {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return true
+	}
+	return cfg.OpenRouterServerToolsEnabled == nil || *cfg.OpenRouterServerToolsEnabled
+}
+
+func withOpenRouterServerTools(reg core.Registry) core.Registry {
+	out := core.Registry{}
+	for name, t := range reg {
+		out[name] = t
+	}
+	for _, t := range tools.OpenRouterServerTools() {
+		out[t.Name()] = t
+	}
+	return out
 }
 
 func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox) core.Registry {

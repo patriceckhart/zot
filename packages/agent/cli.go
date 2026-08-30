@@ -978,20 +978,32 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// (login, /model swap to a different provider) also gets the
 	// persistence hooks. Without this, switching provider would
 	// silently revert to the old in-memory-only behaviour.
+	bindLiveAgentSession := func(a *core.Agent) {
+		persistMu.Lock()
+		s := sess
+		persistMu.Unlock()
+		bindAgentSession(a, s)
+	}
 	baseBuildAgent := buildAgent
 	buildAgent = func() (*core.Agent, string, string, error) {
 		a, p, m, err := baseBuildAgent()
-		return wireAgentPersist(a), p, m, err
+		a = wireAgentPersist(a)
+		bindLiveAgentSession(a)
+		return a, p, m, err
 	}
 	baseBuildAgentFor := buildAgentFor
 	buildAgentFor = func(providerOverride, modelOverride string) (*core.Agent, string, string, error) {
 		a, p, m, err := baseBuildAgentFor(providerOverride, modelOverride)
-		return wireAgentPersist(a), p, m, err
+		a = wireAgentPersist(a)
+		bindLiveAgentSession(a)
+		return a, p, m, err
 	}
 	baseBuildAgentForRescue := buildAgentForRescue
 	buildAgentForRescue = func(providerOverride, modelOverride string) (*core.Agent, string, string, error) {
 		a, p, m, err := baseBuildAgentForRescue(providerOverride, modelOverride)
-		return wireAgentPersist(a), p, m, err
+		a = wireAgentPersist(a)
+		bindLiveAgentSession(a)
+		return a, p, m, err
 	}
 
 	// loadSession replaces the current session with the one at path and
@@ -1019,6 +1031,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		}
 		sess = newSess
 		currentAg.SetMessages(msgs)
+		bindAgentSession(currentAg, sess)
 		if cum, last, uerr := core.SessionUsageDetail(path); uerr == nil {
 			currentAg.SeedCost(cum)
 			currentAg.SeedLastTurnUsage(last)
@@ -1152,6 +1165,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			sess = newSess
 			sessBaselineMsgs = 0
 			persistMu.Unlock()
+			bindAgentSession(newAg, newSess)
 		}
 
 		// Push the new state into the running Interactive.
@@ -1250,48 +1264,49 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	}
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
-		Terminal:                  term,
-		Theme:                     theme,
-		InlineImagesEnabled:       initialCfg.InlineImagesEnabled,
-		AutoSwarmEnabled:          initialCfg.AutoSwarmEnabled,
-		AutoCompactThreshold:      initialCfg.AutoCompactThreshold,
-		JailByDefault:             initialCfg.JailByDefault,
-		QuickModelShortcuts:       quickModelShortcuts,
-		RecursiveFileSuggest:      initialCfg.RecursiveFileSuggest,
-		RespectGitignore:          initialCfg.RespectGitignore,
-		CompactMode:               initialCfg.CompactMode,
-		TUIInputStyle:             initialCfg.TUIInputStyle,
-		TUIStatusPosition:         initialCfg.TUIStatusPosition,
-		TUIWorkingPosition:        initialCfg.TUIWorkingPosition,
-		ThemeName:                 initialCfg.Theme,
-		FlatTools:                 initialCfg.FlatToolRender(),
-		CompactUser:               initialCfg.CompactUserInput(),
-		ExtensionThemes:           extMgr.ThemeOptions,
-		AutoSwarmSystemAddendum:   AutoSwarmSystemAddendum,
-		SettingsStore:             configSettingsStore{},
-		Model:                     r.Model,
-		Provider:                  r.Provider,
-		AuthMethod:                r.AuthMethod,
-		BaseURL:                   r.BaseURL,
-		Reasoning:                 r.Reasoning,
-		SystemPrompt:              r.SystemPrompt,
-		Tools:                     r.ToolRegistry,
-		MaxSteps:                  r.MaxSteps,
-		CWD:                       r.CWD,
-		StartupAgentName:          args.AgentName,
-		StartupContextPaths:       instructionContextPaths(r.ContextFiles),
-		StartupExtensionNames:     startupExtensionNames(extMgr.All()),
-		StartupExtensionErrors:    startupExtensionErrors,
-		StartupSkillNames:         startupSkillNames(startupSkills),
-		ShowInstructionsAtStartup: initialCfg.ShowInstructionsAtStartup,
-		ZotHome:                   ZotHome(),
-		SessionsRoot:              agentSessionsRoot(ZotHome(), args),
-		Version:                   version,
-		UpdateInfoChan:            updateCh,
-		Sandbox:                   sharedSandbox,
-		Agent:                     ag,
-		InitialInput:              args.Prompt,
-		StartupPre:                args.StartupPre,
+		Terminal:                     term,
+		Theme:                        theme,
+		InlineImagesEnabled:          initialCfg.InlineImagesEnabled,
+		AutoSwarmEnabled:             initialCfg.AutoSwarmEnabled,
+		AutoCompactThreshold:         initialCfg.AutoCompactThreshold,
+		JailByDefault:                initialCfg.JailByDefault,
+		OpenRouterServerToolsEnabled: initialCfg.OpenRouterServerToolsEnabled,
+		QuickModelShortcuts:          quickModelShortcuts,
+		RecursiveFileSuggest:         initialCfg.RecursiveFileSuggest,
+		RespectGitignore:             initialCfg.RespectGitignore,
+		CompactMode:                  initialCfg.CompactMode,
+		TUIInputStyle:                initialCfg.TUIInputStyle,
+		TUIStatusPosition:            initialCfg.TUIStatusPosition,
+		TUIWorkingPosition:           initialCfg.TUIWorkingPosition,
+		ThemeName:                    initialCfg.Theme,
+		FlatTools:                    initialCfg.FlatToolRender(),
+		CompactUser:                  initialCfg.CompactUserInput(),
+		ExtensionThemes:              extMgr.ThemeOptions,
+		AutoSwarmSystemAddendum:      AutoSwarmSystemAddendum,
+		SettingsStore:                configSettingsStore{},
+		Model:                        r.Model,
+		Provider:                     r.Provider,
+		AuthMethod:                   r.AuthMethod,
+		BaseURL:                      r.BaseURL,
+		Reasoning:                    r.Reasoning,
+		SystemPrompt:                 r.SystemPrompt,
+		Tools:                        r.ToolRegistry,
+		MaxSteps:                     r.MaxSteps,
+		CWD:                          r.CWD,
+		StartupAgentName:             args.AgentName,
+		StartupContextPaths:          instructionContextPaths(r.ContextFiles),
+		StartupExtensionNames:        startupExtensionNames(extMgr.All()),
+		StartupExtensionErrors:       startupExtensionErrors,
+		StartupSkillNames:            startupSkillNames(startupSkills),
+		ShowInstructionsAtStartup:    initialCfg.ShowInstructionsAtStartup,
+		ZotHome:                      ZotHome(),
+		SessionsRoot:                 agentSessionsRoot(ZotHome(), args),
+		Version:                      version,
+		UpdateInfoChan:               updateCh,
+		Sandbox:                      sharedSandbox,
+		Agent:                        ag,
+		InitialInput:                 args.Prompt,
+		StartupPre:                   args.StartupPre,
 		OnStartupPreDone: func() {
 			// entry.pre often installs skills/extensions; rediscover them
 			// before the user starts a model turn.
@@ -1475,7 +1490,8 @@ func agentSessionsRoot(root string, args Args) string {
 }
 
 // openOrCreateSession returns a session for the run. sess may be nil
-// with a nil error if session persistence is disabled.
+// with a nil error if session persistence is disabled. When a session
+// exists, its id is bound onto ag so providers can sticky-route.
 func openOrCreateSession(args Args, r Resolved, ag *core.Agent, version string) (*core.Session, error) {
 	if args.NoSess {
 		return nil, nil
@@ -1522,15 +1538,20 @@ func openOrCreateSession(args Args, r Resolved, ag *core.Agent, version string) 
 	if err != nil {
 		return nil, err
 	}
-	if s != nil {
+	if s == nil {
+		s, err = core.NewSession(sessionsRoot, args.CWD, r.Provider, r.Model, version)
+		if err != nil {
+			return nil, err
+		}
+	} else {
 		ag.SetMessages(msgs)
 		if cum, last, uerr := core.SessionUsageDetail(s.Path); uerr == nil {
 			ag.SeedCost(cum)
 			ag.SeedLastTurnUsage(last)
 		}
-		return s, nil
 	}
-	return core.NewSession(sessionsRoot, args.CWD, r.Provider, r.Model, version)
+	bindAgentSession(ag, s)
+	return s, nil
 }
 
 func pickSession(root, cwd string) (string, error) {
@@ -1559,6 +1580,16 @@ func pickSession(root, cwd string) (string, error) {
 // turn under their own goroutine).
 func WriteNewTranscript(ag *core.Agent, sess *core.Session, from int) {
 	writeNewTranscriptLocked(ag, sess, from)
+}
+
+// bindAgentSession stamps the zot session id onto the agent so providers
+// that support sticky routing (OpenRouter session_id) can reuse it.
+// No-op when persistence is disabled.
+func bindAgentSession(ag *core.Agent, sess *core.Session) {
+	if ag == nil || sess == nil {
+		return
+	}
+	ag.SessionID = sess.ID
 }
 
 // writeNewTranscriptLocked is the same as WriteNewTranscript. The

@@ -312,6 +312,74 @@ func DiscoverOpenRouter(ctx context.Context, baseURL string) ([]Model, error) {
 	return out, nil
 }
 
+// DiscoverOpenRouterPresets lists the authenticated user's OpenRouter
+// presets and returns them as selectable models with ids of the form
+// "@preset/{slug}". Requires an API key; /presets is not public.
+func DiscoverOpenRouterPresets(ctx context.Context, apiKey, baseURL string) ([]Model, error) {
+	if baseURL == "" {
+		baseURL = openrouterDefaultBaseURL
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+	client := &http.Client{Timeout: 15 * time.Second}
+	var out []Model
+	offset := 0
+	for {
+		url := fmt.Sprintf("%s/presets?limit=100&offset=%d", baseURL, offset)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		if apiKey != "" {
+			req.Header.Set("authorization", "Bearer "+apiKey)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return nil, fmt.Errorf("openrouter presets http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		var page struct {
+			Data []struct {
+				Name        string `json:"name"`
+				Slug        string `json:"slug"`
+				Description string `json:"description"`
+				Status      string `json:"status"`
+			} `json:"data"`
+			TotalCount int `json:"total_count"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			return nil, fmt.Errorf("openrouter presets parse: %w", err)
+		}
+		for _, d := range page.Data {
+			if d.Slug == "" || d.Status == "archived" || d.Status == "disabled" {
+				continue
+			}
+			display := d.Name
+			if display == "" {
+				display = d.Slug
+			}
+			out = append(out, Model{
+				Provider:      "openrouter",
+				ID:            "@preset/" + d.Slug,
+				DisplayName:   display + " (preset)",
+				ContextWindow: 1000000,
+				MaxOutput:     64000,
+				Reasoning:     true,
+				BaseURL:       baseURL,
+				Source:        "live",
+			})
+		}
+		if len(page.Data) == 0 || offset+len(page.Data) >= page.TotalCount {
+			break
+		}
+		offset += len(page.Data)
+	}
+	return out, nil
+}
+
 // openrouterSupportsReasoning reports whether OpenRouter's
 // supported_parameters list marks the model as reasoning-capable.
 func openrouterSupportsReasoning(params []string) bool {

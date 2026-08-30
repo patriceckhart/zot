@@ -32,6 +32,22 @@ func TestLiveInteractiveAgentUsesReplacementAgentForSessionResume(t *testing.T) 
 	}
 }
 
+func TestBindAgentSession(t *testing.T) {
+	ag := core.NewAgent(nil, "@preset/flash", "", nil)
+	bindAgentSession(ag, &core.Session{ID: "sess-xyz"})
+	if ag.SessionID != "sess-xyz" {
+		t.Fatalf("SessionID = %q; want sess-xyz", ag.SessionID)
+	}
+	bindAgentSession(ag, &core.Session{ID: "other"})
+	if ag.SessionID != "other" {
+		t.Fatalf("SessionID = %q; want other after rebind", ag.SessionID)
+	}
+	bindAgentSession(ag, nil)
+	if ag.SessionID != "other" {
+		t.Fatalf("nil session mutated SessionID to %q", ag.SessionID)
+	}
+}
+
 func TestLiveInteractiveAgentFallsBackBeforeInteractiveConstruction(t *testing.T) {
 	startup := core.NewAgent(nil, "startup-model", "", nil)
 	if got := liveInteractiveAgent(nil, startup); got != startup {
