@@ -19,7 +19,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 
 - one static binary.
 - built-in providers for Anthropic, OpenAI/Codex/Responses, Kimi, DeepSeek, Google Gemini/Vertex, GitHub Copilot, Bedrock, Azure OpenAI, OpenRouter, Groq, Cerebras, xAI, Together, Hugging Face, Mistral, Moonshot, Z.AI, Xiaomi, MiniMax, Fireworks, Vercel AI Gateway, OpenCode, Cloudflare AI, and Ollama/local models.
-- four tools (read, write, edit, bash).
+- built-in tools (read, write, edit, bash, glob).
 - three run modes (interactive tui, print, json).
 - built-in telegram bot.
 - extensions in any language via subprocess + json-rpc. None installed by default; opt in with `zot ext install` or `zot --ext`. See [docs/extensions.md](docs/extensions.md).
@@ -888,7 +888,7 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | `ctrl+d` | Exit on empty input. |
 | `ctrl+l` | Redraw the screen. |
 | `ctrl+v` | Paste clipboard text into the focused chat, side chat, dialog, filter, or credential input. On Linux this uses `wl-paste`, `xclip`, or `xsel`; terminal-native bracketed paste remains available without those commands. In the main chat on macOS, image-only clipboard content is saved as a temporary PNG and attached to the next prompt. |
-| `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash outputs over ~12 lines). |
+| `ctrl+o` | Expand or collapse long tool results (read, write, edit, bash, glob outputs over ~12 lines). |
 | `ctrl+1` ... `ctrl+9` | Switch to the model bound to that quick-model slot (configured in `/settings` -> model shortcuts). No-op while a turn is running. |
 | `@` | Open the file picker. Browse files and directories in the working directory. |
 
@@ -1055,7 +1055,7 @@ packages/agent/extproto/              extension wire-format types
 packages/agent/modes/                 interactive tui, print, json, dialogs
 packages/agent/modes/bot/             protocol-agnostic bot runner (BotAdapter interface)
 packages/agent/modes/telegram/        telegram adapter, api client, daemon
-packages/agent/tools/                 read, write, edit, bash, sandbox
+packages/agent/tools/                 read, write, edit, bash, glob, sandbox
 packages/agent/skills/                skill discovery, frontmatter parser, skill tool
 packages/agent/swarm/                 background subagent runtime
 packages/agent/sdk/                   public Go SDK for embedding zot in-process (package sdk)

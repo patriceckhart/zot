@@ -23,43 +23,50 @@ func TestInterceptAllThreeEvents(t *testing.T) {
 	}
 
 	extDir := t.TempDir()
-	script := `#!/bin/bash
-emit() { printf '%s\n' "$1"; }
-emit '{"type":"hello","name":"itest","version":"0.1.0","capabilities":["events"]}'
-emit '{"type":"subscribe","events":[],"intercept":["tool_call","turn_start","assistant_message"]}'
-emit '{"type":"ready"}'
-while IFS= read -r line; do
-  t=$(printf '%s' "$line" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("type",""))')
-  id=$(printf '%s' "$line" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("id",""))')
-  ev=$(printf '%s' "$line" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("event",""))')
-  if [[ "$t" == "shutdown" ]]; then emit '{"type":"shutdown_ack"}'; exit 0; fi
-  if [[ "$t" != "event_intercept" ]]; then continue; fi
-  case "$ev" in
-    tool_call)
-      name=$(printf '%s' "$line" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tool_name",""))')
-      args=$(printf '%s' "$line" | python3 -c 'import sys,json;print(json.dumps(json.load(sys.stdin).get("tool_args",{})))')
-      cmd=$(printf '%s' "$args" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("command",""))')
-      if [[ "$name" == "bash" && "$cmd" == *"rm -rf"* ]]; then
-        emit "{\"type\":\"event_intercept_response\",\"id\":\"$id\",\"block\":true,\"reason\":\"refused: rm -rf\"}"
-      elif [[ "$name" == "bash" && -n "$cmd" ]]; then
-        new=$(python3 -c "import json,sys;print(json.dumps({'command':'echo GUARDED: '+sys.argv[1]}))" "$cmd")
-        emit "{\"type\":\"event_intercept_response\",\"id\":\"$id\",\"modified_args\":$new}"
-      else
-        emit "{\"type\":\"event_intercept_response\",\"id\":\"$id\"}"
-      fi ;;
-    turn_start)
-      emit "{\"type\":\"event_intercept_response\",\"id\":\"$id\"}" ;;
-    assistant_message)
-      text=$(printf '%s' "$line" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("text",""))')
-      if [[ "$text" == *"SECRET"* ]]; then
-        new=$(python3 -c "import sys;print(sys.argv[1].replace('SECRET','[redacted]'))" "$text")
-        rt=$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$new")
-        emit "{\"type\":\"event_intercept_response\",\"id\":\"$id\",\"replace_text\":$rt}"
-      else
-        emit "{\"type\":\"event_intercept_response\",\"id\":\"$id\"}"
-      fi ;;
-  esac
-done
+	script := `#!/usr/bin/env python3
+import json, sys
+
+def emit(d):
+    print(json.dumps(d), flush=True)
+
+emit({"type":"hello","name":"itest","version":"0.1.0","capabilities":["events"]})
+emit({"type":"subscribe","events":[],"intercept":["tool_call","turn_start","assistant_message"]})
+emit({"type":"ready"})
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except Exception:
+        continue
+    t = msg.get("type", "")
+    id_ = msg.get("id", "")
+    ev = msg.get("event", "")
+    if t == "shutdown":
+        emit({"type": "shutdown_ack"})
+        sys.exit(0)
+    if t != "event_intercept":
+        continue
+    if ev == "tool_call":
+        name = msg.get("tool_name", "")
+        args = msg.get("tool_args", {})
+        cmd = args.get("command", "") if isinstance(args, dict) else ""
+        if name == "bash" and "rm -rf" in cmd:
+            emit({"type": "event_intercept_response", "id": id_, "block": True, "reason": "refused: rm -rf"})
+        elif name == "bash" and cmd:
+            emit({"type": "event_intercept_response", "id": id_, "modified_args": {"command": "echo GUARDED: " + cmd}})
+        else:
+            emit({"type": "event_intercept_response", "id": id_})
+    elif ev == "turn_start":
+        emit({"type": "event_intercept_response", "id": id_})
+    elif ev == "assistant_message":
+        text = msg.get("text", "")
+        if "SECRET" in text:
+            emit({"type": "event_intercept_response", "id": id_, "replace_text": text.replace("SECRET", "[redacted]")})
+        else:
+            emit({"type": "event_intercept_response", "id": id_})
 `
 	if err := os.WriteFile(filepath.Join(extDir, "ext.sh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)

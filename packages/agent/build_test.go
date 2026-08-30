@@ -605,3 +605,38 @@ func assertDefaultTransportStillSecure(t *testing.T) {
 		t.Fatal("http.DefaultTransport must not be made insecure")
 	}
 }
+
+func TestBuildToolRegistryIncludesGlob(t *testing.T) {
+	cwd := t.TempDir()
+	reg := buildToolRegistry(Args{}, cwd, nil)
+	expected := []string{"read", "write", "edit", "bash", "glob"}
+	for _, name := range expected {
+		if _, ok := reg[name]; !ok {
+			t.Errorf("expected tool %q in registry, missing", name)
+		}
+	}
+
+	summaries := toolSummaries(reg, Args{})
+	var summaryNames []string
+	for _, s := range summaries {
+		summaryNames = append(summaryNames, s.Name)
+	}
+	for _, name := range expected {
+		found := false
+		for _, sn := range summaryNames {
+			if sn == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected tool %q in toolSummaries, missing", name)
+		}
+	}
+
+	// Filtered tools
+	filtered := buildToolRegistry(Args{Tools: []string{"glob", "read"}}, cwd, nil)
+	if len(filtered) != 2 || filtered["glob"] == nil || filtered["read"] == nil {
+		t.Errorf("expected filtered registry with glob and read, got: %#v", filtered)
+	}
+}

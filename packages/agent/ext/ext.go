@@ -390,7 +390,7 @@ func (e *Extension) Command(name, description string, fn CommandHandler) {
 // into the agent's registry once the extension's ready frame fires.
 //
 // Naming conflicts with built-in tools (read, write, edit, bash,
-// skill) are silently shadowed by the built-in.
+// glob, skill) are silently shadowed by the built-in.
 func (e *Extension) Tool(name, description string, schema json.RawMessage, fn ToolHandler) {
 	e.registerTool(name, description, schema, false, fn)
 }
