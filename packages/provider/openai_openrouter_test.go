@@ -28,15 +28,19 @@ func TestOpenRouterBuildRequestIncludesSessionID(t *testing.T) {
 func TestOpenAIBuildRequestOmitsSessionID(t *testing.T) {
 	c := NewOpenAI("token", "").(*openaiClient)
 	wire, err := c.buildRequest(Request{
-		Model:     "gpt-5",
-		SessionID: "sess-abc",
-		Messages:  []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
+		Model:        "gpt-5",
+		SessionID:    "sess-abc",
+		MaxToolCalls: 4,
+		Messages:     []Message{{Role: RoleUser, Content: []Content{TextBlock{Text: "hi"}}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if wire.SessionID != "" {
 		t.Fatalf("SessionID = %q; want empty on non-openrouter clients", wire.SessionID)
+	}
+	if wire.MaxToolCalls != 0 {
+		t.Fatalf("MaxToolCalls = %d; want empty on non-openrouter clients", wire.MaxToolCalls)
 	}
 }
 

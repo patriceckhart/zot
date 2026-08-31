@@ -208,11 +208,13 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		StreamOptions: &oaiStreamOptions{IncludeUsage: true},
 		Temperature:   req.Temperature,
 	}
-	if req.SessionID != "" {
-		out.SessionID = req.SessionID
-	}
-	if req.MaxToolCalls > 0 {
-		out.MaxToolCalls = req.MaxToolCalls
+	if c.Name() == "openrouter" {
+		if req.SessionID != "" {
+			out.SessionID = req.SessionID
+		}
+		if req.MaxToolCalls > 0 {
+			out.MaxToolCalls = req.MaxToolCalls
+		}
 	}
 
 	maxTok := req.MaxTokens

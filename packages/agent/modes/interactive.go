@@ -73,8 +73,11 @@ type InteractiveConfig struct {
 	JailByDefault *bool
 
 	// OpenRouterServerToolsEnabled mirrors the persisted preference.
-	// nil means the default, on.
+	// nil means the default, off.
 	OpenRouterServerToolsEnabled *bool
+
+	// NoTools preserves the launch-time promise that all tools stay disabled.
+	NoTools bool
 
 	// RecursiveFileSuggest mirrors the persisted recursive_file_suggest
 	// flag at startup. When true the @-mention picker fuzzy-searches the
@@ -3390,10 +3393,17 @@ func (i *Interactive) openSettingsDialog() {
 
 	jailByDefault := i.cfg.JailByDefault != nil && *i.cfg.JailByDefault
 	openRouterServerTools := i.openRouterServerToolsEnabled()
-	openRouterServerToolsDisabled := i.cfg.Provider != "openrouter"
+	openRouterServerToolsDisabled := true
 	openRouterServerToolsHint := ""
-	if openRouterServerToolsDisabled {
+	switch {
+	case i.cfg.Provider != "openrouter":
 		openRouterServerToolsHint = "only available when the current provider is OpenRouter"
+	case i.cfg.NoTools:
+		openRouterServerToolsHint = "disabled for this run by --no-tools"
+	case strings.Contains(strings.ToLower(i.cfg.Model), "@preset/"):
+		openRouterServerToolsHint = "this preset owns its server-tool configuration"
+	default:
+		openRouterServerToolsDisabled = false
 	}
 	recursiveFiles := i.cfg.RecursiveFileSuggest != nil && *i.cfg.RecursiveFileSuggest
 	respectGitignore := i.cfg.RespectGitignore == nil || *i.cfg.RespectGitignore
@@ -3516,7 +3526,7 @@ func (i *Interactive) openSettingsDialog() {
 		{
 			key:      "openrouter_server_tools_enabled",
 			label:    "OpenRouter Server Tools",
-			desc:     "Only on OpenRouter advertise server tools like web search, datetime, advisor, and the rest so the model can call them",
+			desc:     "advertise beta remote tools such as web search, datetime, and advisor; additional charges may apply",
 			value:    openRouterServerTools && !openRouterServerToolsDisabled,
 			disabled: openRouterServerToolsDisabled,
 			hint:     openRouterServerToolsHint,
@@ -6614,7 +6624,7 @@ func (i *Interactive) autoSwarmEnabled() bool {
 }
 
 func (i *Interactive) openRouterServerToolsEnabled() bool {
-	return i.cfg.OpenRouterServerToolsEnabled == nil || *i.cfg.OpenRouterServerToolsEnabled
+	return i.cfg.OpenRouterServerToolsEnabled != nil && *i.cfg.OpenRouterServerToolsEnabled
 }
 
 func (i *Interactive) applyOpenRouterServerTools(active bool) {
@@ -6629,10 +6639,12 @@ func (i *Interactive) applyOpenRouterServerTools(active bool) {
 		}
 		next[name] = t
 	}
-	if active && i.cfg.Provider == "openrouter" {
+	i.agent.MaxToolCalls = 0
+	if active && !i.cfg.NoTools && i.cfg.Provider == "openrouter" && !strings.Contains(strings.ToLower(i.cfg.Model), "@preset/") {
 		for _, t := range tools.OpenRouterServerTools() {
 			next[t.Name()] = t
 		}
+		i.agent.MaxToolCalls = tools.OpenRouterServerToolCallLimit
 	}
 	i.agent.SetTools(next)
 }

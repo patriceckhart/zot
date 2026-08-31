@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
@@ -221,7 +222,8 @@ func TestResolveExplicitFlagStaleDoesNotRepairConfig(t *testing.T) {
 func TestNewAgentInjectsOpenRouterServerToolsWhenSettingOn(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	t.Setenv("OPENROUTER_API_KEY", "test-key")
-	if err := SaveConfig(Config{Provider: "openrouter", Model: "openai/gpt-4.1"}); err != nil {
+	on := true
+	if err := SaveConfig(Config{Provider: "openrouter", Model: "openai/gpt-4.1", OpenRouterServerToolsEnabled: &on}); err != nil {
 		t.Fatal(err)
 	}
 	r, err := Resolve(Args{NoSkill: true}, true)
@@ -247,6 +249,49 @@ func TestNewAgentInjectsOpenRouterServerToolsWhenSettingOn(t *testing.T) {
 		if _, err := ag.Tools.Get(name); err == nil {
 			t.Errorf("chat-completions-incompatible tool %q should not be advertised", name)
 		}
+	}
+	if ag.MaxToolCalls != tools.OpenRouterServerToolCallLimit {
+		t.Fatalf("MaxToolCalls = %d; want %d", ag.MaxToolCalls, tools.OpenRouterServerToolCallLimit)
+	}
+
+	refreshAgentToolsAndPrompt(Args{NoSkill: true}, nil, nil, ag, nil)
+	if _, err := ag.Tools.Get("openrouter:web_search"); err != nil {
+		t.Fatalf("tool refresh removed enabled OpenRouter server tools: %v", err)
+	}
+}
+
+func TestResolveOmitsOpenRouterServerToolsWithNoTools(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	on := true
+	if err := SaveConfig(Config{Provider: "openrouter", Model: "openai/gpt-4.1", OpenRouterServerToolsEnabled: &on}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Resolve(Args{NoTools: true, NoSkill: true}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.ToolRegistry) != 0 {
+		t.Fatalf("--no-tools registry has %d tools; want none", len(r.ToolRegistry))
+	}
+	if r.NewAgent().MaxToolCalls != 0 {
+		t.Fatal("--no-tools agent retained a server-tool call limit")
+	}
+}
+
+func TestResolveDoesNotOverrideOpenRouterPresetTools(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	on := true
+	if err := SaveConfig(Config{Provider: "openrouter", Model: "@preset/flash", OpenRouterServerToolsEnabled: &on}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Resolve(Args{NoSkill: true}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasOpenRouterServerTools(r.ToolRegistry) {
+		t.Fatal("request tools would override tools configured by the preset")
 	}
 }
 

@@ -574,6 +574,9 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		sandbox.SetPermissions(args.PermissionSet)
 	}
 	reg := buildToolRegistry(args, args.CWD, sandbox)
+	if !args.NoTools && provName == "openrouter" && !isOpenRouterPresetModel(model) && OpenRouterServerToolsEnabled() {
+		reg = withOpenRouterServerTools(reg)
+	}
 
 	docsDir, _ := zotdocs.EnsureInstalled(ZotHome())
 
@@ -979,26 +982,38 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 
 // NewAgent constructs a core.Agent from r. Requires a credential.
 func (r Resolved) NewAgent() *core.Agent {
-	reg := r.ToolRegistry
-	if r.Provider == "openrouter" && OpenRouterServerToolsEnabled() {
-		reg = withOpenRouterServerTools(reg)
-	}
-	a := core.NewAgent(r.NewClient(), r.Model, r.SystemPrompt, reg)
+	a := core.NewAgent(r.NewClient(), r.Model, r.SystemPrompt, r.ToolRegistry)
 	a.MaxSteps = r.MaxSteps
 	a.MaxTokens = r.MaxOutput
 	a.Reasoning = r.Reasoning
 	a.Temperature = r.Temperature
+	if hasOpenRouterServerTools(r.ToolRegistry) {
+		a.MaxToolCalls = tools.OpenRouterServerToolCallLimit
+	}
 	return a
 }
 
 // OpenRouterServerToolsEnabled reports the persisted preference.
-// nil/missing means enabled.
+// nil/missing and unreadable configuration fail closed to disabled.
 func OpenRouterServerToolsEnabled() bool {
 	cfg, err := LoadConfig()
 	if err != nil {
-		return true
+		return false
 	}
-	return cfg.OpenRouterServerToolsEnabled == nil || *cfg.OpenRouterServerToolsEnabled
+	return cfg.OpenRouterServerToolsEnabled != nil && *cfg.OpenRouterServerToolsEnabled
+}
+
+func isOpenRouterPresetModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "@preset/")
+}
+
+func hasOpenRouterServerTools(reg core.Registry) bool {
+	for name := range reg {
+		if tools.IsOpenRouterServerTool(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func withOpenRouterServerTools(reg core.Registry) core.Registry {

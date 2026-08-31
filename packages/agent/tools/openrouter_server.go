@@ -9,6 +9,10 @@ import (
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
+// OpenRouterServerToolCallLimit bounds the remote agent loop when zot
+// advertises OpenRouter server tools.
+const OpenRouterServerToolCallLimit = 4
+
 // OpenRouterServerToolNames lists every OpenRouter server tool that zot
 // can advertise on Chat Completions. Shell, bash, apply_patch, and
 // tool_search require Responses/Messages and are omitted here.

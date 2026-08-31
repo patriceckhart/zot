@@ -85,4 +85,7 @@ func TestDiscoverOpenRouterPresets(t *testing.T) {
 	if m.DisplayName != "Flash (preset)" {
 		t.Errorf("DisplayName = %q", m.DisplayName)
 	}
+	if m.ContextWindow != 0 || m.MaxOutput != 0 || m.Reasoning {
+		t.Errorf("preset has invented capabilities: %+v", m)
+	}
 }

@@ -44,13 +44,13 @@ func TestConfigSettingsStorePersistsOpenRouterServerTools(t *testing.T) {
 	}
 }
 
-func TestOpenRouterServerToolsEnabledDefaultsOn(t *testing.T) {
+func TestOpenRouterServerToolsEnabledDefaultsOff(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	if err := SaveConfig(Config{}); err != nil {
 		t.Fatal(err)
 	}
-	if !OpenRouterServerToolsEnabled() {
-		t.Fatal("nil preference should default to enabled")
+	if OpenRouterServerToolsEnabled() {
+		t.Fatal("nil preference should default to disabled")
 	}
 }
 

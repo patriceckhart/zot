@@ -247,9 +247,16 @@ func refreshModels() {
 	}
 	provider.SetLiveModels(all)
 	_ = provider.SaveCache(ModelCachePath(), provider.ModelCache{
-		FetchedAt: time.Now().UTC(),
+		FetchedAt: modelCacheFetchedAt(cached, !cacheFresh, time.Now().UTC()),
 		Models:    all,
 	})
+}
+
+func modelCacheFetchedAt(cached provider.ModelCache, catalogRefreshed bool, now time.Time) time.Time {
+	if catalogRefreshed {
+		return now
+	}
+	return cached.FetchedAt
 }
 
 // mergeOpenRouterPresets replaces any previously cached OpenRouter preset

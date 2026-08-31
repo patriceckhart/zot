@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/patriceckhart/zot/packages/provider"
 )
@@ -137,6 +138,19 @@ func TestValidateAndRepairConfig_DuplicateModelIDValidForConfiguredProvider(t *t
 	}
 	if out.Model != "gpt-5.5" {
 		t.Errorf("model mutated: %q", out.Model)
+	}
+}
+
+func TestModelCacheFetchedAtPreservesCatalogFreshness(t *testing.T) {
+	cachedAt := time.Date(2026, time.August, 30, 12, 0, 0, 0, time.UTC)
+	now := cachedAt.Add(time.Hour)
+	cached := provider.ModelCache{FetchedAt: cachedAt}
+
+	if got := modelCacheFetchedAt(cached, false, now); !got.Equal(cachedAt) {
+		t.Fatalf("fresh cache timestamp = %v; want %v", got, cachedAt)
+	}
+	if got := modelCacheFetchedAt(cached, true, now); !got.Equal(now) {
+		t.Fatalf("refreshed cache timestamp = %v; want %v", got, now)
 	}
 }
 

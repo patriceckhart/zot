@@ -362,14 +362,11 @@ func DiscoverOpenRouterPresets(ctx context.Context, apiKey, baseURL string) ([]M
 				display = d.Slug
 			}
 			out = append(out, Model{
-				Provider:      "openrouter",
-				ID:            "@preset/" + d.Slug,
-				DisplayName:   display + " (preset)",
-				ContextWindow: 1000000,
-				MaxOutput:     64000,
-				Reasoning:     true,
-				BaseURL:       baseURL,
-				Source:        "live",
+				Provider:    "openrouter",
+				ID:          "@preset/" + d.Slug,
+				DisplayName: display + " (preset)",
+				BaseURL:     baseURL,
+				Source:      "live",
 			})
 		}
 		if len(page.Data) == 0 || offset+len(page.Data) >= page.TotalCount {

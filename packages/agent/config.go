@@ -69,8 +69,8 @@ type Config struct {
 	JailByDefault *bool `json:"jail_by_default,omitempty"`
 
 	// OpenRouterServerToolsEnabled advertises OpenRouter server tools
-	// (web search, datetime, advisor, …) when the provider is OpenRouter.
-	// Default on: nil/missing means enabled. Toggle from /settings.
+	// (web search, datetime, advisor, and others) when the provider is OpenRouter.
+	// Default off: users explicitly opt in from /settings.
 	OpenRouterServerToolsEnabled *bool `json:"openrouter_server_tools_enabled,omitempty"`
 
 	// RecursiveFileSuggest controls the @-mention file picker. When true

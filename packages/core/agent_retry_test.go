@@ -234,6 +234,19 @@ func TestAgentPropagatesMaxTokens(t *testing.T) {
 	}
 }
 
+func TestAgentPropagatesMaxToolCalls(t *testing.T) {
+	client := &captureClient{}
+	a := NewAgent(client, "fake-model", "system", Registry{})
+	a.MaxToolCalls = 4
+
+	if err := a.Prompt(context.Background(), "hello", nil, nil); err != nil {
+		t.Fatalf("Prompt returned %v", err)
+	}
+	if client.lastReq.MaxToolCalls != 4 {
+		t.Fatalf("request MaxToolCalls = %d; want 4", client.lastReq.MaxToolCalls)
+	}
+}
+
 func TestAgentPropagatesTemperature(t *testing.T) {
 	client := &captureClient{}
 	a := NewAgent(client, "fake-model", "system", Registry{})

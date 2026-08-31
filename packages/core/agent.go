@@ -35,6 +35,10 @@ type Agent struct {
 	// support sticky routing. Empty means omitted.
 	SessionID string
 
+	// MaxToolCalls caps provider-executed server-tool calls per turn.
+	// Zero leaves the field unset.
+	MaxToolCalls int
+
 	// BeforeToolExecute, if set, is called immediately before each
 	// tool runs. Returning (allowed=false, reason) short-circuits
 	// the call with an error result containing reason. Optionally,
@@ -570,12 +574,13 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 		// next in-process request is rejected by providers like Anthropic
 		// with "tool_use ids were found without tool_result blocks". The
 		// repair is pure and a no-op on already-valid transcripts.
-		Messages:    repairToolUseResultPairs(a.Messages()),
-		Tools:       a.Tools.Specs(),
-		Reasoning:   a.Reasoning,
-		MaxTokens:   a.MaxTokens,
-		Temperature: a.Temperature,
-		SessionID:   a.SessionID,
+		Messages:     repairToolUseResultPairs(a.Messages()),
+		Tools:        a.Tools.Specs(),
+		Reasoning:    a.Reasoning,
+		MaxTokens:    a.MaxTokens,
+		Temperature:  a.Temperature,
+		SessionID:    a.SessionID,
+		MaxToolCalls: a.MaxToolCalls,
 	}
 	stream, err := a.Client.Stream(ctx, req)
 	if err != nil {
