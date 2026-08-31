@@ -234,6 +234,57 @@ func TestGlobSubdirectoryPath(t *testing.T) {
 	}
 }
 
+func TestGlobSubdirectoryHonorsParentGitignore(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("sub/ignored.go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ignored.go", "kept.go"} {
+		if err := os.WriteFile(filepath.Join(dir, "sub", name), []byte("content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tool := &GlobTool{CWD: dir}
+	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{"pattern": "*.go", "path": "sub"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := res.Content[0].(provider.TextBlock).Text
+	if strings.Contains(text, "ignored.go") {
+		t.Fatalf("parent .gitignore rule was not respected: %s", text)
+	}
+	if !strings.Contains(text, "sub/kept.go") {
+		t.Fatalf("expected kept file in result: %s", text)
+	}
+}
+
+func TestGlobSymlinkSearchRoot(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "found.go"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	tool := &GlobTool{CWD: dir}
+	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{"pattern": "*.go", "path": "link"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := res.Content[0].(provider.TextBlock).Text; text != "link/found.go" {
+		t.Fatalf("unexpected symlink search result: %q", text)
+	}
+}
+
 func TestGlobNoMatches(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0o644)
@@ -296,7 +347,20 @@ func TestGlobSandboxing(t *testing.T) {
 		t.Fatalf("unexpected content: %v", res.Content[0])
 	}
 
-	// Outside sandbox should fail
+	// Absolute paths inside the sandbox should not leak the sandbox root.
+	insideFile := filepath.Join(sandboxDir, "inside.go")
+	if err := os.WriteFile(insideFile, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = tool.Execute(context.Background(), mustJSON(t, map[string]any{"pattern": "*.go", "path": sandboxDir}), nil)
+	if err != nil {
+		t.Fatalf("expected absolute path inside sandbox to succeed, got %v", err)
+	}
+	if text := res.Content[0].(provider.TextBlock).Text; text != "inside.go" {
+		t.Fatalf("jailed result should be relative, got %q", text)
+	}
+
+	// Outside sandbox should fail.
 	if _, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{"pattern": "*.go", "path": outsideDir}), nil); err == nil {
 		t.Fatal("expected sandboxing error for path outside sandbox")
 	}
