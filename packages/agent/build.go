@@ -970,6 +970,8 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 			v.Sandbox = s
 		case *tools.BashTool:
 			v.Sandbox = s
+		case *tools.GlobTool:
+			v.Sandbox = s
 		}
 		_ = name
 	}
@@ -1019,6 +1021,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox) core.Regis
 		"write": &tools.WriteTool{CWD: cwd, Sandbox: sandbox},
 		"edit":  &tools.EditTool{CWD: cwd, Sandbox: sandbox},
 		"bash":  &tools.BashTool{CWD: cwd, Sandbox: sandbox},
+		"glob":  &tools.GlobTool{CWD: cwd, Sandbox: sandbox},
 	}
 	reg := core.Registry{}
 	if len(args.Tools) == 0 {
@@ -1036,7 +1039,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox) core.Regis
 }
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
-	order := []string{"read", "write", "edit", "bash"}
+	order := []string{"read", "write", "edit", "bash", "glob"}
 	var out []ToolSummary
 	for _, name := range order {
 		if t, ok := reg[name]; ok {

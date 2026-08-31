@@ -1,4 +1,4 @@
-// Package tools implements zot's built-in tools: read, write, edit, bash.
+// Package tools implements zot's built-in tools: read, write, edit, bash, glob.
 package tools
 
 import (

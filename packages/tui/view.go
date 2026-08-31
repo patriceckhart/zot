@@ -2274,7 +2274,7 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 		return s
 	}
 	var primary string
-	for _, k := range []string{"path", "file_path", "command"} {
+	for _, k := range []string{"pattern", "path", "file_path", "command"} {
 		if s, ok := x[k].(string); ok {
 			primary = s
 			break
@@ -2290,8 +2290,7 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 	}
 	primary = oneLineToolLabel(primary)
 
-	// Tool-specific decoration. Only the read tool gets a range
-	// suffix for now; other tools just truncate the primary arg.
+	// Tool-specific decoration.
 	suffix := ""
 	switch strings.ToLower(tool) {
 	case "read":
@@ -2304,6 +2303,10 @@ func ShortArgs(tool string, raw json.RawMessage) string {
 			suffix = fmt.Sprintf(":%d-%d", start, end)
 		} else if start > 1 {
 			suffix = fmt.Sprintf(":%d-", start)
+		}
+	case "glob":
+		if dir, ok := x["path"].(string); ok && dir != "" && dir != "." {
+			suffix = " in " + dir
 		}
 	}
 

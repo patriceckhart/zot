@@ -79,8 +79,8 @@ type Config struct {
 	// BaseURL overrides the provider base url (for tests / proxies).
 	BaseURL string
 
-	// Tools is the list of tools to enable. Nil/empty = all four
-	// (read, write, edit, bash). Pass an empty-but-non-nil slice
+	// Tools is the list of tools to enable. Nil/empty = all built-ins
+	// (read, write, edit, bash, glob). Pass an empty-but-non-nil slice
 	// (e.g. []string{}) plus NoTools=true to disable everything.
 	Tools []string
 
