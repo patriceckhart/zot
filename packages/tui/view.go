@@ -1051,22 +1051,26 @@ func (v *View) renderLiveToolContent(tc ToolCallView, width int) []string {
 		body := []string{"    " + v.Theme.FG256(v.Theme.Muted, hint), ""}
 		body = append(body, v.renderRawFile(partial, tc.LivePath, 1)...)
 		return body
-	case "bash", "Bash":
+	case "bash", "Bash", "powershell", "PowerShell":
 		command, ok, _ := ExtractPartialStringField(tc.RawJSONBuf, "command")
 		if !ok || strings.TrimSpace(command) == "" {
 			return nil
 		}
-		return v.renderLiveBashCommand(command, width)
+		prompt := "$ "
+		if strings.EqualFold(tc.Name, "powershell") {
+			prompt = "PS> "
+		}
+		return v.renderLiveShellCommand(command, width, prompt)
 	}
 	return nil
 }
 
-func (v *View) renderLiveBashCommand(command string, width int) []string {
+func (v *View) renderLiveShellCommand(command string, width int, promptText string) []string {
 	inner := toolBoxBodyRenderWidth(width)
 	if v.FlatTools || v.CompactMode {
 		inner = flatToolBodyRenderWidth(width)
 	}
-	prompt := v.Theme.FG256(v.Theme.Muted, "$ ")
+	prompt := v.Theme.FG256(v.Theme.Muted, promptText)
 	var out []string
 	for i, line := range strings.Split(command, "\n") {
 		firstPrefix := "    "

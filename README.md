@@ -247,7 +247,25 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 - `edit`: one or more exact-match replacements in an existing file.
 - `bash`: run a command in the session cwd with merged stdout/stderr and a timeout. On Unix, zot uses `/bin/bash -c` when available, then `bash -c` from `PATH`, and falls back to POSIX `/bin/sh -c` when Bash is unavailable. On Windows, it uses `cmd /C`. macOS ships Bash 3.2 by default, so newer Bash features may be unavailable.
 
-When the sandbox is on (see `/jail`), all four tools refuse paths outside the session cwd.
+When the sandbox is on (see `/jail`), filesystem tools refuse paths outside the session cwd and `bash` applies best-effort command checks. Jail mode is an accident-prevention guardrail, not a security boundary.
+
+### PowerShell tool (Windows)
+
+The optional `powershell` tool executes native PowerShell commands in the session cwd. On Windows, open `/settings` and toggle **PowerShell tool** to enable or disable it alongside the default tools. It is off by default, persists as `powershell_enabled` in `$ZOT_HOME/config.json`, and updates the live tool list without a restart. The saved preference also applies to other modes on Windows.
+
+For a one-run tool selection, enable it instead of `bash`:
+
+```powershell
+zot --tools read,write,edit,glob,powershell
+```
+
+Include `bash` in that list to enable both. Explicit `--tools` and `--no-tools` override the saved preference and disable the settings toggle for that run. The toggle is hidden on non-Windows platforms. `!` shell escapes remain unchanged (`cmd /C` on Windows).
+
+PowerShell execution prefers `pwsh.exe` on `PATH`, falling back to `powershell.exe`. It uses `-NoProfile -NonInteractive -ExecutionPolicy Bypass`, with UTF-8 output and encoded command transport to preserve Unicode and quoting. Administrator-enforced execution policies can still take precedence. Missing executables and non-Windows execution return explicit errors.
+
+The tool accepts `command` and an optional `timeout` in seconds, with merged streaming stdout/stderr, exit status, and the same output limits as `bash`. On Windows, cancellation terminates the shell and bounds output draining, but does not guarantee termination of descendant processes.
+
+PowerShell is blocked while `/jail` is active because the existing shell checks do not parse PowerShell syntax. Packaged agents require `permissions.bash.mode: "ask"` (launch-time consent); `none`, `allowlist`, and unknown modes deny PowerShell execution. Bash allowlists are not applied to PowerShell.
 
 ## Modes
 
@@ -403,6 +421,7 @@ Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` o
 - **auto-swarm** — let the main agent spawn background sub-agents in parallel via a built-in `swarm_spawn` tool. Off by default. When on, the tool is registered with the running agent, the system prompt gains a short addendum telling the model to delegate independent sub-tasks proactively, and zot watches every sub-agent the main agent spawns. As soon as the last sub-agent in a batch finishes its initial task, an `[auto-swarm update]` message is injected back into the chat with each agent's status / task / transcript tail, so the main agent can summarise the collective outcome. Flipping off mid-session removes the tool from the live agent and strips the addendum on the next turn — the model stops trying to delegate. See `/swarm` for the dashboard that lets you monitor, message, kill, or remove the spawned agents.
 - **auto-compact threshold** — choose `off`, `70%`, `80%`, `85%` (default), or `90%` of the model's advertised context window. The selected percentage controls automatic compaction before and after interactive turns and persists as `auto_compact_threshold`. `off` disables percentage-based triggers but keeps manual `/compact` and automatic recovery from context-window and payload-too-large responses.
 - **jail new sessions by default**: start every new agent with tools confined to its working directory. Off by default. The setting applies to interactive, print, JSON, RPC, and background-agent runs, persists as `jail_by_default`, and immediately updates the current interactive session. `/jail` and `/unjail` remain session-scoped overrides and do not change this default.
+- **PowerShell tool** (Windows only): enable or disable native PowerShell alongside the default tools. Off by default; saved as `powershell_enabled` and applied without restarting. Explicit `--tools` or `--no-tools` takes precedence and disables this toggle for the run. Execution is still blocked while jailed and remains subject to packaged-agent permissions.
 - **OpenRouter Server Tools**: opt in to OpenRouter's beta web search, web fetch, advisor, subagent, fusion, image generation, datetime, and model-search tools. Off by default and available only with the OpenRouter provider. zot limits the remote loop to four server-tool calls per turn (adjustable via `openrouter_server_tool_call_limit` in `config.json`). `--no-tools` always disables them. Presets keep their own tool configuration and are not overridden by this setting. Server tools run remotely without zot's local tool confirmation dialog and may incur additional OpenRouter charges.
 
   **config.json example:**

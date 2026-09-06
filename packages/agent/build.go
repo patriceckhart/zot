@@ -578,7 +578,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if args.PermissionSet != nil {
 		sandbox.SetPermissions(args.PermissionSet)
 	}
-	reg := buildToolRegistry(args, args.CWD, sandbox)
+	reg := buildConfiguredToolRegistry(args, args.CWD, sandbox, cfg, runtime.GOOS)
 	if !args.NoTools && provName == "openrouter" && !isOpenRouterPresetModel(model) && OpenRouterServerToolsEnabled() {
 		reg = withOpenRouterServerTools(reg)
 	}
@@ -997,6 +997,8 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 			v.Sandbox = s
 		case *tools.BashTool:
 			v.Sandbox = s
+		case *tools.PowerShellTool:
+			v.Sandbox = s
 		case *tools.GlobTool:
 			v.Sandbox = s
 		}
@@ -1064,6 +1066,14 @@ func withOpenRouterServerTools(reg core.Registry) core.Registry {
 	return out
 }
 
+func buildConfiguredToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, cfg Config, goos string) core.Registry {
+	reg := buildToolRegistry(args, cwd, sandbox)
+	if goos == "windows" && !args.NoTools && len(args.Tools) == 0 && cfg.PowerShellEnabled != nil && *cfg.PowerShellEnabled {
+		reg["powershell"] = &tools.PowerShellTool{CWD: cwd, Sandbox: sandbox}
+	}
+	return reg
+}
+
 func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox) core.Registry {
 	if args.NoTools {
 		return core.Registry{}
@@ -1082,6 +1092,8 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox) core.Regis
 		}
 		return reg
 	}
+	// PowerShell is explicitly selected, never added to the default tool set.
+	all["powershell"] = &tools.PowerShellTool{CWD: cwd, Sandbox: sandbox}
 	for _, name := range args.Tools {
 		if t, ok := all[name]; ok {
 			reg[name] = t
@@ -1091,7 +1103,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox) core.Regis
 }
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
-	order := []string{"read", "write", "edit", "bash", "glob"}
+	order := []string{"read", "write", "edit", "bash", "powershell", "glob"}
 	var out []ToolSummary
 	for _, name := range order {
 		if t, ok := reg[name]; ok {

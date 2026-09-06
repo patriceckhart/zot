@@ -401,6 +401,8 @@ Bash is available after the user approves the agent at launch. Consent for an ag
 
 In the current local runtime, `ask` is launch-time capability consent. It does not open a separate confirmation dialog for every individual bash invocation.
 
+The optional Windows `powershell` tool also requires `bash.mode: "ask"` for packaged agents. It is denied in all other permission modes and while jailed. Bash allowlists cannot safely validate PowerShell syntax. Enable the tool via the Windows-only **PowerShell tool** toggle in `/settings` or select it explicitly with `--tools read,write,edit,glob,powershell`; see [PowerShell tool](../README.md#powershell-tool-windows).
+
 ### `allowlist`
 
 ```json
