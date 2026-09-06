@@ -1287,6 +1287,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		RecursiveFileSuggest:          initialCfg.RecursiveFileSuggest,
 		RespectGitignore:              initialCfg.RespectGitignore,
 		CompactMode:                   initialCfg.CompactMode,
+		CollapseToolCall:              initialCfg.CollapseToolCall,
 		TUIInputStyle:                 initialCfg.TUIInputStyle,
 		TUIStatusPosition:             initialCfg.TUIStatusPosition,
 		TUIWorkingPosition:            initialCfg.TUIWorkingPosition,

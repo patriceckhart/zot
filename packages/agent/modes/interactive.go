@@ -111,6 +111,10 @@ type InteractiveConfig struct {
 	// When true, it enables both flat tool calls and compact user turns.
 	CompactMode *bool
 
+	// CollapseToolCall retains each tool-call header, a final preview line,
+	// and failure status while hiding the rest of the body.
+	CollapseToolCall *bool
+
 	// TUIInputStyle controls the main input rendering: plain or lines.
 	TUIInputStyle string
 
@@ -350,6 +354,7 @@ type SettingsStore interface {
 	SetRecursiveFileSuggest(enabled bool) error
 	SetRespectGitignore(enabled bool) error
 	SetCompactMode(enabled bool) error
+	SetCollapseToolCall(enabled bool) error
 	SetTUIInputStyle(style string) error
 	SetTUIStatusPosition(position string) error
 	SetTUIWorkingPosition(position string) error
@@ -626,6 +631,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 			FlatTools:             cfg.FlatTools,
 			CompactUser:           cfg.CompactUser,
 			CompactMode:           cfg.CompactMode != nil && *cfg.CompactMode,
+			CollapseToolCall:      cfg.CollapseToolCall != nil && *cfg.CollapseToolCall,
 			StartupAgentName:      startupAgentName,
 			StartupContextPaths:   startupContextPaths,
 			StartupExtensionNames: startupExtensionNames,
@@ -3416,6 +3422,7 @@ func (i *Interactive) openSettingsDialog() {
 	recursiveFiles := i.cfg.RecursiveFileSuggest != nil && *i.cfg.RecursiveFileSuggest
 	respectGitignore := i.cfg.RespectGitignore == nil || *i.cfg.RespectGitignore
 	compactMode := i.compactModeEnabled()
+	collapseToolCall := i.cfg.CollapseToolCall != nil && *i.cfg.CollapseToolCall
 	showInstructions := i.cfg.ShowInstructionsAtStartup != nil && *i.cfg.ShowInstructionsAtStartup
 	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
 	statusPosition := tui.NormalizeStatusPosition(i.cfg.TUIStatusPosition)
@@ -3556,6 +3563,12 @@ func (i *Interactive) openSettingsDialog() {
 			label: "compact transcript rendering",
 			desc:  "reduce visual chrome by rendering tool calls without boxes and sent messages without padded bubbles",
 			value: compactMode,
+		},
+		{
+			key:   "collapse_tool_call",
+			label: "collapse tool call rendering",
+			desc:  "retain tool headers, a final preview line, and failure status; ctrl+o expands the full output",
+			value: collapseToolCall,
 		},
 		{
 			key:   "show_instructions_at_startup",
@@ -3964,6 +3977,23 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.view.CompactMode = value
 		i.view.InvalidateRenderCache()
 		i.statusOK = "compact transcript rendering " + onOff(value)
+		i.statusErr = ""
+		i.mu.Unlock()
+	case "collapse_tool_call":
+		val := value
+		i.cfg.CollapseToolCall = &val
+		if i.cfg.SettingsStore != nil {
+			if err := i.cfg.SettingsStore.SetCollapseToolCall(value); err != nil {
+				i.mu.Lock()
+				i.statusErr = "settings: " + err.Error()
+				i.mu.Unlock()
+				return
+			}
+		}
+		i.mu.Lock()
+		i.view.CollapseToolCall = value
+		i.view.InvalidateRenderCache()
+		i.statusOK = "collapse tool call rendering " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
 	case "show_instructions_at_startup":

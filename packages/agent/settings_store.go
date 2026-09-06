@@ -104,6 +104,15 @@ func (configSettingsStore) SetCompactMode(enabled bool) error {
 	return SaveConfig(cfg)
 }
 
+func (configSettingsStore) SetCollapseToolCall(enabled bool) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.CollapseToolCall = &enabled
+	return SaveConfig(cfg)
+}
+
 func (configSettingsStore) SetShowInstructionsAtStartup(enabled bool) error {
 	cfg, err := LoadConfig()
 	if err != nil {
