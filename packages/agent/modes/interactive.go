@@ -73,6 +73,12 @@ type InteractiveConfig struct {
 	// The current sandbox may differ after a session-scoped /jail or /unjail.
 	JailByDefault *bool
 
+	// PowerShellEnabled mirrors the Windows-only default tool preference.
+	PowerShellEnabled *bool
+
+	// ToolSelectionExplicit preserves an explicit --tools selection.
+	ToolSelectionExplicit bool
+
 	// OpenRouterServerToolsEnabled mirrors the persisted preference.
 	// nil means the default, off.
 	OpenRouterServerToolsEnabled *bool
@@ -3621,6 +3627,7 @@ func (i *Interactive) openSettingsDialog() {
 			children: quickItems,
 		})
 	}
+	items = i.appendPowerShellSetting(items, runtime.GOOS)
 	i.settingsDialog.Open(items)
 }
 
@@ -3912,6 +3919,8 @@ func (i *Interactive) applySettingToggle(key string, value bool) {
 		i.statusOK = "jail by default " + onOff(value)
 		i.statusErr = ""
 		i.mu.Unlock()
+	case "powershell_enabled":
+		i.applyPowerShellSetting(value, runtime.GOOS)
 	case "openrouter_server_tools_enabled":
 		val := value
 		i.cfg.OpenRouterServerToolsEnabled = &val

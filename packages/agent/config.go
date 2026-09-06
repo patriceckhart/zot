@@ -68,6 +68,10 @@ type Config struct {
 	// The live session can still override this with /jail or /unjail.
 	JailByDefault *bool `json:"jail_by_default,omitempty"`
 
+	// PowerShellEnabled adds the optional PowerShell tool to the default tool
+	// set on Windows. Explicit --tools and --no-tools override this preference.
+	PowerShellEnabled *bool `json:"powershell_enabled,omitempty"`
+
 	// OpenRouterServerToolsEnabled advertises OpenRouter server tools
 	// (web search, datetime, advisor, and others) when the provider is OpenRouter.
 	// Default off: users explicitly opt in from /settings.

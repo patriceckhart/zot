@@ -42,6 +42,18 @@ func (t *BashTool) Description() string     { return shellDescription(currentShe
 func (t *BashTool) Schema() json.RawMessage { return json.RawMessage(bashSchema) }
 
 func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
+	return executeShell(ctx, raw, progress, t.CWD, "$", func(command string) error {
+		if err := t.Sandbox.CheckCommand(command); err != nil {
+			return err
+		}
+		return t.Sandbox.CheckBashPermission(command)
+	}, func(ctx context.Context, command string) (*exec.Cmd, error) {
+		return newShellCmd(ctx, command), nil
+	})
+}
+
+// executeShell shares output streaming, timeouts and result formatting across shells.
+func executeShell(ctx context.Context, raw json.RawMessage, progress func(string), cwd, prompt string, check func(string) error, newCommand func(context.Context, string) (*exec.Cmd, error)) (core.ToolResult, error) {
 	var a bashArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return core.ToolResult{}, fmt.Errorf("invalid args: %w", err)
@@ -49,13 +61,9 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	if strings.TrimSpace(a.Command) == "" {
 		return core.ToolResult{}, fmt.Errorf("command is required")
 	}
-	if err := t.Sandbox.CheckCommand(a.Command); err != nil {
+	if err := check(a.Command); err != nil {
 		return core.ToolResult{}, err
 	}
-	if err := t.Sandbox.CheckBashPermission(a.Command); err != nil {
-		return core.ToolResult{}, err
-	}
-	cwd := t.CWD
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
@@ -68,13 +76,20 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	}
 
 	start := time.Now()
-	cmd := newShellCmd(runCtx, a.Command)
+	cmd, err := newCommand(runCtx, a.Command)
+	if err != nil {
+		return core.ToolResult{}, err
+	}
 	cmd.Dir = cwd
 	cmd.Env = os.Environ()
+	// Bound output draining if descendants retain handles after cancellation.
+	cmd.WaitDelay = 2 * time.Second
 	setProcessGroup(cmd)
 
 	// Capture merged stdout+stderr with line-by-line streaming.
 	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
 
@@ -155,7 +170,7 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	// a human would see if they ran the command themselves, which
 	// makes the model's reasoning about it more natural too.
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "$ %s\n", a.Command)
+	fmt.Fprintf(&sb, "%s %s\n", prompt, a.Command)
 	if trimmed != "" {
 		sb.WriteString("\n")
 		sb.WriteString(trimmed)
@@ -185,7 +200,7 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 	}
 	fmt.Fprintf(&sb, "  Took %s", humanDuration(elapsed))
 
-	isErr := exitCode != 0 || ctx.Err() != nil
+	isErr := exitCode != 0 || runCtx.Err() != nil
 	return core.ToolResult{
 		Content: []provider.Content{provider.TextBlock{Text: sb.String()}},
 		IsError: isErr,

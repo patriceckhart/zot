@@ -68,6 +68,15 @@ func (configSettingsStore) SetJailByDefault(enabled bool) error {
 	return SaveConfig(cfg)
 }
 
+func (configSettingsStore) SetPowerShell(enabled bool) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.PowerShellEnabled = &enabled
+	return SaveConfig(cfg)
+}
+
 func (configSettingsStore) SetOpenRouterServerTools(enabled bool) error {
 	cfg, err := LoadConfig()
 	if err != nil {

@@ -1280,6 +1280,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		AutoSwarmEnabled:              initialCfg.AutoSwarmEnabled,
 		AutoCompactThreshold:          initialCfg.AutoCompactThreshold,
 		JailByDefault:                 initialCfg.JailByDefault,
+		PowerShellEnabled:             initialCfg.PowerShellEnabled,
+		ToolSelectionExplicit:         len(args.Tools) > 0,
 		OpenRouterServerToolsEnabled:  initialCfg.OpenRouterServerToolsEnabled,
 		OpenRouterServerToolCallLimit: initialCfg.OpenRouterServerToolCallLimit,
 		NoTools:                       args.NoTools,

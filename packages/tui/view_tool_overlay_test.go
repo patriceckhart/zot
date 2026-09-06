@@ -82,6 +82,17 @@ func TestLiveToolOverlayShowsFullBashCommandBeforeResult(t *testing.T) {
 	}
 }
 
+func TestLiveToolOverlayShowsPowerShellCommand(t *testing.T) {
+	args := json.RawMessage(`{"command":"Get-ChildItem -Force"}`)
+	v := View{Theme: Dark, ToolCalls: []ToolCallView{{
+		ID: "shell_1", Name: "powershell", RawJSONBuf: string(args),
+	}}}
+	plain := stripANSI(strings.Join(v.BuildLive(80), "\n"))
+	if !strings.Contains(plain, "PS> Get-ChildItem -Force") {
+		t.Fatalf("PowerShell command missing from live preview: %s", plain)
+	}
+}
+
 func TestLiveToolOverlayHeightDoesNotShrinkMidStream(t *testing.T) {
 	v := View{Theme: Dark}
 	tall := json.RawMessage(`{"command":"line1\nline2\nline3\nline4\nline5"}`)
