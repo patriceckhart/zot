@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"reflect"
 	"runtime"
@@ -118,7 +119,7 @@ func TestPowerShellExecution(t *testing.T) {
 		timeout             int
 	}{
 		{"unicode and quoting", "Write-Output 'Grüße 世界'; Write-Output '\"quoted\"'", "Grüße 世界", false, 0},
-		{"cwd", "(Get-Location).Path", cwd, false, 0},
+		{"cwd", "(Get-Location).Path", "", false, 0},
 		{"stderr", "[Console]::Error.WriteLine('stderr output')", "stderr output", false, 0},
 		{"exit", "exit 7", "[exit 7]", true, 0},
 		{"error", "throw 'failure'", "failure", true, 0},
@@ -135,6 +136,22 @@ func TestPowerShellExecution(t *testing.T) {
 			text := res.Content[0].(provider.TextBlock).Text
 			if res.IsError != tc.failure || !strings.Contains(text, tc.want) || !strings.HasPrefix(text, "PS> ") {
 				t.Fatalf("result: %+v, %s", res, text)
+			}
+			if tc.name == "cwd" {
+				// Windows temp paths can use short names or different casing
+				// than Get-Location. Compare directory identity, not spelling.
+				gotPath := strings.TrimSpace(streamed.String())
+				gotInfo, err := os.Stat(gotPath)
+				if err != nil {
+					t.Fatalf("stat reported cwd %q (expected %q): %v", gotPath, cwd, err)
+				}
+				wantInfo, err := os.Stat(cwd)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !os.SameFile(gotInfo, wantInfo) {
+					t.Fatalf("reported cwd %q is not the expected directory %q", gotPath, cwd)
+				}
 			}
 			if tc.name == "unicode and quoting" && !strings.Contains(streamed.String(), "Grüße 世界") {
 				t.Fatalf("stream: %q", streamed.String())
