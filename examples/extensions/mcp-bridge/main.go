@@ -168,7 +168,12 @@ func registerCommands(e *ext.Extension, b *bridge) {
 				notifyText(e, "info", "Local OAuth credentials removed (server-side grant is not revoked).")
 				return ext.Noop()
 			}
-			if err := srv.login(context.Background(), func(u string) { notifyText(e, "info", "Open this URL in your browser to authorize MCP access:\n"+u) }); err != nil { return ext.Errorf("OAuth login: %v", err) }
+			if err := srv.login(context.Background(), func(u string) {
+				notifyText(e, "info", "Opening your browser for MCP authorization. If it does not open, use:\n"+u)
+				if err := openAuthorizationURL(u); err != nil {
+					notifyText(e, "warning", "Could not open the browser. Open the authorization URL above manually.")
+				}
+			}); err != nil { return ext.Errorf("OAuth login: %v", err) }
 			srv.stop()
 			notifyText(e, "info", "OAuth credentials saved. Run /mcp refresh to reconnect and discover tools.")
 			return ext.Noop()

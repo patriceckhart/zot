@@ -21,7 +21,7 @@ This extension reads MCP server configurations from standard locations (same for
 
 ## Interactive OAuth (experimental)
 
-For an HTTP server requiring browser authorization, run `/mcp login <server>` and open the displayed URL in your local browser. The bridge uses the existing mcp-go OAuth implementation for metadata discovery, dynamic public-client registration, PKCE and token refresh. A loopback callback listener checks state and expires after five minutes. Background discovery never launches a login flow.
+For an HTTP server requiring browser authorization, run `/mcp login <server>` to open the authorization URL in your default browser (`open` on macOS, `rundll32` on Windows, `xdg-open` elsewhere). The URL is also displayed as a manual fallback; clipboard contents are not changed. The bridge uses the existing mcp-go OAuth implementation for metadata discovery, dynamic public-client registration, PKCE and token refresh. A loopback callback listener checks state and expires after five minutes. Background discovery never launches a login flow.
 
 After authorization, run `/mcp refresh`. Tokens and client registration are stored per exact resource URL under `$ZOT_HOME/mcp-oauth/`, using atomic writes and mode 0600 files (0700 directory on Unix). These files contain credentials: do not share or commit them. On Windows, protect the state directory with account-specific ACLs.
 
