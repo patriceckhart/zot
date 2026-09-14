@@ -19,6 +19,14 @@ This extension reads MCP server configurations from standard locations (same for
 - **Slash commands** — `/mcp` to check status, start/stop/restart servers
 - **Better error messages** — context-aware errors with actionable suggestions
 
+## Interactive OAuth (experimental)
+
+For an HTTP server requiring browser authorization, run `/mcp login <server>` and open the displayed URL in your local browser. The bridge uses the existing mcp-go OAuth implementation for metadata discovery, dynamic public-client registration, PKCE and token refresh. A loopback callback listener checks state and expires after five minutes. Background discovery never launches a login flow.
+
+After authorization, run `/mcp refresh`. Tokens and client registration are stored per exact resource URL under `$ZOT_HOME/mcp-oauth/`, using atomic writes and mode 0600 files (0700 directory on Unix). These files contain credentials: do not share or commit them. On Windows, protect the state directory with account-specific ACLs.
+
+`/mcp logout <server>` stops that connection and deletes its local credentials; it does not revoke the authorization grant at the provider. Servers sharing an exact URL share credentials. Browser authorization and refresh against a real provider still need end-to-end validation.
+
 ## Quick Start
 
 1. **Build the extension:**
@@ -342,7 +350,7 @@ zot ext logs mcp -f
 
 ## Limitations
 
-- **No OAuth flow** — authentication requires manual token configuration in headers
+- **OAuth scope** — `/mcp login <server>` supports HTTPS servers with dynamic public-client registration. Pre-registered clients and remote/headless callback forwarding are not supported yet. Static header authentication remains available.
 - **No resources/prompts** — only tools are bridged (MCP resources and prompts coming later)
 - **No automatic config hot reload** — run `/reload-ext` after setup/config changes
 

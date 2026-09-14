@@ -158,6 +158,21 @@ func registerCommands(e *ext.Extension, b *bridge) {
 			notifyText(e, "info", out)
 			return ext.Noop()
 
+		case "login", "logout":
+			if b == nil || len(parts) != 2 { return ext.Errorf("usage: /mcp %s <server>", parts[0]) }
+			srv, ok := b.servers[parts[1]]
+			if !ok { return ext.Errorf("unknown server: %s", parts[1]) }
+			if parts[0] == "logout" {
+				srv.stop()
+				if err := os.Remove(oauthStoreFor(srv.config.URL).path); err != nil && !os.IsNotExist(err) { return ext.Errorf("OAuth logout failed") }
+				notifyText(e, "info", "Local OAuth credentials removed (server-side grant is not revoked).")
+				return ext.Noop()
+			}
+			if err := srv.login(context.Background(), func(u string) { notifyText(e, "info", "Open this URL in your browser to authorize MCP access:\n"+u) }); err != nil { return ext.Errorf("OAuth login: %v", err) }
+			srv.stop()
+			notifyText(e, "info", "OAuth credentials saved. Run /mcp refresh to reconnect and discover tools.")
+			return ext.Noop()
+
 		case "start":
 			return handleStartCommand(e, b, parts[1:])
 
@@ -204,6 +219,8 @@ func mcpOverview(b *bridge) string {
 	sb.WriteString("  /mcp start <server|all>               Start one server, or all servers\n")
 	sb.WriteString("  /mcp stop <server|all>                Stop one server, or all servers\n")
 	sb.WriteString("  /mcp restart                          Restart all servers\n")
+	sb.WriteString("  /mcp login <server>                   Authorize in your browser (OAuth + PKCE)\n")
+	sb.WriteString("  /mcp logout <server>                  Remove local OAuth credentials\n")
 	sb.WriteString("  /mcp refresh                          Refresh cached tool definitions\n")
 	sb.WriteString("  /mcp help                             Show all MCP commands\n")
 	return strings.TrimRight(sb.String(), "\n")

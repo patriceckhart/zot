@@ -240,6 +240,9 @@ func (s *managedServer) startStreamableHTTP(ctx context.Context) (*client.Client
 		headers[k] = v
 	}
 	opts = append(opts, transport.WithHTTPHeaders(headers))
+	oauth, err := s.oauthConfig()
+	if err != nil { return nil, err }
+	if oauth != nil { opts = append(opts, transport.WithHTTPOAuth(*oauth)) }
 
 	// Create streamable HTTP client
 	c, err := client.NewStreamableHttpClient(s.config.URL, opts...)
@@ -263,7 +266,11 @@ func (s *managedServer) startSSE(ctx context.Context) (*client.Client, error) {
 	}
 
 	// Create SSE client
-	c, err := client.NewSSEMCPClient(s.config.URL)
+	var opts []transport.ClientOption
+	oauth, err := s.oauthConfig()
+	if err != nil { return nil, err }
+	if oauth != nil { opts = append(opts, transport.WithOAuth(*oauth)) }
+	c, err := client.NewSSEMCPClient(s.config.URL, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("create SSE client: %w", err)
 	}
