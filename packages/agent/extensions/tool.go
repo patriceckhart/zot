@@ -27,20 +27,27 @@ type extensionTool struct {
 	manager     *Manager
 	timeout     time.Duration
 	deferred    bool
+	interactive bool
 }
 
 // NewTool returns a core.Tool that round-trips invocations through
-// mgr to the extension that registered (name, schema). The default
-// per-call timeout is 60 seconds; callers can override.
+// mgr to the extension that registered (name, schema). Normal tools
+// have a 60-second host timeout; interactive tools wait for the
+// extension (and its UI) without a host-imposed deadline.
 func NewTool(mgr *Manager, info ToolInfo) core.Tool {
+	timeout := 60 * time.Second
+	if info.Interactive {
+		timeout = 0
+	}
 	return &extensionTool{
 		name:        info.Name,
 		description: info.Description,
 		schema:      info.Schema,
 		extension:   info.Extension,
 		manager:     mgr,
-		timeout:     60 * time.Second,
+		timeout:     timeout,
 		deferred:    info.Deferred,
+		interactive: info.Interactive,
 	}
 }
 
@@ -49,6 +56,8 @@ func (t *extensionTool) Description() string     { return t.description }
 func (t *extensionTool) Schema() json.RawMessage { return t.schema }
 func (t *extensionTool) Extension() string       { return t.extension }
 func (t *extensionTool) Deferred() bool          { return t.deferred }
+func (t *extensionTool) Interactive() bool       { return t.interactive }
+func (t *extensionTool) Timeout() time.Duration  { return t.timeout }
 
 // Execute is what the agent calls when the LLM invokes the tool. It
 // hands args to the owning extension, waits up to t.timeout for the

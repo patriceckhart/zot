@@ -331,6 +331,7 @@ type toolDef struct {
 	description string
 	schema      json.RawMessage
 	deferred    bool
+	interactive bool
 }
 
 // HostInfo is what the host (zot) tells us in HelloAck. Useful for
@@ -440,19 +441,25 @@ func (e *Extension) Command(name, description string, fn CommandHandler) {
 // Naming conflicts with built-in tools (read, write, edit, bash,
 // glob, skill) are silently shadowed by the built-in.
 func (e *Extension) Tool(name, description string, schema json.RawMessage, fn ToolHandler) {
-	e.registerTool(name, description, schema, false, fn)
+	e.registerTool(name, description, schema, false, false, fn)
+}
+
+// InteractiveTool registers a tool whose reply may wait for interaction
+// in the host UI. Unlike normal tools, zot does not impose a host timeout.
+func (e *Extension) InteractiveTool(name, description string, schema json.RawMessage, fn ToolHandler) {
+	e.registerTool(name, description, schema, false, true, fn)
 }
 
 // DeferredTool registers a tool whose definition stays hidden until another
 // tool result names it in ActivateTools.
 func (e *Extension) DeferredTool(name, description string, schema json.RawMessage, fn ToolHandler) {
-	e.registerTool(name, description, schema, true, fn)
+	e.registerTool(name, description, schema, true, false, fn)
 }
 
-func (e *Extension) registerTool(name, description string, schema json.RawMessage, deferred bool, fn ToolHandler) {
+func (e *Extension) registerTool(name, description string, schema json.RawMessage, deferred, interactive bool, fn ToolHandler) {
 	e.mu.Lock()
 	e.tools[name] = fn
-	e.toolDefs = append(e.toolDefs, toolDef{name: name, description: description, schema: schema, deferred: deferred})
+	e.toolDefs = append(e.toolDefs, toolDef{name: name, description: description, schema: schema, deferred: deferred, interactive: interactive})
 	e.mu.Unlock()
 }
 
@@ -604,6 +611,7 @@ func (e *Extension) Run() error {
 			Description: td.description,
 			Schema:      td.schema,
 			Deferred:    td.deferred,
+			Interactive: td.interactive,
 		})
 	}
 	var intercepts []string

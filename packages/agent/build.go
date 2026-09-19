@@ -132,6 +132,7 @@ type ExtensionToolInfo struct {
 	Description string
 	Schema      []byte
 	Deferred    bool
+	Interactive bool
 }
 
 // toolSummariesFromRegistry rebuilds the system-prompt tool list

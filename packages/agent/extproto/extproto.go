@@ -45,6 +45,7 @@ type RegisterToolFromExt struct {
 	Description string          `json:"description,omitempty"`
 	Schema      json.RawMessage `json:"schema"`
 	Deferred    bool            `json:"deferred,omitempty"`
+	Interactive bool            `json:"interactive,omitempty"`
 }
 
 type ReadyFromExt struct {

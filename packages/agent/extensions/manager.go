@@ -1179,6 +1179,7 @@ type ToolInfo struct {
 	Description string
 	Schema      json.RawMessage
 	Deferred    bool
+	Interactive bool
 }
 
 // Tools returns a snapshot of every (extension, tool) pair currently
@@ -1196,6 +1197,7 @@ func (m *Manager) Tools() []ToolInfo {
 				Description: t.Description,
 				Schema:      t.Schema,
 				Deferred:    t.Deferred,
+				Interactive: t.Interactive,
 			})
 		}
 	}
@@ -1240,10 +1242,14 @@ func (m *Manager) InvokeTool(ctx context.Context, name string, args json.RawMess
 		return extproto.ToolResultFromExt{}, fmt.Errorf("write: %w", err)
 	}
 
+	var timeoutCh <-chan time.Time
+	if timeout > 0 {
+		timeoutCh = time.After(timeout)
+	}
 	select {
 	case resp := <-ch:
 		return resp, nil
-	case <-time.After(timeout):
+	case <-timeoutCh:
 		ext.mu.Lock()
 		delete(ext.pendingTool, id)
 		ext.mu.Unlock()
