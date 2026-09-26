@@ -18,15 +18,16 @@ type loginStep int
 // dialog must default to closed so nothing shows up until Open() is
 // explicitly called.
 const (
-	loginStepClosed    loginStep = iota
-	loginStepMethod              // pick apikey vs subscription
-	loginStepProvider            // pick anthropic vs openai vs kimi
-	loginStepLlamaURL            // enter and validate llama.cpp router URL
-	loginStepLlamaKey            // enter optional llama.cpp API key
-	loginStepWaiting             // browser open, waiting for callback
-	loginStepPasteCode           // user pastes the auth code here
-	loginStepInfo                // informational setup guidance
-	loginStepDone                // success or error, waiting for key to dismiss
+	loginStepClosed      loginStep = iota
+	loginStepMethod                // pick apikey vs subscription
+	loginStepProvider              // pick anthropic vs openai vs kimi
+	loginStepOAuthMethod           // pick browser or copy-code for Anthropic
+	loginStepLlamaURL              // enter and validate llama.cpp router URL
+	loginStepLlamaKey              // enter optional llama.cpp API key
+	loginStepWaiting               // browser open, waiting for callback
+	loginStepPasteCode             // user pastes the auth code here
+	loginStepInfo                  // informational setup guidance
+	loginStepDone                  // success or error, waiting for key to dismiss
 )
 
 const loginProviderPageSize = 8
@@ -79,6 +80,7 @@ func (d *loginDialog) Open(zotHome string) {
 	d.url = ""
 	d.cursor = 0
 	d.providerQuery = ""
+	d.codeEd = nil
 	d.llamaEd = nil
 	d.llamaURL = ""
 	d.infoTitle = ""
@@ -183,6 +185,18 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 			lines = append(lines, th.FG256(th.Muted, fmt.Sprintf("  (%d/%d)", d.cursor+1, len(opts))))
 		}
 		lines = append(lines, frameRule(th, width))
+	case loginStepOAuthMethod:
+		lines = append(lines, frameHeader(th, "login - subscription - "+providerLabel(d.provider), width))
+		lines = append(lines, th.FG256(th.Muted, "choose sign-in flow (↑/↓, enter, esc to go back):"))
+		for idx, label := range []string{"browser callback", "copy code (headless / SSH)"} {
+			plain := "  " + label
+			if idx == d.cursor {
+				lines = append(lines, th.PadHighlight(plain, width))
+			} else {
+				lines = append(lines, th.FG256(th.Muted, plain))
+			}
+		}
+		lines = append(lines, frameRule(th, width))
 	case loginStepLlamaURL:
 		lines = append(lines, frameHeader(th, "login - api key - "+providerLabel(d.provider), width))
 		lines = append(lines, th.FG256(th.Muted, "server URL:"))
@@ -216,7 +230,7 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 			lines = append(lines, th.FG256(th.Accent, seg))
 		}
 		lines = append(lines, "")
-		if d.provider == "kimi" || d.provider == "xai" || d.provider == "github-copilot" {
+		if d.method == "oauth" && d.provider != "anthropic" && d.provider != "openai-codex" {
 			lines = append(lines, th.FG256(th.Muted, "complete sign-in in the browser - esc cancels"))
 			lines = append(lines, frameRule(th, width))
 			break
@@ -447,6 +461,8 @@ func (d *loginDialog) HandleKey(k tui.Key) loginDialogAction {
 		return d.handleMethodKey(k)
 	case loginStepProvider:
 		return d.handleProviderKey(k)
+	case loginStepOAuthMethod:
+		return d.handleOAuthMethodKey(k)
 	case loginStepLlamaURL, loginStepLlamaKey:
 		return d.handleLlamaKey(k)
 	case loginStepWaiting:
@@ -543,10 +559,35 @@ func (d *loginDialog) handleProviderKey(k tui.Key) loginDialogAction {
 			d.message = ""
 			return loginDialogAction{}
 		}
+		if d.method == "oauth" && d.provider == "anthropic" {
+			d.step = loginStepOAuthMethod
+			d.cursor = 0
+			return loginDialogAction{}
+		}
 		d.step = loginStepWaiting
 		if d.method == "apikey" {
 			return loginDialogAction{StartAPIKey: true, Provider: d.provider}
 		}
+		return loginDialogAction{StartOAuth: true, Provider: d.provider}
+	}
+	return loginDialogAction{}
+}
+
+func (d *loginDialog) handleOAuthMethodKey(k tui.Key) loginDialogAction {
+	switch k.Kind {
+	case tui.KeyUp:
+		d.cursor = 0
+	case tui.KeyDown:
+		d.cursor = 1
+	case tui.KeyEsc:
+		d.step = loginStepProvider
+		d.cursor = 0
+	case tui.KeyEnter:
+		if d.cursor == 1 {
+			d.step = loginStepPasteCode
+			return loginDialogAction{StartManual: true, Provider: d.provider}
+		}
+		d.step = loginStepWaiting
 		return loginDialogAction{StartOAuth: true, Provider: d.provider}
 	}
 	return loginDialogAction{}
@@ -594,6 +635,15 @@ func (d *loginDialog) ShowWaiting(url string) {
 		return
 	}
 	d.step = loginStepWaiting
+	d.url = url
+}
+
+// ShowPasteCode displays the URL for a manual OAuth transaction.
+func (d *loginDialog) ShowPasteCode(url string) {
+	if d.step == loginStepClosed {
+		return
+	}
+	d.step = loginStepPasteCode
 	d.url = url
 }
 

@@ -75,6 +75,7 @@ func (m *Manager) Close() {
 		m.oauthCancel()
 		m.oauthCancel = nil
 	}
+	m.clearManualOAuthLocked()
 }
 
 // ---- API key flow ----
@@ -166,6 +167,7 @@ func (m *Manager) StartOAuth(provider string) (string, error) {
 	if m.oauthCancel != nil {
 		m.oauthCancel()
 	}
+	m.clearManualOAuthLocked()
 	m.mu.Unlock()
 
 	pkce, err := NewPKCE()
@@ -187,6 +189,11 @@ func (m *Manager) StartOAuth(provider string) (string, error) {
 	m.oauthServer = cs
 	m.oauthCtx = ctx
 	m.oauthCancel = cancel
+	m.manualOp = &op
+	m.manualStoreProvider = storeProvider
+	m.manualEventProvider = provider
+	m.manualPKCE = pkce
+	m.manualState = state
 	m.mu.Unlock()
 
 	go m.awaitOAuth(ctx, op, storeProvider, provider, cs, pkce, state)
@@ -203,14 +210,34 @@ func (m *Manager) awaitOAuth(ctx context.Context, op OAuthProvider, storeProvide
 	res, err := cs.Result(waitCtx)
 	if err != nil {
 		if ctx.Err() == nil {
+			m.mu.Lock()
+			if m.oauthCtx == ctx {
+				m.clearManualOAuthLocked()
+			}
+			m.mu.Unlock()
 			m.emit(Event{Kind: "error", Provider: eventProvider, Method: "oauth", Message: "timeout waiting for callback"})
 		}
 		return
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	if res.Err != nil {
+		m.mu.Lock()
+		if m.oauthCtx == ctx {
+			m.clearManualOAuthLocked()
+		}
+		m.mu.Unlock()
 		m.emit(Event{Kind: "error", Provider: eventProvider, Method: "oauth", Message: res.Err.Error()})
 		return
 	}
+	m.mu.Lock()
+	if m.oauthCtx != ctx || m.manualOp == nil {
+		m.mu.Unlock()
+		return
+	}
+	m.clearManualOAuthLocked()
+	m.mu.Unlock()
 
 	exCtx, exCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer exCancel()
@@ -354,8 +381,7 @@ func (m *Manager) StartManualOAuth(provider string) (string, error) {
 	case "anthropic":
 		op = AnthropicManualOAuth
 	case "openai", "openai-codex":
-		op = OpenAIOAuth
-		storeProvider = "openai"
+		return "", fmt.Errorf("openai login requires the browser callback flow; manual code login is not supported")
 	case "google":
 		return "", fmt.Errorf("google login is api-key only; use api key login for gemini")
 	case "deepseek":
@@ -364,6 +390,7 @@ func (m *Manager) StartManualOAuth(provider string) (string, error) {
 		return "", fmt.Errorf("provider must be anthropic, openai, openai-codex, kimi, xai, github-copilot, deepseek, or google")
 	}
 
+	m.CancelOAuth()
 	pkce, err := NewPKCE()
 	if err != nil {
 		return "", err
@@ -389,23 +416,35 @@ func (m *Manager) StartManualOAuth(provider string) (string, error) {
 // a token and stores it. Accepts either a raw code or a "code#state"
 // token shown by providers like Anthropic when code=true is set.
 func (m *Manager) CompleteManualOAuth(ctx context.Context, input string) error {
+	code, pastedState := parseManualCodeInput(strings.TrimSpace(input))
 	m.mu.Lock()
-	op := m.manualOp
+	if m.manualOp == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("no manual oauth flow in progress")
+	}
+	if pastedState != "" && pastedState != m.manualState {
+		m.mu.Unlock()
+		return fmt.Errorf("oauth state mismatch")
+	}
+	if code == "" {
+		m.mu.Unlock()
+		return fmt.Errorf("empty code")
+	}
+	op := *m.manualOp
 	storeProvider := m.manualStoreProvider
 	eventProvider := m.manualEventProvider
 	pkce := m.manualPKCE
 	state := m.manualState
+	m.clearManualOAuthLocked()
+	if m.oauthServer != nil {
+		if m.oauthCancel != nil {
+			m.oauthCancel()
+			m.oauthCancel = nil
+		}
+		m.oauthServer.Shutdown()
+		m.oauthServer = nil
+	}
 	m.mu.Unlock()
-	if op == nil {
-		return fmt.Errorf("no manual oauth flow in progress")
-	}
-	code, pastedState := parseManualCodeInput(strings.TrimSpace(input))
-	if pastedState != "" {
-		state = pastedState
-	}
-	if code == "" {
-		return fmt.Errorf("empty code")
-	}
 	exCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	tok, err := op.Exchange(exCtx, code, state, pkce)
@@ -417,13 +456,6 @@ func (m *Manager) CompleteManualOAuth(ctx context.Context, input string) error {
 		m.emit(Event{Kind: "error", Provider: eventProvider, Method: "oauth", Message: err.Error()})
 		return err
 	}
-	m.mu.Lock()
-	m.manualOp = nil
-	m.manualStoreProvider = ""
-	m.manualEventProvider = ""
-	m.manualPKCE = PKCE{}
-	m.manualState = ""
-	m.mu.Unlock()
 	m.emit(Event{Kind: "success", Provider: eventProvider, Method: "oauth"})
 	return nil
 }
@@ -491,6 +523,15 @@ func (m *Manager) CancelOAuth() {
 		m.oauthServer.Shutdown()
 		m.oauthServer = nil
 	}
+	m.clearManualOAuthLocked()
+}
+
+func (m *Manager) clearManualOAuthLocked() {
+	m.manualOp = nil
+	m.manualStoreProvider = ""
+	m.manualEventProvider = ""
+	m.manualPKCE = PKCE{}
+	m.manualState = ""
 }
 
 // ---- shared ----

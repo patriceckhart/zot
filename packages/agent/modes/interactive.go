@@ -2298,6 +2298,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return false
 		}
 		act := i.dialog.HandleKey(k)
+		if act.Close && i.cfg.AuthManager != nil {
+			i.cfg.AuthManager.CancelOAuth()
+		}
 		if act.StartAPIKey {
 			i.startAPIKeyFlow(act.Provider)
 		}
@@ -5355,31 +5358,12 @@ func (i *Interactive) startOAuthFlow(provider string) {
 	if provider == "kimi" && i.cfg.SetKimiCLIFallbackDisabled != nil {
 		_ = i.cfg.SetKimiCLIFallbackDisabled(false)
 	}
-	// Device-code providers already support headless login and must only
-	// start one polling flow.
-	if provider == "kimi" || provider == "xai" || provider == "github-copilot" {
-		loginURL, err := i.cfg.AuthManager.StartOAuth(provider)
-		if err != nil {
-			i.dialog.ShowResult(false, err.Error())
-			return
-		}
-		i.dialog.ShowWaiting(loginURL)
-		return
-	}
-	// Always run the manual/copy-code flow in parallel with the local
-	// callback server so headless environments (docker, SSH) can paste
-	// the authorization code directly without first pressing 'p'.
-	_, err := i.cfg.AuthManager.StartOAuth(provider)
+	loginURL, err := i.cfg.AuthManager.StartOAuth(provider)
 	if err != nil {
 		i.dialog.ShowResult(false, err.Error())
 		return
 	}
-	manualURL, mErr := i.cfg.AuthManager.StartManualOAuth(provider)
-	if mErr == nil {
-		i.dialog.ShowWaiting(manualURL)
-	} else {
-		i.dialog.ShowResult(false, mErr.Error())
-	}
+	i.dialog.ShowWaiting(loginURL)
 }
 
 func (i *Interactive) startManualOAuthFlow(provider string) {
@@ -5392,7 +5376,7 @@ func (i *Interactive) startManualOAuthFlow(provider string) {
 		i.dialog.ShowResult(false, err.Error())
 		return
 	}
-	i.dialog.url = url
+	i.dialog.ShowPasteCode(url)
 	i.invalidate()
 }
 
@@ -5872,6 +5856,9 @@ func (i *Interactive) swapModel(prov, model string, builder func(string, string)
 func (i *Interactive) handleAuthEvent(ev auth.Event) {
 	switch ev.Kind {
 	case "started":
+		if i.dialog.step == loginStepPasteCode && i.dialog.url == ev.URL {
+			return
+		}
 		i.dialog.ShowWaiting(ev.URL)
 	case "browser_open":
 		// no-op
