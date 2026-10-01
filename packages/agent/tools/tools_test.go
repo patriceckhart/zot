@@ -1,9 +1,13 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +15,8 @@ import (
 	"testing"
 
 	"github.com/patriceckhart/zot/packages/provider"
+	"golang.org/x/image/bmp"
+	"golang.org/x/image/tiff"
 )
 
 func mustJSON(t *testing.T, v any) json.RawMessage {
@@ -60,6 +66,66 @@ func TestReadImageMimeFromContentNotExtension(t *testing.T) {
 	}
 	if img.MimeType != "image/jpeg" {
 		t.Fatalf("mime from extension not corrected: got %s want image/jpeg", img.MimeType)
+	}
+}
+
+func TestReadBMPAndTIFFAsPNG(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		encode func(*os.File, image.Image) error
+	}{
+		{"bmp", func(f *os.File, img image.Image) error { return bmp.Encode(f, img) }},
+		{"tif", func(f *os.File, img image.Image) error { return tiff.Encode(f, img, nil) }},
+		{"tiff", func(f *os.File, img image.Image) error { return tiff.Encode(f, img, nil) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "sample."+tc.name)
+			f, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+			img.Set(0, 0, color.RGBA{R: 255, A: 255})
+			if err := tc.encode(f, img); err != nil {
+				f.Close()
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+			res, err := (&ReadTool{CWD: dir}).Execute(context.Background(), mustJSON(t, map[string]any{"path": filepath.Base(path)}), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			block, ok := res.Content[0].(provider.ImageBlock)
+			if !ok || block.MimeType != "image/png" {
+				t.Fatalf("result = %#v", res.Content)
+			}
+			decoded, err := png.Decode(bytes.NewReader(block.Data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			red, green, blue, alpha := decoded.At(0, 0).RGBA()
+			if decoded.Bounds() != img.Bounds() || red != 0xffff || green != 0 || blue != 0 || alpha != 0xffff {
+				t.Fatalf("converted image differs: bounds=%v pixel=%v", decoded.Bounds(), decoded.At(0, 0))
+			}
+		})
+	}
+}
+
+func TestReadInvalidImageFailsBeforeSendingToProvider(t *testing.T) {
+	for _, ext := range []string{"png", "webp", "bmp", "tiff"} {
+		t.Run(ext, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "invalid."+ext), []byte("not an image"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := (&ReadTool{CWD: dir}).Execute(context.Background(), mustJSON(t, map[string]any{"path": "invalid." + ext}), nil)
+			if err == nil {
+				t.Fatal("expected an error instead of an image block")
+			}
+		})
 	}
 }
 

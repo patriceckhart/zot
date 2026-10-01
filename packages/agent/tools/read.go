@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +15,8 @@ import (
 
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/tiff"
 )
 
 const (
@@ -36,7 +40,7 @@ const readSchema = `{"type":"object","properties":{"path":{"type":"string"},"off
 
 func (t *ReadTool) Name() string { return "read" }
 func (t *ReadTool) Description() string {
-	return "Read a file. Images (png/jpg/gif/webp) return inline."
+	return "Read a file. Images (png/jpg/gif/webp/bmp/tiff) return inline; BMP and TIFF are converted to PNG."
 }
 func (t *ReadTool) Schema() json.RawMessage { return json.RawMessage(readSchema) }
 
@@ -64,8 +68,9 @@ func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		return core.ToolResult{}, fmt.Errorf("%s is a directory", shown)
 	}
 
-	// Image handling.
-	if mime := imageMIME(path); mime != "" {
+	// Image handling. BMP and TIFF are decoded to PNG because vision
+	// providers generally accept PNG but not either original format.
+	if mime := imageMIME(path); mime != "" || convertibleImage(path) {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return core.ToolResult{}, err
@@ -75,10 +80,34 @@ func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		// editor that re-encoded on save). Anthropic and other providers
 		// sniff the real bytes and reject the whole request when the
 		// declared media type disagrees, which would break the session.
-		// Always derive the MIME from the actual content; fall back to
-		// the extension-based guess only when the bytes are unrecognized.
+		// Always derive the MIME from recognized content and reject
+		// unrecognized bytes rather than sending an invalid image upstream.
 		if sniffed := sniffImageMIME(data); sniffed != "" {
 			mime = sniffed
+		} else if convertibleImage(path) {
+			const maxConvertBytes = 32 << 20
+			const maxConvertPixels = 25_000_000
+			if len(data) > maxConvertBytes {
+				return core.ToolResult{}, fmt.Errorf("image %s is too large to convert", shown)
+			}
+			cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+			if err != nil {
+				return core.ToolResult{}, fmt.Errorf("decode image %s: %w", shown, err)
+			}
+			if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > maxConvertPixels/cfg.Height {
+				return core.ToolResult{}, fmt.Errorf("image %s is too large to convert", shown)
+			}
+			img, _, err := image.Decode(bytes.NewReader(data))
+			if err != nil {
+				return core.ToolResult{}, fmt.Errorf("decode image %s: %w", shown, err)
+			}
+			var buf bytes.Buffer
+			if err := png.Encode(&buf, img); err != nil {
+				return core.ToolResult{}, fmt.Errorf("convert image %s to PNG: %w", shown, err)
+			}
+			data, mime = buf.Bytes(), "image/png"
+		} else {
+			return core.ToolResult{}, fmt.Errorf("%s is not a supported PNG, JPEG, GIF, or WebP image", shown)
 		}
 		return core.ToolResult{
 			Content: []provider.Content{provider.ImageBlock{MimeType: mime, Data: data}},
@@ -175,6 +204,14 @@ func resolvePath(cwd, p string) string {
 		cwd, _ = os.Getwd()
 	}
 	return filepath.Join(cwd, p)
+}
+
+func convertibleImage(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".bmp", ".tif", ".tiff":
+		return true
+	}
+	return false
 }
 
 func imageMIME(path string) string {

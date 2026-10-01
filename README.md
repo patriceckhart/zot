@@ -281,7 +281,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 
 ## Tools
 
-- `read`: read text files, or inline images (PNG, JPEG, GIF, WebP).
+- `read`: read text files, or inline images (PNG, JPEG, GIF, WebP). BMP and TIFF files are converted to PNG before sending to the model. Other image formats are not supported. Model and provider image support may vary.
 - `write`: create or overwrite files, making parent directories as needed.
 - `edit`: one or more exact-match replacements in an existing file.
 - `bash`: run a command in the session cwd with merged stdout/stderr and a timeout. On Unix, zot uses `/bin/bash -c` when available, then `bash -c` from `PATH`, and falls back to POSIX `/bin/sh -c` when Bash is unavailable. On Windows, it uses `cmd /C`. macOS ships Bash 3.2 by default, so newer Bash features may be unavailable.
