@@ -234,7 +234,7 @@ type InteractiveConfig struct {
 	ZotHome string
 
 	// SessionsRoot is the root passed to core session operations. It differs
-	// from ZotHome for Zotfile agents, whose sessions are isolated by agent
+	// from ZotHome for .zot agents, whose sessions are isolated by agent
 	// name. Empty falls back to ZotHome for embedders and tests.
 	SessionsRoot string
 
@@ -615,7 +615,7 @@ type Interactive struct {
 	// shell escape, updated via BashTool progress for live rendering.
 	shellLive string
 
-	// awaitingStartupPre is true while the zotfile entry.pre auto-submit
+	// awaitingStartupPre is true while the .zot agent entry.pre auto-submit
 	// is in flight. When it clears, deferredInitialInput is applied.
 	awaitingStartupPre   bool
 	deferredInitialInput string

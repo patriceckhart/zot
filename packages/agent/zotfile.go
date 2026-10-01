@@ -436,7 +436,7 @@ var githubArchiveURL = func(owner, repo, ref string) string {
 
 func loadRemoteZotfile(u *url.URL) (zotfileLoaded, func(), error) {
 	if !strings.EqualFold(u.Hostname(), "github.com") {
-		return zotfileLoaded{}, nil, fmt.Errorf("unsupported zotfile URL host %q; only github.com agent directories are supported", u.Hostname())
+		return zotfileLoaded{}, nil, fmt.Errorf("unsupported .zot agent URL host %q; only github.com agent directories are supported", u.Hostname())
 	}
 	owner, repo, ref, subdir, err := parseGitHubAgentURL(u)
 	if err != nil {
@@ -562,7 +562,7 @@ func readZotManifest(dir string) (ZotfileManifest, error) {
 		return m, fmt.Errorf("manifest.json: %w", err)
 	}
 	if m.Zotfile != 1 {
-		return m, fmt.Errorf("unsupported zotfile version %d", m.Zotfile)
+		return m, fmt.Errorf("unsupported .zot agent manifest version %d", m.Zotfile)
 	}
 	name := strings.TrimSpace(m.Name)
 	if name == "" {
@@ -618,7 +618,7 @@ func unpackZotArchive(path, dst string) (string, error) {
 		return "", err
 	}
 	if info.Size() > maxZotfileCompressedSize {
-		return "", fmt.Errorf("zotfile exceeds %d MiB compressed size limit", maxZotfileCompressedSize>>20)
+		return "", fmt.Errorf(".zot archive exceeds %d MiB compressed size limit", maxZotfileCompressedSize>>20)
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -704,7 +704,7 @@ func writeCanonicalTar(root string, w io.Writer, exclude ...string) error {
 			return nil
 		}
 		if d.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlinks are not supported in zotfiles: %s", path)
+			return fmt.Errorf("symlinks are not supported in .zot agents: %s", path)
 		}
 		files = append(files, path)
 		return nil

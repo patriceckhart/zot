@@ -1,6 +1,6 @@
-# zotfile agents
+# .zot agents
 
-A zotfile packages an agent's behavior into one portable `.zot` file. It can contain the agent's instructions, reusable skills, static assets, and metadata describing the runtime, model, operating-system, binary, and tool permissions it needs.
+A .zot agent packages behavior into one portable `.zot` file. The manifest version key remains `zotfile` for compatibility with existing agents. It can contain the agent's instructions, reusable skills, static assets, and metadata describing the runtime, model, operating-system, binary, and tool permissions it needs.
 
 The current implementation supports creating, inspecting, verifying, and running local directories and `.zot` archives. It can also run an agent repository or directory directly from any public GitHub repository without keeping a clone. zot has no built-in owner or official collection. Indexed registry distribution, installation, signatures, bundled executable extensions, network permissions, and environment permissions are not implemented yet.
 
@@ -141,7 +141,7 @@ description: Diagnose a failing command from its output and relevant source file
 4. Propose the smallest correction and validation plan.
 ```
 
-Bundled skills are added to normal skill discovery while the zotfile is running. The model sees their name and description in the skill manifest and can load the full body through the `skill` tool. See [skills.md](skills.md) for the complete skill format.
+Bundled skills are added to normal skill discovery while the .zot agent is running. The model sees their name and description in the skill manifest and can load the full body through the `skill` tool. See [skills.md](skills.md) for the complete skill format.
 
 ## Manifest reference
 
@@ -271,7 +271,7 @@ Use `requirements.bin` for commands that must already be on `PATH`:
 }
 ```
 
-Zot checks these requirements before requesting consent. These zotfiles do not have install or postinstall hooks, so authors must document how users can obtain missing programs.
+Zot checks these requirements before requesting consent. These .zot agents do not have install or postinstall hooks, so authors must document how users can obtain missing programs.
 
 ### Entry fields
 
@@ -483,7 +483,7 @@ The directory is created for every run, but the agent can access it only when `$
 
 ## Agent-scoped sessions
 
-Sessions created by a zotfile are isolated from ordinary zot sessions and from other agents:
+Sessions created by a .zot agent are isolated from ordinary zot sessions and from other agents:
 
 ```text
 $ZOT_HOME/sessions/agents/<name>/
@@ -648,4 +648,4 @@ Not implemented yet:
 - per-agent Telegram, bot, or RPC selection
 - `--no-sandbox`, `--trust-bash`, or registry trust override flags
 
-Treat the unsupported fields and commands in the broader zotfile proposal as forward-looking design, not as current runtime behavior.
+Treat the unsupported fields and commands in the broader .zot agent proposal as forward-looking design, not as current runtime behavior.

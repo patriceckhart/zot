@@ -607,7 +607,7 @@ func runZotfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.S
 		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox}
 		res, err := bash.Execute(ctx, raw, progress)
 		if err != nil {
-			return fmt.Errorf("zotfile entry.pre: %w", err)
+			return fmt.Errorf(".zot agent entry.pre: %w", err)
 		}
 		if res.IsError {
 			var sb strings.Builder
@@ -620,12 +620,12 @@ func runZotfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.S
 			if msg == "" {
 				msg = "command failed"
 			}
-			return fmt.Errorf("zotfile entry.pre: %s", msg)
+			return fmt.Errorf(".zot agent entry.pre: %s", msg)
 		}
 		return nil
 	}
 	if ag == nil {
-		return fmt.Errorf("zotfile entry.pre requires an agent for non-shell prompts")
+		return fmt.Errorf(".zot agent entry.pre requires an agent for non-shell prompts")
 	}
 	if sink == nil {
 		sink = func(core.AgentEvent) {}
@@ -636,7 +636,7 @@ func runZotfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.S
 // refreshAgentToolsAndPrompt re-resolves tools (including rediscovered
 // skills and currently loaded extension tools) and updates the live
 // agent's registry and system prompt. Used after /reload-ext and after
-// zotfile entry.pre installs new skills or extensions.
+// .zot agent entry.pre installs new skills or extensions.
 // mutateRegistry, if non-nil, can inject session-specific tools (e.g. swarm_spawn).
 func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extToolAdapter ExtensionToolSource, ag *core.Agent, mutateRegistry func(core.Registry) core.Registry) {
 	if ag == nil {

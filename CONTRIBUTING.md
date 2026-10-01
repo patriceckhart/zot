@@ -42,7 +42,7 @@ The major ownership boundaries are:
 - `packages/core`: provider-independent agent behavior and session structures
 - `packages/provider`: provider requests, streaming responses, model discovery, retries, and wire-specific behavior
 - `packages/provider/auth`: credential and login handling
-- `packages/agent`: command-line orchestration, configuration, runtime assembly, RPC, and zotfiles
+- `packages/agent`: command-line orchestration, configuration, runtime assembly, RPC, and .zot agents
 - `packages/agent/modes`: interactive and non-interactive user modes
 - `packages/agent/extensions`, `extproto`, and `ext`: extension hosting, protocol, and SDK
 - `packages/agent/skills`: reusable instruction discovery

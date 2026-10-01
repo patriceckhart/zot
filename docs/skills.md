@@ -142,9 +142,9 @@ preferences file is reported and is not overwritten by a toggle.
 `disable-model-invocation: true` is allowed.
 
 Print, stream, and JSON modes also include pins with the first main prompt of
-a fresh session, including runs with session persistence disabled. Zotfile
-startup `pre` commands run before pins are applied. RPC, standalone bot modes,
-the SDK, and swarm background agents do not automatically load pin preferences.
+a fresh session, including runs with session persistence disabled. Startup
+`pre` commands for .zot agents run before pins are applied. RPC, standalone bot
+modes, the SDK, and swarm background agents do not automatically load pin preferences.
 The interactive Telegram bridge uses the interactive conversation's pins.
 
 Pinning saves repeated invocation, not tokens: complete skill bodies add to

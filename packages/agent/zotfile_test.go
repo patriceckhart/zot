@@ -104,6 +104,14 @@ func TestApplyZotfileAgentPromptPreservesEmptyReplacement(t *testing.T) {
 	}
 }
 
+func TestZotAgentManifestVersionError(t *testing.T) {
+	dir := writeTestZotfile(t, `{"zotfile":2,"name":"test"}`)
+	_, _, err := loadZotfile(dir)
+	if err == nil || !strings.Contains(err.Error(), "unsupported .zot agent manifest version 2") {
+		t.Fatalf("error = %v, want .zot agent manifest version", err)
+	}
+}
+
 func TestLoadZotfileAllowsMissingAgentMD(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"zotfile":1,"name":"test"}`), 0o600); err != nil {

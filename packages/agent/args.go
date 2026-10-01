@@ -105,7 +105,7 @@ type Args struct {
 	// freely so automated workflows keep working.
 	NoYolo bool
 
-	// Yes accepts zotfile launch consent without an interactive
+	// Yes accepts .zot agent launch consent without an interactive
 	// Allow? prompt (zot run -y / --yes). Durable consent receipts
 	// are still written for modes other than bash ask.
 	Yes bool
@@ -117,7 +117,7 @@ type Args struct {
 
 	Prompt string // concatenated positional args
 
-	// StartupPre is an optional zotfile entry.pre value. Interactive
+	// StartupPre is an optional .zot agent entry.pre value. Interactive
 	// mode auto-submits it once at startup before InitialInput handling.
 	StartupPre string
 
@@ -127,7 +127,7 @@ type Args struct {
 	SwarmAgent string
 
 	// AgentName/AgentDataDir/PermissionSet are populated by `zot run`
-	// for local zotfile agents. They scope sessions and enforce the
+	// for local .zot agents. They scope sessions and enforce the
 	// manifest's declared file/bash permissions.
 	AgentName     string
 	AgentDataDir  string
