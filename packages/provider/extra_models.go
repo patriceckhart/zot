@@ -48,6 +48,11 @@ var supplementCatalog = []Model{
 		BaseURL: "https://api.x.ai/v1"},
 
 	// ----- openai-responses (public OpenAI Responses API) -----
+	{Provider: "openai-responses", ID: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol (Responses)", API: APIResponses,
+		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.1, PriceCacheWrite: 2.5,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      4, PriceOutputAbove: 15, PriceCacheReadAbove: 0.2, PriceCacheWriteAbove: 5},
 	{Provider: "openai-responses", ID: "gpt-6-astra", DisplayName: "GPT-6 Astra (Responses)", API: APIResponses,
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
 		PriceInput: 10, PriceOutput: 50, PriceCacheRead: 1, PriceCacheWrite: 12.5,

@@ -158,6 +158,14 @@ Luna. Prompts above 272,000 tokens use each model's long-context price tier.
 Subscription access depends on your plan, rollout, and organization policy.
 Catalog availability does not grant access.
 
+GPT-6.1 Sol (`gpt-6.1-sol`) is available in zot with `openai`,
+`openai-responses`, and `openai-codex`, subject to account access. It uses the
+Responses API, supports `low` through `max` reasoning and up to 128,000 output
+tokens. Zot currently uses a 272,000-token context window for these entries.
+Standard per-million-token prices are $2 input, $10 output, $0.10 cache reads,
+and $2.50 cache writes. Prompts above 272,000 input tokens use the long-context
+price tier. GPT-6.1 Sol is not listed for GitHub Copilot in zot.
+
 ## API-key providers
 
 These providers can use environment variables. Simple API-key providers can

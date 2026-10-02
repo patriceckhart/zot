@@ -756,6 +756,8 @@ Claude Sonnet 5.5 is available through Anthropic (`--provider anthropic --model 
 
 GPT-6 Sol and GPT-6 Luna are available through OpenAI API keys, OpenAI Codex subscriptions, and GitHub Copilot. Select `gpt-6-sol` or `gpt-6-luna` with `--provider openai`, `openai-responses`, `openai-codex`, or `github-copilot`. Both use the Responses API, support up to 128,000 output tokens, and expose `low` through `max` reasoning. OpenAI and Codex entries use a 272,000-token context window, while Copilot entries use 1,000,000 tokens. Access through subscription providers depends on account availability and organization policy.
 
+GPT-6.1 Sol (`gpt-6.1-sol`) is available with `--provider openai`, `openai-responses`, or `openai-codex`, subject to account access. It uses the Responses API and supports `low` through `max` reasoning. Zot currently uses a 272,000-token context window and 128,000-token output limit for this model. It is not included in the GitHub Copilot catalog.
+
 You can add additional Gemini model IDs to `models.json` under the `google` provider.
 
 ### Gemini Enterprise Agent Platform (formerly Google Vertex AI)
