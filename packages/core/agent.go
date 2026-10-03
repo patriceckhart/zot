@@ -247,8 +247,7 @@ func (a *Agent) Messages() []provider.Message {
 func (a *Agent) ContextSnapshot() (system string, tools []provider.Tool, messages []provider.Message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	messages = make([]provider.Message, len(a.messages))
-	copy(messages, a.messages)
+	messages = withoutToolDisplay(a.messages)
 	return a.System, a.Tools.Specs(), messages
 }
 
@@ -391,7 +390,7 @@ func (a *Agent) promptWithPrelude(ctx context.Context, text string, images []pro
 		sink(EvToolCall{ID: call.ID, Name: call.Name, Args: call.Arguments})
 		result := a.runOneTool(ctx, *call, sink)
 		assistant := provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{*call}, Time: time.Now(), Meta: map[string]string{"origin_extension": origin, "synthetic_tool_call": "true"}}
-		tool := provider.Message{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{CallID: call.ID, Content: result.Content, IsError: result.IsError}}, Time: time.Now(), Meta: toolStateMetadata(result.State)}
+		tool := provider.Message{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{CallID: call.ID, Content: result.Content, IsError: result.IsError}}, Time: time.Now(), Meta: toolResultMetadata(result.State, map[string][]provider.NestedToolCall{call.ID: result.NestedCalls})}
 		for _, name := range result.ActivateTools {
 			if _, err := a.Tools.Get(name); err == nil && !containsString(tool.AddedToolNames, name) {
 				tool.AddedToolNames = append(tool.AddedToolNames, name)
@@ -669,7 +668,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 			// next in-process request is rejected by providers like Anthropic
 			// with "tool_use ids were found without tool_result blocks". The
 			// repair is pure and a no-op on already-valid transcripts.
-			Messages:     repairToolUseResultPairs(append([]provider.Message(nil), a.messages...)),
+			Messages:     repairToolUseResultPairs(withoutToolDisplay(a.messages)),
 			Tools:        a.Tools.Specs(),
 			Reasoning:    a.Reasoning,
 			MaxTokens:    a.MaxTokens,
@@ -795,6 +794,7 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 	var results []provider.Content
 	var addedTools []string
 	state := map[string]json.RawMessage{}
+	nested := map[string][]provider.NestedToolCall{}
 	hadError := false
 
 	for _, c := range msg.Content {
@@ -803,6 +803,9 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 			continue
 		}
 		res := a.runOneTool(ctx, tc, sink)
+		if len(res.NestedCalls) > 0 {
+			nested[tc.ID] = res.NestedCalls
+		}
 		if res.IsError {
 			hadError = true
 		}
@@ -826,7 +829,7 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 		Content:        results,
 		Time:           time.Now(),
 		AddedToolNames: addedTools,
-		Meta:           toolStateMetadata(state),
+		Meta:           toolResultMetadata(state, nested),
 	}, hadError
 }
 
@@ -949,6 +952,7 @@ func (a *Agent) runTool(ctx context.Context, tc provider.ToolCallBlock, sink fun
 		}
 		res = out
 	}()
+	res.NestedCalls = runtime.nestedCalls()
 	for _, name := range runtime.activatedTools() {
 		if !containsString(res.ActivateTools, name) {
 			res.ActivateTools = append(res.ActivateTools, name)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -22,6 +23,8 @@ type ToolRuntime struct {
 	run       func(context.Context, Tool, json.RawMessage) ToolResult
 	mu        sync.Mutex
 	activated []string
+	nested    []provider.NestedToolCall
+	callIndex map[string]int
 }
 
 // ToolRuntimeFromContext returns the capabilities of the current invocation.
@@ -62,6 +65,48 @@ func (r *ToolRuntime) activatedTools() []string {
 	return append([]string(nil), r.activated...)
 }
 
+func (r *ToolRuntime) recordEvent(ev AgentEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch e := ev.(type) {
+	case EvToolCall:
+		if r.callIndex == nil {
+			r.callIndex = map[string]int{}
+		}
+		if _, exists := r.callIndex[e.ID]; !exists {
+			r.callIndex[e.ID] = len(r.nested)
+			r.nested = append(r.nested, provider.NestedToolCall{ID: e.ID, Name: e.Name, Args: append(json.RawMessage(nil), e.Args...)})
+		}
+	case EvToolResult:
+		index, exists := r.callIndex[e.ID]
+		if !exists {
+			return
+		}
+		call := &r.nested[index]
+		call.Args = append(json.RawMessage(nil), e.Args...)
+		call.IsError, call.Status, call.Executed = e.Result.IsError, e.Status, e.Executed
+		var text []string
+		for _, block := range e.Result.Content {
+			switch b := block.(type) {
+			case provider.TextBlock:
+				text = append(text, b.Text)
+			case provider.ImageBlock:
+				text = append(text, fmt.Sprintf("[image %s, %d bytes]", b.MimeType, len(b.Data)))
+			}
+		}
+		call.Result = strings.Join(text, "\n")
+	}
+}
+
+func (r *ToolRuntime) nestedCalls() []provider.NestedToolCall {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]provider.NestedToolCall(nil), r.nested...)
+}
+
 func (a *Agent) withToolRuntime(ctx context.Context, tc provider.ToolCallBlock, sink func(AgentEvent)) context.Context {
 	var chain []string
 	if parent := ToolRuntimeFromContext(ctx); parent != nil {
@@ -92,6 +137,7 @@ func (a *Agent) withToolRuntime(ctx context.Context, tc provider.ToolCallBlock, 
 		emit := func(ev AgentEvent) {
 			eventMu.Lock()
 			defer eventMu.Unlock()
+			runtime.recordEvent(ev)
 			if sink != nil {
 				sink(ev)
 			}

@@ -286,14 +286,7 @@ func (v *View) BuildLive(width int) []string {
 		}
 		// out = append(out, "")
 	}
-	finalised := map[string]bool{}
-	for _, m := range v.Messages {
-		for _, c := range m.Content {
-			if b, ok := c.(provider.ToolResultBlock); ok {
-				finalised[b.CallID] = true
-			}
-		}
-	}
+	finalised := finalisedToolCalls(v.Messages)
 	insertedToolGap := false
 	for _, tc := range v.ToolCalls {
 		if finalised[tc.ID] {
@@ -489,14 +482,7 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 	// matching tool_result reaches the transcript. Assistant tool_use
 	// blocks render no rows of their own, so suppressing the overlay
 	// at that point makes the box disappear while the tool is running.
-	finalised := map[string]bool{}
-	for _, m := range v.Messages {
-		for _, c := range m.Content {
-			if b, ok := c.(provider.ToolResultBlock); ok {
-				finalised[b.CallID] = true
-			}
-		}
-	}
+	finalised := finalisedToolCalls(v.Messages)
 	for _, tc := range v.ToolCalls {
 		if finalised[tc.ID] {
 			continue
@@ -540,6 +526,13 @@ func (v *View) refreshToolPaths() {
 					v.toolStartLines[tc.ID] = off
 				}
 				v.toolCallLabels[tc.ID] = tc.Name + " " + ShortArgs(tc.Name, tc.Arguments)
+			}
+		}
+		for _, calls := range m.NestedToolCalls() {
+			for _, call := range calls {
+				v.toolPaths[call.ID] = pathFromToolArgs(call.Args)
+				v.toolStartLines[call.ID] = offsetFromToolArgs(call.Args)
+				v.toolCallLabels[call.ID] = call.Name + " " + ShortArgs(call.Name, call.Args)
 			}
 		}
 	}
@@ -595,6 +588,8 @@ func (v *View) renderMessageCached(m provider.Message, width int, turnOpen bool)
 func hashMessage(m provider.Message) uint64 {
 	h := fnv64aInit
 	h = fnv64aWrite(h, []byte(m.Role))
+	h = fnv64aWriteByte(h, 0)
+	h = fnv64aWrite(h, []byte(m.Meta[provider.NestedToolCallsMetaKey]))
 	h = fnv64aWriteByte(h, 0)
 	for _, c := range m.Content {
 		switch b := c.(type) {
@@ -778,6 +773,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 			}
 		}
 	case provider.RoleTool:
+		nested := m.NestedToolCalls()
 		for _, c := range m.Content {
 			if tr, ok := c.(provider.ToolResultBlock); ok {
 				color := v.Theme.ToolOut
@@ -807,6 +803,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 				if v.CollapseToolCall && !v.ExpandAll {
 					body := v.renderToolResultContent(tr.Content, width, color, path, startLine)
 					lines = append(lines, v.renderCollapsedTool(label, body, width, tr.IsError)...)
+					lines = append(lines, v.renderNestedToolCalls(nested[tr.CallID], width)...)
 					continue
 				}
 				if v.FlatTools || v.CompactMode {
@@ -824,6 +821,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 					if v.CompactMode {
 						lines = append(lines, compactToolBlank(v.Theme, width))
 					}
+					lines = append(lines, v.renderNestedToolCalls(nested[tr.CallID], width)...)
 					continue
 				}
 				lines = append(lines, toolBoxTop(v.Theme, label, width))
@@ -848,6 +846,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 				}
 				lines = append(lines, toolBoxSide(v.Theme, "", width))
 				lines = append(lines, toolBoxBottom(v.Theme, width))
+				lines = append(lines, v.renderNestedToolCalls(nested[tr.CallID], width)...)
 			}
 		}
 	}

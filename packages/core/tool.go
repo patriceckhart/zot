@@ -57,6 +57,9 @@ type ToolResult struct {
 	// State contains successful tool-state snapshots, persisted as message metadata.
 	// It is never sent as model-visible content.
 	State map[string]json.RawMessage
+	// NestedCalls are display-only records collected by the runtime. They are
+	// persisted as metadata, never as model-visible tool results.
+	NestedCalls []provider.NestedToolCall
 	// Usage reports non-chat inference performed by this tool.
 	Usage *provider.Usage
 	// Details is arbitrary data for UIs and logs; not sent to the LLM.

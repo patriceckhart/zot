@@ -95,6 +95,14 @@ func TestParallelToolsAndFiltering(t *testing.T) {
 		if res.IsError || !strings.Contains(resultText(res), `["result","result"]`) || strings.Contains(resultText(res), "discard") {
 			t.Fatalf("%+v", res)
 		}
+		if len(res.NestedCalls) != 2 {
+			t.Fatalf("parallel calls lost display records: %+v", res.NestedCalls)
+		}
+		for _, call := range res.NestedCalls {
+			if call.Name != "lookup" || call.Status != "completed" || !strings.Contains(call.Result, "discard") {
+				t.Fatalf("nested display did not retain intermediate result: %+v", call)
+			}
+		}
 	case <-ctx.Done():
 		t.Fatal("script did not finish")
 	}
