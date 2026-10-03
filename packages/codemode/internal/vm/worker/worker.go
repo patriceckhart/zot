@@ -16,6 +16,11 @@ import (
 
 type pendingCall struct{ resolve, reject func(interface{}) error }
 
+const (
+	maxOutputChars = 16 * 1024 * 1024
+	maxOutputItems = 100000
+)
+
 // Serve runs a single script. Only explicitly registered JSON capabilities can
 // leave the interpreter. Output is streamed so a terminated VM keeps its prefix.
 func Serve(input io.Reader, output io.Writer) error {
@@ -71,7 +76,32 @@ func Serve(input io.Reader, output io.Writer) error {
 		}
 		return s.String(), nil
 	}
+	var outputChars, outputItems int
+	var outputErr error
 	write := func(frame codemodevm.Frame) {
+		if frame.Type == "output" {
+			value := frame.Item.Text
+			if frame.Item.Type == "image" {
+				value = frame.Item.Data
+			}
+			chars := 0
+			for _, r := range value {
+				chars++
+				if r > 0xffff {
+					chars++
+				}
+			}
+			if outputErr != nil || outputItems >= maxOutputItems || chars > maxOutputChars-outputChars {
+				if outputErr == nil {
+					outputErr = fmt.Errorf("script output exceeded the limit of %d characters or %d output items. Write large data to a file with a tool instead", maxOutputChars, maxOutputItems)
+				}
+				// Interrupts cannot be intercepted by script catch or finally blocks.
+				vm.Interrupt(outputErr)
+				return
+			}
+			outputChars += chars
+			outputItems++
+		}
 		if err := encoder.Encode(frame); err != nil {
 			vm.Interrupt(err)
 		}
@@ -310,6 +340,11 @@ func Serve(input io.Reader, output io.Writer) error {
 				}
 			}
 		}
+	}
+	// Returned values are emitted outside the script's promise. Keep a sticky
+	// failure so exceeding the limit there also discards successful store writes.
+	if outputErr != nil {
+		scriptErr = outputErr
 	}
 	result := codemodevm.Frame{Type: "done", OK: scriptErr == nil}
 	if scriptErr == nil {
