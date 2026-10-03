@@ -20,14 +20,19 @@ import (
 // keeps the schema, name, and ownership inspectable for logs and
 // dialogs.
 type extensionTool struct {
-	name        string
-	description string
-	schema      json.RawMessage
-	extension   string
-	manager     *Manager
-	timeout     time.Duration
-	deferred    bool
-	interactive bool
+	name                  string
+	description           string
+	schema                json.RawMessage
+	outputSchema          json.RawMessage
+	namespace             string
+	namespaceDescription  string
+	namespaceInstructions string
+	exposure              string
+	extension             string
+	manager               *Manager
+	timeout               time.Duration
+	deferred              bool
+	interactive           bool
 }
 
 // NewTool returns a core.Tool that round-trips invocations through
@@ -39,22 +44,37 @@ func NewTool(mgr *Manager, info ToolInfo) core.Tool {
 		timeout = 0
 	}
 	return &extensionTool{
-		name:        info.Name,
-		description: info.Description,
-		schema:      info.Schema,
-		extension:   info.Extension,
-		manager:     mgr,
-		timeout:     timeout,
-		deferred:    info.Deferred,
-		interactive: info.Interactive,
+		name:                  info.Name,
+		description:           info.Description,
+		schema:                info.Schema,
+		outputSchema:          info.OutputSchema,
+		namespace:             info.Namespace,
+		namespaceDescription:  info.NamespaceDescription,
+		namespaceInstructions: info.NamespaceInstructions,
+		exposure:              info.Exposure,
+		extension:             info.Extension,
+		manager:               mgr,
+		timeout:               timeout,
+		deferred:              info.Deferred,
+		interactive:           info.Interactive,
 	}
 }
 
-func (t *extensionTool) Name() string            { return t.name }
-func (t *extensionTool) Description() string     { return t.description }
-func (t *extensionTool) Schema() json.RawMessage { return t.schema }
-func (t *extensionTool) Extension() string       { return t.extension }
-func (t *extensionTool) Deferred() bool          { return t.deferred }
+func (t *extensionTool) Name() string                  { return t.name }
+func (t *extensionTool) Description() string           { return t.description }
+func (t *extensionTool) Schema() json.RawMessage       { return t.schema }
+func (t *extensionTool) Extension() string             { return t.extension }
+func (t *extensionTool) Deferred() bool                { return t.deferred }
+func (t *extensionTool) OutputSchema() json.RawMessage { return t.outputSchema }
+func (t *extensionTool) Exposure() string              { return t.exposure }
+func (t *extensionTool) NamespaceDescription() string  { return t.namespaceDescription }
+func (t *extensionTool) NamespaceInstructions() string { return t.namespaceInstructions }
+func (t *extensionTool) Namespace() string {
+	if t.namespace != "" {
+		return t.namespace
+	}
+	return t.extension
+}
 
 // Execute is what the agent calls when the LLM invokes the tool. It
 // hands args to the owning extension, waits up to t.timeout for the
@@ -83,7 +103,7 @@ func (t *extensionTool) Execute(ctx context.Context, args json.RawMessage, _ fun
 			Content: []provider.Content{provider.TextBlock{Text: fmt.Sprintf("extension %s/%s failed: %v", t.extension, t.name, err)}},
 		}, nil
 	}
-	out := core.ToolResult{IsError: resp.IsError, ActivateTools: resp.ActivateTools}
+	out := core.ToolResult{IsError: resp.IsError, ActivateTools: resp.ActivateTools, StructuredContent: resp.StructuredContent}
 	for _, b := range resp.Content {
 		switch b.Type {
 		case "text":

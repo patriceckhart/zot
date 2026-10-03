@@ -274,6 +274,21 @@ Set `"deferred": true` to register a tool without advertising its definition ini
 
 On Kimi K3's OpenAI-compatible routes, zot places newly activated schemas at the tool-result position using Kimi's native deferred-tool format. Other models receive the complete active tool list on the next request. Unknown names are ignored. The Go extension SDK exposes `DeferredTool` and `ToolResult.ActivateTools` for the same protocol.
 
+Optional `output_schema` declares a tool's JSON result type for programmatic callers such as codemode. Optional `namespace` groups its discovery entries (defaulting to the extension name). Return the value in `tool_result.structured_content` while keeping ordinary model-facing blocks in `content`. Optional `namespace_description` and `namespace_instructions` provide discovery context. These additive fields do not change the protocol version or existing tools.
+
+```json
+{"type":"register_tool","name":"weather",
+ "schema":{"type":"object"},
+ "output_schema":{"type":"object","properties":{"temperature":{"type":"number"}}},
+ "namespace":"weather"}
+```
+
+The Go SDK provides `StructuredTool(name, description, schema, outputSchema, handler)` and `ToolResult.StructuredContent`. A structured result can still carry `is_error:true`, allowing scripts to inspect failures as data. Without both an output schema and structured result, codemode uses text or rejects failed calls. This metadata describes the result, it does not validate it against the declared schema.
+
+Optional `exposure` accepts `direct` (the default), `codemode` (callable from scripts and discoverable without an eager direct definition), `deferred` (discoverable without inline declarations until activated), or `model-only` (not callable from scripts). An explicit exposure overrides the legacy `deferred` flag. Unknown exposure values are rejected.
+
+`ToolWithOptions(name, description, schema, ToolOptions, handler)` combines these fields with output schemas and a context-aware handler. Set `ToolOptions.Interactive` only for tools waiting on user input, not merely to receive cancellation. Existing `Tool`, `StructuredTool`, `DeferredTool` and `InteractiveTool` registrations retain their behavior.
+
 #### `ready`
 
 Sentinel telling zot "all initial registrations are flushed". Send it
@@ -290,7 +305,8 @@ Reply to a `tool_call` from the host. `content[]` is a list of
 message blocks; each block is `{"type":"text","text":"..."}` or
 `{"type":"image","mime_type":"image/png","data":"<base64>"}`. Set
 `is_error: true` to mark the call as failed. `activate_tools` can name
-registered deferred tools that become available after this result.
+registered deferred tools that become available after this result. Optional
+`structured_content` is a JSON value for callers of tools declaring `output_schema`.
 
 ```json
 {"type":"tool_result","id":"...",

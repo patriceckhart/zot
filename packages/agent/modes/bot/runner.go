@@ -161,7 +161,7 @@ func (r *Runner) runTurn(ctx context.Context, t queuedTurn) {
 			replyBuilder.WriteString(e.Delta)
 		case core.EvUsage:
 			r.mu.Lock()
-			if e.Usage.InputTokens > 0 {
+			if !e.Auxiliary && e.Usage.InputTokens > 0 {
 				r.lastCtxInput = e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens
 			}
 			r.mu.Unlock()

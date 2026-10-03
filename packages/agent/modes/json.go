@@ -71,6 +71,9 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 		m["is_error"] = e.Result.IsError
 		m["content"] = ContentToJSON(e.Result.Content)
 	case core.EvUsage:
+		if e.Auxiliary {
+			m["auxiliary"] = true
+		}
 		m["input"] = e.Usage.InputTokens
 		m["output"] = e.Usage.OutputTokens
 		m["reasoning"] = nullableReasoningTokens(e.Usage)

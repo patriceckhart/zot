@@ -34,6 +34,7 @@ type Event struct {
 	Result  []ContentBlock `json:"content,omitempty"`
 
 	// usage
+	Auxiliary  bool   `json:"auxiliary,omitempty"`
 	Usage      *Usage `json:"usage,omitempty"`
 	Cumulative *Usage `json:"cumulative,omitempty"`
 
@@ -149,6 +150,7 @@ func toEvent(ev core.AgentEvent) Event {
 		out.IsError = e.Result.IsError
 		out.Result = convertContent(e.Result.Content)
 	case core.EvUsage:
+		out.Auxiliary = e.Auxiliary
 		out.Usage = &Usage{
 			Input:      e.Usage.InputTokens,
 			Output:     e.Usage.OutputTokens,

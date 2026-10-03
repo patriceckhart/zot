@@ -75,6 +75,13 @@ func NewOpenAICodex(token, accountID, baseURL string) Client {
 
 func (c *codexClient) Name() string { return "openai-codex" }
 
+func (c *codexClient) grammarProvider() string {
+	if c.providerName != "" {
+		return c.providerName
+	}
+	return c.Name()
+}
+
 // ---- Responses API wire types (subset needed for zot's surface) ----
 
 type codexInputText struct {
@@ -116,6 +123,13 @@ type codexFunctionCall struct {
 	Arguments string `json:"arguments"` // JSON string
 }
 
+type codexCustomCall struct {
+	Type   string `json:"type"`
+	CallID string `json:"call_id"`
+	Name   string `json:"name"`
+	Input  string `json:"input"`
+}
+
 type codexFunctionCallOutput struct {
 	Type   string `json:"type"` // "function_call_output"
 	CallID string `json:"call_id"`
@@ -141,10 +155,11 @@ type codexReasoningSummary struct {
 }
 
 type codexTool struct {
-	Type        string          `json:"type"` // "function"
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters"`
+	Type        string            `json:"type"` // "function"
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Parameters  json.RawMessage   `json:"parameters,omitempty"`
+	Format      *customToolFormat `json:"format,omitempty"`
 }
 
 type codexReasoningConfig struct {
@@ -203,10 +218,25 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 			body.Reasoning = &codexReasoningConfig{Effort: effort}
 		}
 	}
+	grammar := grammarTools(req.Tools, supportsGrammarTools(m, c.grammarProvider(), true))
+	customCalls := map[string]bool{}
+	for _, message := range req.Messages {
+		for _, block := range message.Content {
+			if call, ok := block.(ToolCallBlock); ok {
+				if _, native := grammar[call.Name]; native {
+					customCalls[call.ID] = true
+				}
+			}
+		}
+	}
 	activeTools := activeToolDefinitions(req.Tools, req.Messages)
 	if len(activeTools) > 0 {
 		body.ToolChoice = "auto"
 		for _, t := range activeTools {
+			if _, native := grammar[t.Name]; native {
+				body.Tools = append(body.Tools, codexTool{Type: "custom", Name: t.Name, Description: t.Description, Format: grammarFormat(t)})
+				continue
+			}
 			params := t.Schema
 			if len(params) == 0 {
 				params = json.RawMessage(`{"type":"object","properties":{}}`)
@@ -276,6 +306,11 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 						},
 					})
 				case ToolCallBlock:
+					if property, native := grammar[v.Name]; native {
+						callID, _ := splitCallID(v.ID)
+						body.Input = append(body.Input, codexCustomCall{Type: "custom_tool_call", CallID: callID, Name: v.Name, Input: customToolInput(v.Arguments, property)})
+						continue
+					}
 					args := string(v.Arguments)
 					if args == "" || !json.Valid([]byte(args)) {
 						args = "{}"
@@ -321,8 +356,12 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 						}
 					}
 					callID, _ := splitCallID(tr.CallID)
+					outputType := "function_call_output"
+					if customCalls[tr.CallID] {
+						outputType = "custom_tool_call_output"
+					}
 					body.Input = append(body.Input, codexFunctionCallOutput{
-						Type:   "function_call_output",
+						Type:   outputType,
 						CallID: callID,
 						Output: out,
 					})
@@ -465,6 +504,7 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 	defer resp.Body.Close()
 
 	model, _ := c.findModel(req.Model)
+	grammar := grammarTools(req.Tools, supportsGrammarTools(model, c.grammarProvider(), true))
 	providerName := c.providerName
 	if providerName == "" {
 		providerName = "openai-codex"
@@ -482,6 +522,7 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 		callID    string
 		name      string
 		argsBuf   strings.Builder
+		custom    *customInputBuffer
 		textBuf   strings.Builder
 		summary   strings.Builder
 		rawID     string
@@ -505,8 +546,11 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 				if it.textBuf.Len() > 0 {
 					content = append(content, TextBlock{Text: it.textBuf.String()})
 				}
-			case "function_call":
+			case "function_call", "custom_tool_call":
 				args := it.argsBuf.String()
+				if it.custom != nil {
+					args = string(it.custom.arguments())
+				}
 				if args == "" || !json.Valid([]byte(args)) {
 					args = "{}"
 				}
@@ -569,8 +613,15 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 				switch p.Item.Type {
 				case "message":
 					it.kind = "message"
-				case "function_call":
-					it.kind = "function_call"
+				case "function_call", "custom_tool_call":
+					it.kind = p.Item.Type
+					if it.kind == "custom_tool_call" {
+						property := grammar[p.Item.Name]
+						if property == "" {
+							property = "input"
+						}
+						it.custom = &customInputBuffer{property: property}
+					}
 					it.callID = p.Item.CallID
 					it.name = p.Item.Name
 					if !it.announced {
@@ -617,13 +668,36 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 					it.argsBuf.WriteString(p.Delta)
 					out <- EventToolArgs{ID: it.callID, Delta: p.Delta}
 				}
+			case "response.custom_tool_call_input.delta":
+				var p struct {
+					OutputIndex int    `json:"output_index"`
+					Delta       string `json:"delta"`
+				}
+				_ = json.Unmarshal([]byte(ev.Data), &p)
+				if it := items[p.OutputIndex]; it != nil && it.custom != nil {
+					if delta := it.custom.append(p.Delta, false); delta != "" {
+						out <- EventToolArgs{ID: it.callID, Delta: delta}
+					}
+				}
+			case "response.custom_tool_call_input.done":
+				var p struct {
+					OutputIndex int     `json:"output_index"`
+					Input       *string `json:"input"`
+				}
+				_ = json.Unmarshal([]byte(ev.Data), &p)
+				if it := items[p.OutputIndex]; it != nil && it.custom != nil {
+					if delta := it.custom.finish(p.Input); delta != "" {
+						out <- EventToolArgs{ID: it.callID, Delta: delta}
+					}
+				}
 			case "response.output_item.done":
 				var p struct {
 					OutputIndex int `json:"output_index"`
 					Item        struct {
-						Type             string `json:"type"`
-						ID               string `json:"id"`
-						EncryptedContent string `json:"encrypted_content"`
+						Type             string  `json:"type"`
+						ID               string  `json:"id"`
+						Input            *string `json:"input"`
+						EncryptedContent string  `json:"encrypted_content"`
 						Summary          []struct {
 							Type string `json:"type"`
 							Text string `json:"text"`
@@ -633,7 +707,12 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 				_ = json.Unmarshal([]byte(ev.Data), &p)
 				if it, ok := items[p.OutputIndex]; ok {
 					switch it.kind {
-					case "function_call":
+					case "function_call", "custom_tool_call":
+						if it.custom != nil {
+							if delta := it.custom.finish(p.Item.Input); delta != "" {
+								out <- EventToolArgs{ID: it.callID, Delta: delta}
+							}
+						}
 						out <- EventToolEnd{ID: it.callID}
 					case "reasoning":
 						if p.Item.EncryptedContent != "" {
@@ -683,7 +762,7 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 
 				hadTool := false
 				for _, it := range items {
-					if it.kind == "function_call" {
+					if it.kind == "function_call" || it.kind == "custom_tool_call" {
 						hadTool = true
 						break
 					}

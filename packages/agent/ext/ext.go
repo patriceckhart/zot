@@ -207,9 +207,10 @@ type AssistantMessageHandler func(text string) AssistantMessageDecision
 // one with TextResult, ImageResult, or directly when you need to
 // combine multiple blocks.
 type ToolResult struct {
-	Content       []ToolContent
-	IsError       bool
-	ActivateTools []string
+	Content           []ToolContent
+	IsError           bool
+	ActivateTools     []string
+	StructuredContent json.RawMessage
 }
 
 // ToolContent is one block of tool output. Either Text is set, or
@@ -355,11 +356,16 @@ type descTuple struct {
 }
 
 type toolDef struct {
-	name        string
-	description string
-	schema      json.RawMessage
-	deferred    bool
-	interactive bool
+	name                  string
+	description           string
+	schema                json.RawMessage
+	outputSchema          json.RawMessage
+	namespace             string
+	namespaceDescription  string
+	namespaceInstructions string
+	exposure              string
+	deferred              bool
+	interactive           bool
 }
 
 // HostInfo is what the host (zot) tells us in HelloAck. Useful for
@@ -473,6 +479,40 @@ func (e *Extension) Command(name, description string, fn CommandHandler) {
 // glob, skill) are silently shadowed by the built-in.
 func (e *Extension) Tool(name, description string, schema json.RawMessage, fn ToolHandler) {
 	e.registerTool(name, description, schema, false, fn)
+}
+
+// StructuredTool registers a tool whose JSON result is available to scripts.
+// Content remains the ordinary model-facing text and image result.
+func (e *Extension) StructuredTool(name, description string, schema, outputSchema json.RawMessage, fn ToolHandler) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.tools[name] = func(_ context.Context, args json.RawMessage) ToolResult { return fn(args) }
+	e.toolDefs = append(e.toolDefs, toolDef{name: name, description: description, schema: schema, outputSchema: outputSchema})
+}
+
+// ToolOptions combines structured results, discovery metadata and exposure.
+// Exposure accepts direct (default), codemode, deferred or model-only.
+type ToolOptions struct {
+	OutputSchema          json.RawMessage
+	Namespace             string
+	NamespaceDescription  string
+	NamespaceInstructions string
+	Exposure              string
+	Deferred              bool
+	Interactive           bool
+}
+
+// ToolWithOptions registers a context-aware tool. Cancellation applies to all
+// handlers, including structured and deferred tools. Interactive opts into
+// waiting for user input without the ordinary extension reply deadline.
+func (e *Extension) ToolWithOptions(name, description string, schema json.RawMessage, options ToolOptions, fn InteractiveToolHandler) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.tools[name] = fn
+	e.toolDefs = append(e.toolDefs, toolDef{name: name, description: description, schema: schema,
+		outputSchema: options.OutputSchema, namespace: options.Namespace, namespaceDescription: options.NamespaceDescription,
+		namespaceInstructions: options.NamespaceInstructions, exposure: options.Exposure,
+		deferred: options.Deferred, interactive: options.Interactive})
 }
 
 // DeferredTool registers a tool whose definition stays hidden until another
@@ -651,12 +691,17 @@ func (e *Extension) Run() error {
 	}
 	for _, td := range toolDefs {
 		_ = e.send(extproto.RegisterToolFromExt{
-			Type:        "register_tool",
-			Name:        td.name,
-			Description: td.description,
-			Schema:      td.schema,
-			Deferred:    td.deferred,
-			Interactive: td.interactive,
+			Type:                  "register_tool",
+			Name:                  td.name,
+			Description:           td.description,
+			Schema:                td.schema,
+			OutputSchema:          td.outputSchema,
+			Namespace:             td.namespace,
+			NamespaceDescription:  td.namespaceDescription,
+			NamespaceInstructions: td.namespaceInstructions,
+			Exposure:              td.exposure,
+			Deferred:              td.deferred,
+			Interactive:           td.interactive,
 		})
 	}
 	var intercepts []string
@@ -874,11 +919,12 @@ func (e *Extension) respondTool(id string, r ToolResult) {
 		})
 	}
 	_ = e.send(extproto.ToolResultFromExt{
-		Type:          "tool_result",
-		ID:            id,
-		Content:       blocks,
-		IsError:       r.IsError,
-		ActivateTools: r.ActivateTools,
+		Type:              "tool_result",
+		ID:                id,
+		Content:           blocks,
+		IsError:           r.IsError,
+		ActivateTools:     r.ActivateTools,
+		StructuredContent: r.StructuredContent,
 	})
 }
 

@@ -73,3 +73,6 @@ logs/
 .tmp/
 tmp/
 npm/
+
+SPEC.md
+TODO.md

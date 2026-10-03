@@ -6652,7 +6652,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		}
 	case core.EvUsage:
 		i.cumUsage = e.Cumulative
-		if e.Usage.InputTokens > 0 {
+		if !e.Auxiliary && e.Usage.InputTokens > 0 {
 			i.lastCtxInput = e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens
 		}
 	case core.EvTurnEnd:

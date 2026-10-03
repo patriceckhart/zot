@@ -115,8 +115,9 @@ type Agent struct {
 	startGeneration                                  uint64
 	startBase, startSystem, startModel, startSession string
 
-	mu       sync.Mutex
-	messages []provider.Message
+	mu        sync.Mutex
+	messages  []provider.Message
+	toolState map[string]json.RawMessage
 	// rev increments whenever the transcript slice is replaced or a
 	// message is appended. The TUI uses it as a cheap redraw cache key
 	// so editor-only typing doesn't copy/rebuild a long transcript on
@@ -274,6 +275,7 @@ func (a *Agent) SetMessages(msgs []provider.Message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.messages = append(a.messages[:0], msgs...)
+	a.toolState = readToolState(msgs)
 	if len(msgs) == 0 {
 		a.resetStartLocked()
 	}
@@ -389,7 +391,7 @@ func (a *Agent) promptWithPrelude(ctx context.Context, text string, images []pro
 		sink(EvToolCall{ID: call.ID, Name: call.Name, Args: call.Arguments})
 		result := a.runOneTool(ctx, *call, sink)
 		assistant := provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{*call}, Time: time.Now(), Meta: map[string]string{"origin_extension": origin, "synthetic_tool_call": "true"}}
-		tool := provider.Message{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{CallID: call.ID, Content: result.Content, IsError: result.IsError}}, Time: time.Now()}
+		tool := provider.Message{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{CallID: call.ID, Content: result.Content, IsError: result.IsError}}, Time: time.Now(), Meta: toolStateMetadata(result.State)}
 		for _, name := range result.ActivateTools {
 			if _, err := a.Tools.Get(name); err == nil && !containsString(tool.AddedToolNames, name) {
 				tool.AddedToolNames = append(tool.AddedToolNames, name)
@@ -792,6 +794,7 @@ func (a *Agent) CallTool(ctx context.Context, id, name string, args json.RawMess
 func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink func(AgentEvent)) (provider.Message, bool) {
 	var results []provider.Content
 	var addedTools []string
+	state := map[string]json.RawMessage{}
 	hadError := false
 
 	for _, c := range msg.Content {
@@ -802,6 +805,9 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 		res := a.runOneTool(ctx, tc, sink)
 		if res.IsError {
 			hadError = true
+		}
+		for key, value := range res.State {
+			state[key] = value
 		}
 		results = append(results, provider.ToolResultBlock{
 			CallID:  tc.ID,
@@ -820,10 +826,17 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 		Content:        results,
 		Time:           time.Now(),
 		AddedToolNames: addedTools,
+		Meta:           toolStateMetadata(state),
 	}, hadError
 }
 
-func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, sink func(AgentEvent)) (result ToolResult) {
+func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, sink func(AgentEvent)) ToolResult {
+	return a.runTool(ctx, tc, sink, nil)
+}
+
+// runTool also accepts host-provided operations that are not in the advertised
+// registry. They still pass through the same guards and lifecycle handling.
+func (a *Agent) runTool(ctx context.Context, tc provider.ToolCallBlock, sink func(AgentEvent), tool Tool) (result ToolResult) {
 	args := tc.Arguments
 	status := ""
 	executed := false
@@ -846,12 +859,17 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, sink 
 		status = executionErrorStatus(err)
 		return ToolResult{IsError: true, Content: []provider.Content{provider.TextBlock{Text: "aborted: " + err.Error()}}}
 	}
-	tool, err := a.Tools.Get(tc.Name)
-	if err != nil {
-		return ToolResult{
-			Content: []provider.Content{provider.TextBlock{Text: err.Error()}},
-			IsError: true,
+	if tool == nil {
+		a.mu.Lock()
+		registered, err := a.Tools.Get(tc.Name)
+		a.mu.Unlock()
+		if err != nil {
+			return ToolResult{
+				Content: []provider.Content{provider.TextBlock{Text: err.Error()}},
+				IsError: true,
+			}
 		}
+		tool = registered
 	}
 
 	// Intercept hook: an extension or other guard can refuse the
@@ -896,6 +914,7 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, sink 
 
 	// Recover panics so a buggy tool does not crash the agent.
 	var res ToolResult
+	var runtime *ToolRuntime
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -906,8 +925,12 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, sink 
 			}
 		}()
 		executed = true
-		out, err := tool.Execute(ctx, args, func(text string) {
-			sink(EvToolProgress{ID: tc.ID, Text: text})
+		toolCtx := a.withToolRuntime(ctx, tc, sink)
+		runtime = ToolRuntimeFromContext(toolCtx)
+		out, err := tool.Execute(toolCtx, args, func(text string) {
+			if sink != nil {
+				sink(EvToolProgress{ID: tc.ID, Text: text})
+			}
 		})
 		if err != nil {
 			status = executionErrorStatus(err)
@@ -926,6 +949,39 @@ func (a *Agent) runOneTool(ctx context.Context, tc provider.ToolCallBlock, sink 
 		}
 		res = out
 	}()
+	for _, name := range runtime.activatedTools() {
+		if !containsString(res.ActivateTools, name) {
+			res.ActivateTools = append(res.ActivateTools, name)
+		}
+	}
+	if res.IsError {
+		res.State = nil
+	}
+	if !res.IsError && len(res.State) > 0 {
+		a.mu.Lock()
+		if a.toolState == nil {
+			a.toolState = map[string]json.RawMessage{}
+		}
+		for key, value := range res.State {
+			if json.Valid(value) {
+				a.toolState[key] = append(json.RawMessage(nil), value...)
+			}
+		}
+		a.mu.Unlock()
+	}
+	if res.Usage != nil && ToolRuntimeFromContext(ctx) == nil {
+		a.mu.Lock()
+		lastTurn := a.cost.LastTurn
+		cumulative := a.cost.Add(*res.Usage)
+		a.cost.LastTurn = lastTurn
+		a.mu.Unlock()
+		if sink != nil {
+			sink(EvUsage{Usage: *res.Usage, Cumulative: cumulative, Auxiliary: true})
+		}
+		if a.OnUsage != nil {
+			a.OnUsage(cumulative)
+		}
+	}
 	return res
 }
 

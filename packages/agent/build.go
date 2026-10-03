@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	zotdocs "github.com/patriceckhart/zot"
+	"github.com/patriceckhart/zot/packages/agent/codemode"
 	"github.com/patriceckhart/zot/packages/agent/extensions"
 	"github.com/patriceckhart/zot/packages/agent/skills"
 	"github.com/patriceckhart/zot/packages/agent/tools"
@@ -325,7 +326,13 @@ func canonicalProvider(name string) string {
 // login flow. requireCred controls whether missing credentials are a
 // hard error (used by print/json modes).
 func Resolve(args Args, requireCred bool) (Resolved, error) {
+	if err := args.CodemodeSettings.Validate(); err != nil {
+		return Resolved{}, err
+	}
 	cfg, _ := LoadConfig()
+	if err := cfg.Codemode.Validate(); err != nil {
+		return Resolved{}, err
+	}
 
 	// User-requested provider (explicit > config > default).
 	// Normalise common aliases (e.g. "bedrock" -> "amazon-bedrock")
@@ -732,6 +739,9 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}
 
 	max := args.MaxSteps // 0 = unlimited
+	if tool, ok := reg["codemode"].(*codemode.Tool); ok {
+		tool.Models = newCodemodeModelCaller(provName, cred, args.BaseURL)
+	}
 
 	return Resolved{
 		Provider:           provName,
@@ -1135,6 +1145,21 @@ func buildConfiguredToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, 
 	if goos == "windows" && !args.NoTools && len(args.Tools) == 0 && cfg.PowerShellEnabled != nil && *cfg.PowerShellEnabled {
 		reg["powershell"] = &tools.PowerShellTool{CWD: cwd, Sandbox: sandbox}
 	}
+	settings := cfg.Codemode
+	if args.CodemodeSettings != nil {
+		settings = args.CodemodeSettings
+	}
+	if !args.NoTools && settings != nil && settings.Enabled && len(args.Tools) == 0 {
+		reg["codemode"] = &codemode.Tool{}
+	}
+	if tool, ok := reg["codemode"].(*codemode.Tool); ok {
+		if settings != nil {
+			tool.Mode, tool.InlineBudget = settings.Mode, settings.InlineBudget
+		}
+		if args.CodemodeMode != "" {
+			tool.Mode = args.CodemodeMode
+		}
+	}
 	return reg
 }
 
@@ -1154,20 +1179,27 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox) core.Regis
 		for _, t := range all {
 			reg[t.Name()] = t
 		}
+		if args.Codemode {
+			reg["codemode"] = &codemode.Tool{Mode: args.CodemodeMode}
+		}
 		return reg
 	}
-	// PowerShell is explicitly selected, never added to the default tool set.
+	// Optional tools are explicitly selected, never added to the default set.
 	all["powershell"] = &tools.PowerShellTool{CWD: cwd, Sandbox: sandbox}
+	all["codemode"] = &codemode.Tool{}
 	for _, name := range args.Tools {
 		if t, ok := all[name]; ok {
 			reg[name] = t
 		}
 	}
+	if args.Codemode {
+		reg["codemode"] = &codemode.Tool{Mode: args.CodemodeMode}
+	}
 	return reg
 }
 
 func toolSummaries(reg core.Registry, args Args) []ToolSummary {
-	order := []string{"read", "write", "edit", "bash", "powershell", "glob"}
+	order := []string{"read", "write", "edit", "bash", "powershell", "glob", "codemode"}
 	var out []ToolSummary
 	for _, name := range order {
 		if t, ok := reg[name]; ok {

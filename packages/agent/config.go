@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patriceckhart/zot/packages/agent/codemode"
 	providerpkg "github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/provider/auth"
 )
@@ -24,11 +25,12 @@ type QuickModelShortcut struct {
 
 // Config is the persisted user configuration.
 type Config struct {
-	Provider    string   `json:"provider"`
-	Model       string   `json:"model"`
-	Reasoning   string   `json:"reasoning"`
-	Temperature *float32 `json:"temperature,omitempty"`
-	Theme       string   `json:"theme"`
+	Provider    string             `json:"provider"`
+	Model       string             `json:"model"`
+	Reasoning   string             `json:"reasoning"`
+	Temperature *float32           `json:"temperature,omitempty"`
+	Theme       string             `json:"theme"`
+	Codemode    *codemode.Settings `json:"codemode,omitempty"`
 
 	// ToolRender selects how tool calls are drawn in interactive mode.
 	// "box" (default, or empty) wraps each call in a bordered panel;
@@ -247,11 +249,17 @@ func LoadConfig() (Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, fmt.Errorf("parse config: %w", err)
 	}
+	if err := c.Codemode.Validate(); err != nil {
+		return c, err
+	}
 	return c, nil
 }
 
 // SaveConfig writes the config file, creating parent dirs.
 func SaveConfig(c Config) error {
+	if err := c.Codemode.Validate(); err != nil {
+		return err
+	}
 	// Preserve the existing user-defined keymap when saving other settings.
 	if existing, err := LoadConfig(); err == nil {
 		c.Keymap = existing.Keymap
@@ -456,6 +464,10 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 		}
 	case "huggingface":
 		if v := os.Getenv("HF_TOKEN"); v != "" {
+			return v, "apikey", "", nil
+		}
+	case "typesafe":
+		if v := os.Getenv("TYPESAFE_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "openrouter":

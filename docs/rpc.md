@@ -212,15 +212,17 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `user_message` | `content`, `time` | The submitted prompt as it was added to the transcript |
 | `assistant_start` | (none) | About to receive assistant streaming |
 | `text_delta` | `delta` | Partial assistant text. Concatenate to build the full reply |
-| `tool_call` | `id`, `name`, `args` | The model wants to call a tool |
+| `tool_call` | `id`, `name`, `args` | A model or nested orchestration call is about to run |
 | `tool_progress` | `id`, `text` | Optional progress line from the tool while it runs |
 | `tool_result` | `id`, `is_error`, `content` | Tool finished |
 | `assistant_message` | `content`, `time` | Final assistant message after the model turn ends |
-| `usage` | `input`, `output`, `reasoning`, `cache_read`, `cache_write`, `cost_usd`, `cumulative` | Per-turn + cumulative tokens / cost. `reasoning` is null when unavailable. |
+| `usage` | `input`, `output`, `reasoning`, `cache_read`, `cache_write`, `cost_usd`, `cumulative`, optional `auxiliary` | Per-call + cumulative tokens / cost. `reasoning` is null when unavailable. `auxiliary:true` identifies tool inference that does not measure the chat context size. |
 | `turn_end` | `stop`, optional `error` | One model call finished. `stop` is `end_turn`, `tool_use`, `length`, `error`, or `aborted` |
 | `done` | (none) | The whole prompt/compact completed (success or error) |
 | `error` | `message` | Non-fatal error message |
 | `compact_done` | `summary` | Compaction finished, summary text included |
+
+With the optional [codemode tool](codemode.md), nested tool calls use the same events with IDs `<parent-id>/<number>`. Parallel calls can finish out of order. Their results are observable events, not separate model transcript messages. Only the outer script's output enters the transcript.
 
 ## Message shape
 

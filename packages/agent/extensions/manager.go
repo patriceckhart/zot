@@ -956,6 +956,12 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 				fmt.Fprintf(ext.logFile, "[zot] bad register_tool frame: %v\n", err)
 				continue
 			}
+			switch rt.Exposure {
+			case "", "direct", "codemode", "deferred", "model-only":
+			default:
+				ext.recordDiagnostic(fmt.Sprintf("tool %q has unknown exposure %q, skipped", rt.Name, rt.Exposure))
+				continue
+			}
 			// Validate the schema parses as JSON. If not, refuse to
 			// register — a broken schema confuses the model.
 			if len(rt.Schema) > 0 {
@@ -1246,12 +1252,17 @@ type CommandInfo struct {
 // ToolInfo is one extension-registered tool. Used by the agent's
 // build step to materialise core.Tool wrappers.
 type ToolInfo struct {
-	Extension   string
-	Name        string
-	Description string
-	Schema      json.RawMessage
-	Deferred    bool
-	Interactive bool
+	Extension             string
+	Name                  string
+	Description           string
+	Schema                json.RawMessage
+	OutputSchema          json.RawMessage
+	Namespace             string
+	NamespaceDescription  string
+	NamespaceInstructions string
+	Exposure              string
+	Deferred              bool
+	Interactive           bool
 }
 
 // Tools returns a snapshot of every (extension, tool) pair currently
@@ -1264,12 +1275,17 @@ func (m *Manager) Tools() []ToolInfo {
 	for _, ext := range m.ext {
 		for _, t := range ext.tools {
 			out = append(out, ToolInfo{
-				Extension:   ext.Manifest.Name,
-				Name:        t.Name,
-				Description: t.Description,
-				Schema:      t.Schema,
-				Deferred:    t.Deferred,
-				Interactive: t.Interactive,
+				Extension:             ext.Manifest.Name,
+				Name:                  t.Name,
+				Description:           t.Description,
+				Schema:                t.Schema,
+				OutputSchema:          t.OutputSchema,
+				Namespace:             t.Namespace,
+				NamespaceDescription:  t.NamespaceDescription,
+				NamespaceInstructions: t.NamespaceInstructions,
+				Exposure:              t.Exposure,
+				Deferred:              t.Deferred,
+				Interactive:           t.Interactive,
 			})
 		}
 	}

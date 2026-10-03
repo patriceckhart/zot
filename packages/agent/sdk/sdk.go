@@ -30,6 +30,7 @@ import (
 	"sync"
 
 	"github.com/patriceckhart/zot/packages/agent"
+	"github.com/patriceckhart/zot/packages/agent/codemode"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 )
@@ -79,10 +80,13 @@ type Config struct {
 	// BaseURL overrides the provider base url (for tests / proxies).
 	BaseURL string
 
-	// Tools is the list of tools to enable. Nil/empty = all built-ins
-	// (read, write, edit, bash, glob). Pass an empty-but-non-nil slice
+	// Tools is the list of tools to enable. Nil/empty = the default set
+	// (read, write, edit, bash, glob). Include codemode to enable JavaScript
+	// orchestration. Pass an empty-but-non-nil slice
 	// (e.g. []string{}) plus NoTools=true to disable everything.
 	Tools []string
+	// Codemode overrides saved activation and presentation preferences.
+	Codemode *codemode.Settings
 
 	// NoTools disables every tool. Useful for chat-only embeddings.
 	NoTools bool
@@ -145,6 +149,7 @@ func argsFromConfig(cfg Config) agent.Args {
 		Temperature:        cfg.Temperature,
 		MaxSteps:           cfg.MaxSteps,
 		Tools:              cfg.Tools,
+		CodemodeSettings:   cfg.Codemode,
 		NoTools:            cfg.NoTools,
 		NoSess:             true, // SDK callers manage persistence themselves
 	}

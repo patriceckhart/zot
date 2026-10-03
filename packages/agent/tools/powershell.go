@@ -24,7 +24,8 @@ func (t *PowerShellTool) Name() string { return "powershell" }
 func (t *PowerShellTool) Description() string {
 	return "Run a native PowerShell command on Windows (pwsh.exe, falling back to powershell.exe), without profiles or interactive input. stdout+stderr merged. Optional timeout in seconds."
 }
-func (t *PowerShellTool) Schema() json.RawMessage { return json.RawMessage(bashSchema) }
+func (t *PowerShellTool) Schema() json.RawMessage       { return json.RawMessage(bashSchema) }
+func (t *PowerShellTool) OutputSchema() json.RawMessage { return json.RawMessage(shellOutputSchema) }
 
 func (t *PowerShellTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
 	return executeShell(ctx, raw, progress, t.CWD, "PS>", t.checkPermission, func(ctx context.Context, command string) (*exec.Cmd, error) {

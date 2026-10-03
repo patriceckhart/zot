@@ -135,9 +135,21 @@ type oaiToolCallFn struct {
 type oaiToolCall struct {
 	ID        string          `json:"id"`
 	Type      string          `json:"type"` // "function" or "openrouter:..."
-	Function  oaiToolCallFn   `json:"function,omitempty"`
+	Function  *oaiToolCallFn  `json:"function,omitempty"`
+	Custom    *oaiCustomCall  `json:"custom,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+type oaiCustomCall struct {
+	Name  string `json:"name"`
+	Input string `json:"input"`
+}
+
+type oaiCustomTool struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Format      *customToolFormat `json:"format"`
 }
 
 type oaiMessage struct {
@@ -155,6 +167,7 @@ type oaiMessage struct {
 }
 
 type oaiTool struct {
+	Custom     *oaiCustomTool  `json:"custom,omitempty"`
 	Type       string          `json:"type"` // "function" or "openrouter:..."
 	Parameters json.RawMessage `json:"parameters,omitempty"`
 	Function   *struct {
@@ -296,6 +309,7 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		out.Messages = append(out.Messages, oaiMessage{Role: "system", Content: req.System})
 	}
 
+	grammar := grammarTools(req.Tools, supportsGrammarTools(m, c.Name(), false))
 	deferredMode := supportsDeferredTools(c.Name()) && isKimiDeferredModel(req.Model)
 	toolByName := make(map[string]Tool, len(req.Tools))
 	for _, t := range req.Tools {
@@ -335,6 +349,10 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 					if v.Server {
 						continue
 					}
+					if property, native := grammar[v.Name]; native {
+						am.ToolCalls = append(am.ToolCalls, oaiToolCall{ID: v.ID, Type: "custom", Custom: &oaiCustomCall{Name: v.Name, Input: customToolInput(v.Arguments, property)}})
+						continue
+					}
 					args := v.Arguments
 					if len(args) == 0 || !json.Valid(args) {
 						args = json.RawMessage("{}")
@@ -342,7 +360,7 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 					am.ToolCalls = append(am.ToolCalls, oaiToolCall{
 						ID:   v.ID,
 						Type: "function",
-						Function: oaiToolCallFn{
+						Function: &oaiToolCallFn{
 							Name:      v.Name,
 							Arguments: string(args),
 						},
@@ -433,7 +451,11 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		if t.Deferred && (deferredMode || !activatedTools[t.Name]) {
 			continue
 		}
-		out.Tools = append(out.Tools, makeOAITool(t))
+		if _, native := grammar[t.Name]; native {
+			out.Tools = append(out.Tools, oaiTool{Type: "custom", Custom: &oaiCustomTool{Name: t.Name, Description: t.Description, Format: grammarFormat(t)}})
+		} else {
+			out.Tools = append(out.Tools, makeOAITool(t))
+		}
 	}
 	if len(out.Tools) > 0 {
 		out.ToolChoice = "auto"
@@ -619,7 +641,11 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 	defer close(out)
 	defer resp.Body.Close()
 
-	model, _ := FindModel("", req.Model)
+	model, err := FindModel(c.Name(), req.Model)
+	if err != nil {
+		model, _ = FindModel("", req.Model)
+	}
+	grammar := grammarTools(req.Tools, supportsGrammarTools(model, c.Name(), false))
 	out <- EventStart{Model: req.Model, Provider: c.Name()}
 
 	raw := make(chan sseEvent, 16)
@@ -636,6 +662,7 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 		toolID    string
 		toolName  string
 		toolArgs  strings.Builder
+		custom    *customInputBuffer
 		announced bool
 		server    bool
 	}
@@ -680,6 +707,9 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 				}
 			case "tool_use":
 				args := b.toolArgs.String()
+				if b.custom != nil {
+					args = string(b.custom.arguments())
+				}
 				if args == "" || !json.Valid([]byte(args)) {
 					args = "{}"
 				}
@@ -728,6 +758,7 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 							Type      string          `json:"type"`
 							Name      string          `json:"name"`
 							Arguments json.RawMessage `json:"arguments"`
+							Custom    *oaiCustomCall  `json:"custom"`
 							Function  struct {
 								Name      string `json:"name"`
 								Arguments string `json:"arguments"`
@@ -802,9 +833,27 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 							t.server = true
 						}
 					}
+					if tc.Custom != nil {
+						if tc.Custom.Name != "" {
+							t.toolName = tc.Custom.Name
+						}
+						if t.custom == nil {
+							property := grammar[t.toolName]
+							if property == "" {
+								property = "input"
+							}
+							t.custom = &customInputBuffer{property: property}
+						}
+					}
 					if !t.announced && t.toolID != "" && t.toolName != "" {
 						t.announced = true
 						out <- EventToolStart{ID: t.toolID, Name: t.toolName}
+					}
+					if tc.Custom != nil && t.custom != nil {
+						delta := t.custom.append(tc.Custom.Input, false)
+						if t.announced && delta != "" {
+							out <- EventToolArgs{ID: t.toolID, Delta: delta}
+						}
 					}
 					if tc.Function.Arguments != "" {
 						t.toolArgs.WriteString(tc.Function.Arguments)
@@ -823,6 +872,11 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 					hasClientTool := false
 					for _, b := range blocks {
 						if b.kind == "tool_use" && b.announced {
+							if b.custom != nil {
+								if delta := b.custom.finish(nil); delta != "" {
+									out <- EventToolArgs{ID: b.toolID, Delta: delta}
+								}
+							}
 							out <- EventToolEnd{ID: b.toolID}
 							if !b.server {
 								hasClientTool = true

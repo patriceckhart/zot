@@ -17,6 +17,7 @@ var embeddedDocs embed.FS
 
 var docFiles = map[string]string{
 	"README.md":     "README.md",
+	"codemode.md":   "docs/codemode.md",
 	"extensions.md": "docs/extensions.md",
 	"rpc.md":        "docs/rpc.md",
 	"skills.md":     "docs/skills.md",

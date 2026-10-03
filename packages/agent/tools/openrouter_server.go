@@ -58,6 +58,7 @@ type OpenRouterServerTool struct {
 	schema      json.RawMessage
 }
 
+func (t *OpenRouterServerTool) Exposure() string        { return "model-only" }
 func (t *OpenRouterServerTool) Name() string            { return t.name }
 func (t *OpenRouterServerTool) Description() string     { return t.description }
 func (t *OpenRouterServerTool) Schema() json.RawMessage { return t.schema }

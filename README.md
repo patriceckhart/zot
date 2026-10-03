@@ -288,6 +288,17 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 
 When the sandbox is on (see `/jail`), filesystem tools refuse paths outside the session cwd and `bash` applies best-effort command checks. Jail mode is an accident-prevention guardrail, not a security boundary.
 
+### Codemode
+
+The optional `codemode` tool lets the model write JavaScript that calls other active tools, runs independent calls in parallel, and filters results before returning them to the model. Enable it for a run:
+
+```sh
+zot --codemode
+zot --codemode-only
+```
+
+Nested calls keep normal guards, confirmations, and tool permissions. Scripts support persistent JSON state, tool discovery, classification, and image generation. Goja runs inside an embedded WebAssembly VM with a 256 MiB linear-memory cap and hard VM cancellation, without an external runtime or CGO. Authorized host tools are not sandboxed by the VM. See [docs/codemode.md](docs/codemode.md) for the script API, examples, and limitations.
+
 ### PowerShell tool (Windows)
 
 The optional `powershell` tool executes native PowerShell commands in the session cwd. On Windows, open `/settings` and toggle **PowerShell tool** to enable or disable it alongside the default tools. It is off by default, persists as `powershell_enabled` in `$ZOT_HOME/config.json`, and updates the live tool list without a restart. The saved preference also applies to other modes on Windows.

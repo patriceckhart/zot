@@ -124,6 +124,10 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 		},
 	}
 
+	for key, value := range toolStateMetadata(readToolState(msgs)) {
+		synthetic.Meta[key] = value
+	}
+
 	tail := msgs[len(msgs)-keepTail:]
 	// Repair the tail: remove orphaned tool_result blocks whose
 	// matching tool_use was in the compacted (now-removed) portion.

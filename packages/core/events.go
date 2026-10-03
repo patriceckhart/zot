@@ -121,6 +121,8 @@ func (e EvCompact) Type() string { return e.Phase + "_compact" }
 type EvUsage struct {
 	Usage      provider.Usage
 	Cumulative provider.Usage
+	// Auxiliary usage contributes to cost, not the chat context size.
+	Auxiliary bool
 }
 
 func (EvUsage) Type() string { return "usage" }

@@ -11,11 +11,14 @@ type Model struct {
 	Provider          string // "anthropic" | "openai"
 	ID                string // API id
 	DisplayName       string
-	API               string // wire API override for providers that support multiple protocols
+	API               string   // wire API override for providers that support multiple protocols
+	Input             []string // advertised input modalities, when supplied by model metadata
 	ContextWindow     int
 	MaxOutput         int
 	Reasoning         bool              // supports reasoning
 	ReasoningLevelMap map[string]string // optional level overrides; empty values remove a level
+	// SupportsOpenAIGrammarTools overrides native grammar capability detection.
+	SupportsOpenAIGrammarTools *bool
 
 	// AdaptiveThinking marks Anthropic models that only support the
 	// adaptive thinking mode (Opus 4.7+). These reject explicit
@@ -560,6 +563,9 @@ func SetLiveModels(live []Model) {
 // xai, ...). Deferring the read to call time avoids that ordering trap.
 func Active() []Model { return activeModels(true) }
 
+// Known includes unavailable managed models for catalog discovery, not pickers.
+func Known() []Model { return activeModels(false) }
+
 func activeModels(availableOnly bool) []Model {
 	activeMu.RLock()
 	defer activeMu.RUnlock()
@@ -571,6 +577,7 @@ func activeModels(availableOnly bool) []Model {
 	copy(out, src)
 	for i := range out {
 		out[i].ReasoningLevelMap = maps.Clone(out[i].ReasoningLevelMap)
+		out[i].Input = append([]string(nil), out[i].Input...)
 	}
 	if len(managedModels) == 0 {
 		if availableOnly {
@@ -584,6 +591,7 @@ func activeModels(availableOnly bool) []Model {
 	}
 	for _, model := range managedModels {
 		model.ReasoningLevelMap = maps.Clone(model.ReasoningLevelMap)
+		model.Input = append([]string(nil), model.Input...)
 		key := model.Provider + "\x00" + model.ID
 		if i, ok := index[key]; ok {
 			if out[i].Source == "user" {

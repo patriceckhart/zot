@@ -40,12 +40,17 @@ type RegisterCommandFromExt struct {
 }
 
 type RegisterToolFromExt struct {
-	Type        string          `json:"type"`
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Schema      json.RawMessage `json:"schema"`
-	Deferred    bool            `json:"deferred,omitempty"`
-	Interactive bool            `json:"interactive,omitempty"`
+	Type                  string          `json:"type"`
+	Name                  string          `json:"name"`
+	Description           string          `json:"description,omitempty"`
+	Schema                json.RawMessage `json:"schema"`
+	OutputSchema          json.RawMessage `json:"output_schema,omitempty"`
+	Namespace             string          `json:"namespace,omitempty"`
+	NamespaceDescription  string          `json:"namespace_description,omitempty"`
+	NamespaceInstructions string          `json:"namespace_instructions,omitempty"`
+	Exposure              string          `json:"exposure,omitempty"`
+	Deferred              bool            `json:"deferred,omitempty"`
+	Interactive           bool            `json:"interactive,omitempty"`
 }
 
 type ReadyFromExt struct {
@@ -69,11 +74,12 @@ type EventInterceptResponseFromExt struct {
 }
 
 type ToolResultFromExt struct {
-	Type          string         `json:"type"`
-	ID            string         `json:"id"`
-	Content       []ContentBlock `json:"content"`
-	IsError       bool           `json:"is_error,omitempty"`
-	ActivateTools []string       `json:"activate_tools,omitempty"`
+	Type              string          `json:"type"`
+	ID                string          `json:"id"`
+	Content           []ContentBlock  `json:"content"`
+	IsError           bool            `json:"is_error,omitempty"`
+	ActivateTools     []string        `json:"activate_tools,omitempty"`
+	StructuredContent json.RawMessage `json:"structured_content,omitempty"`
 }
 
 type ContentBlock struct {

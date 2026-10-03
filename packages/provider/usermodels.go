@@ -67,6 +67,8 @@ func CustomProviders() map[string]CustomProviderConfig { return customProviders 
 // UserModel is a single model entry in the user's models.json.
 type UserModel struct {
 	ID                string            `json:"id"`
+	Type              string            `json:"type,omitempty"` // chat (default), classifier, or image
+	Output            []string          `json:"output,omitempty"`
 	Name              string            `json:"name"`
 	Reasoning         bool              `json:"reasoning"`
 	ReasoningLevelMap map[string]string `json:"reasoningLevelMap,omitempty"`
@@ -79,6 +81,9 @@ type UserModel struct {
 	BaseURL           string            `json:"baseUrl,omitempty"`
 	Input             []string          `json:"input"` // informational only
 	API               string            `json:"api"`   // informational only
+	Compat            struct {
+		SupportsOpenAIGrammarTools *bool `json:"supportsOpenAIGrammarTools,omitempty"`
+	} `json:"compat,omitempty"`
 }
 
 func normalizeReasoningLevelMap(levelMap map[string]string, modelRef string) (map[string]string, []string) {
@@ -124,6 +129,7 @@ func LoadUserModels(path string) []Model {
 // surfacing the warnings; the file is never rejected wholesale unless
 // the top-level JSON itself fails to parse.
 func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
+	setNonChatModels(nil)
 	var warnings []string
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -136,6 +142,7 @@ func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
 	}
 
 	var out []Model
+	var nonChat []NonChatModel
 	// Reset custom providers on each load so removed entries don't linger.
 	customProviders = map[string]CustomProviderConfig{}
 	for providerName, prov := range file.Providers {
@@ -240,27 +247,54 @@ func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
 				modelAPI = cfg.API
 			}
 			m := Model{
-				Provider:          normalized,
-				ID:                um.ID,
-				DisplayName:       um.Name,
-				API:               modelAPI,
-				ContextWindow:     um.ContextWindow,
-				MaxOutput:         um.MaxTokens,
-				Reasoning:         um.Reasoning,
-				ReasoningLevelMap: levelMap,
-				PriceInput:        um.PriceInput,
-				PriceOutput:       um.PriceOutput,
-				PriceCacheRead:    um.PriceCacheRead,
-				PriceCacheWrite:   um.PriceCacheWrite,
-				BaseURL:           modelBaseURL,
-				Source:            "user",
+				Provider:                   normalized,
+				ID:                         um.ID,
+				DisplayName:                um.Name,
+				API:                        modelAPI,
+				Input:                      append([]string(nil), um.Input...),
+				ContextWindow:              um.ContextWindow,
+				MaxOutput:                  um.MaxTokens,
+				Reasoning:                  um.Reasoning,
+				ReasoningLevelMap:          levelMap,
+				SupportsOpenAIGrammarTools: um.Compat.SupportsOpenAIGrammarTools,
+				PriceInput:                 um.PriceInput,
+				PriceOutput:                um.PriceOutput,
+				PriceCacheRead:             um.PriceCacheRead,
+				PriceCacheWrite:            um.PriceCacheWrite,
+				BaseURL:                    modelBaseURL,
+				Source:                     "user",
 			}
 			if m.DisplayName == "" {
 				m.DisplayName = m.ID
 			}
+			if um.Type == "image" || um.Type == "classifier" {
+				m.API = um.API
+				if m.API == "" {
+					m.API = prov.API
+				}
+				if um.Type == "image" && m.API != "openrouter-images" || um.Type == "classifier" && m.API != "typesafe-system-one" && m.API != "llama-cpp-classify" && m.API != "cloudflare-workers-ai-system-one" {
+					warnings = append(warnings, fmt.Sprintf("models.json: %s/%s has an unsupported non-chat api, skipped", normalized, um.ID))
+					continue
+				}
+				input := um.Input
+				if len(input) == 0 {
+					input = []string{"text"}
+				}
+				output := um.Output
+				if um.Type == "image" && len(output) == 0 {
+					output = []string{"image", "text"}
+				}
+				nonChat = append(nonChat, NonChatModel{Model: m, Type: um.Type, Input: input, Output: output})
+				continue
+			}
+			if um.Type != "" && um.Type != "chat" {
+				warnings = append(warnings, fmt.Sprintf("models.json: %s/%s has an unknown model type, skipped", normalized, um.ID))
+				continue
+			}
 			out = append(out, m)
 		}
 	}
+	setNonChatModels(nonChat)
 	return out, warnings
 }
 

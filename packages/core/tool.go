@@ -52,6 +52,13 @@ type ToolResult struct {
 	// ActivateTools names previously deferred tools that become available
 	// after this result. Unknown names are ignored by the agent.
 	ActivateTools []string
+	// StructuredContent is a JSON result for tools declaring an output schema.
+	StructuredContent json.RawMessage
+	// State contains successful tool-state snapshots, persisted as message metadata.
+	// It is never sent as model-visible content.
+	State map[string]json.RawMessage
+	// Usage reports non-chat inference performed by this tool.
+	Usage *provider.Usage
 	// Details is arbitrary data for UIs and logs; not sent to the LLM.
 	Details any
 }
@@ -75,6 +82,19 @@ func NewRegistry(tools ...Tool) Registry {
 // randomized per call, which would otherwise bust the cache every
 // single turn.
 func (r Registry) Specs() []provider.Tool {
+	out := r.AllSpecs()
+	for _, spec := range out {
+		if presenter, ok := r[spec.Name].(interface {
+			PresentTools([]provider.Tool) []provider.Tool
+		}); ok {
+			out = presenter.PresentTools(out)
+		}
+	}
+	return out
+}
+
+// AllSpecs includes callable tools hidden by an orchestration presenter.
+func (r Registry) AllSpecs() []provider.Tool {
 	names := make([]string, 0, len(r))
 	for name := range r {
 		names = append(names, name)
@@ -87,11 +107,46 @@ func (r Registry) Specs() []provider.Tool {
 		if d, ok := t.(interface{ Deferred() bool }); ok {
 			deferred = d.Deferred()
 		}
+		exposure := "direct"
+		if deferred {
+			exposure = "deferred"
+		}
+		if exposed, ok := t.(interface{ Exposure() string }); ok && exposed.Exposure() != "" {
+			exposure = exposed.Exposure()
+		}
+		deferred = exposure == "deferred" || exposure == "codemode"
+		var namespaceDescription, namespaceInstructions string
+		if named, ok := t.(interface{ NamespaceDescription() string }); ok {
+			namespaceDescription = named.NamespaceDescription()
+		}
+		if named, ok := t.(interface{ NamespaceInstructions() string }); ok {
+			namespaceInstructions = named.NamespaceInstructions()
+		}
+		var outputSchema json.RawMessage
+		if structured, ok := t.(interface{ OutputSchema() json.RawMessage }); ok {
+			outputSchema = structured.OutputSchema()
+		}
+		var namespace string
+		if named, ok := t.(interface{ Namespace() string }); ok {
+			namespace = named.Namespace()
+		}
+		var sampling *provider.ConstrainedSampling
+		if constrained, ok := t.(interface {
+			ConstrainedSampling() *provider.ConstrainedSampling
+		}); ok {
+			sampling = constrained.ConstrainedSampling()
+		}
 		out = append(out, provider.Tool{
-			Name:        t.Name(),
-			Description: t.Description(),
-			Schema:      t.Schema(),
-			Deferred:    deferred,
+			ConstrainedSampling:   sampling,
+			Exposure:              exposure,
+			NamespaceDescription:  namespaceDescription,
+			NamespaceInstructions: namespaceInstructions,
+			Namespace:             namespace,
+			OutputSchema:          outputSchema,
+			Name:                  t.Name(),
+			Description:           t.Description(),
+			Schema:                t.Schema(),
+			Deferred:              deferred,
 		})
 	}
 	return out

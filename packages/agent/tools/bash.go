@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	maxBashLines = 2000
-	maxBashBytes = 50 * 1024
+	maxBashLines       = 2000
+	maxBashBytes       = 50 * 1024
+	maxScriptBashBytes = 1024 * 1024
 )
 
 // BashTool runs a shell command in the agent's cwd.
@@ -37,9 +38,12 @@ type bashArgs struct {
 
 const bashSchema = `{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]}`
 
-func (t *BashTool) Name() string            { return "bash" }
-func (t *BashTool) Description() string     { return shellDescription(currentShell()) }
-func (t *BashTool) Schema() json.RawMessage { return json.RawMessage(bashSchema) }
+func (t *BashTool) Name() string                  { return "bash" }
+func (t *BashTool) Description() string           { return shellDescription(currentShell()) }
+func (t *BashTool) Schema() json.RawMessage       { return json.RawMessage(bashSchema) }
+func (t *BashTool) OutputSchema() json.RawMessage { return json.RawMessage(shellOutputSchema) }
+
+const shellOutputSchema = `{"type":"object","properties":{"output":{"type":"string"},"truncated":{"type":"boolean"},"full_output_path":{"type":"string"},"exit_code":{"type":"integer"},"wall_time_seconds":{"type":"number"}},"required":["output","truncated","exit_code","wall_time_seconds"]}`
 
 func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
 	return executeShell(ctx, raw, progress, t.CWD, "$", func(command string) error {
@@ -101,6 +105,18 @@ func executeShell(ctx context.Context, raw json.RawMessage, progress func(string
 
 	// Writer to both the buffer (trimmed) and progress callback.
 	captured := &bytes.Buffer{}
+	// Spill the complete stream, not just the bounded model-facing prefix.
+	full, _ := os.CreateTemp("", "zot-bash-*.log")
+	var fullPath string
+	if full != nil {
+		fullPath = full.Name()
+		defer full.Close()
+	}
+	var outputBytes int64
+	// Keep a circular tail independently of the spill so disk errors do not
+	// turn the structured result into a prefix-only snapshot.
+	tail := make([]byte, maxScriptBashBytes/2)
+	tailEnd := 0
 	done := make(chan struct{})
 
 	// Watch for context cancellation and kill the entire process
@@ -123,8 +139,24 @@ func executeShell(ctx context.Context, raw json.RawMessage, progress func(string
 			n, err := pr.Read(buf)
 			if n > 0 {
 				chunk := buf[:n]
-				if captured.Len() < maxBashBytes {
-					room := maxBashBytes - captured.Len()
+				outputBytes += int64(n)
+				copied := copy(tail[tailEnd:], chunk)
+				tailEnd += copied
+				if tailEnd == len(tail) {
+					tailEnd = 0
+				}
+				if copied < n {
+					tailEnd = copy(tail, chunk[copied:])
+				}
+				if full != nil {
+					if _, writeErr := full.Write(chunk); writeErr != nil {
+						full.Close()
+						os.Remove(fullPath)
+						full, fullPath = nil, ""
+					}
+				}
+				if captured.Len() < maxScriptBashBytes {
+					room := maxScriptBashBytes - captured.Len()
 					if n > room {
 						captured.Write(chunk[:room])
 					} else {
@@ -145,8 +177,24 @@ func executeShell(ctx context.Context, raw json.RawMessage, progress func(string
 	pw.Close()
 	<-done
 
-	output := captured.String()
-	truncBytes := captured.Len() >= maxBashBytes
+	if full != nil {
+		if err := full.Close(); err != nil {
+			os.Remove(fullPath)
+			fullPath = ""
+		}
+	}
+	scriptOutput := captured.String()
+	scriptTruncated := outputBytes > int64(maxScriptBashBytes)
+	output := scriptOutput
+	if scriptTruncated {
+		head := captured.Bytes()[:maxScriptBashBytes/2]
+		last := append(append(make([]byte, 0, len(tail)), tail[tailEnd:]...), tail[:tailEnd]...)
+		scriptOutput = shellUTF8Head(head) + fmt.Sprintf("\n\n[... %d bytes omitted ...]\n\n", outputBytes-int64(maxScriptBashBytes)) + shellUTF8Tail(last)
+	}
+	truncBytes := outputBytes > int64(maxBashBytes)
+	if len(output) > maxBashBytes {
+		output = output[:maxBashBytes]
+	}
 	lines := strings.Split(output, "\n")
 	truncLines := false
 	if len(lines) > maxBashLines {
@@ -193,12 +241,13 @@ func executeShell(ctx context.Context, raw json.RawMessage, progress func(string
 		fmt.Fprintf(&sb, "[exit %d]", exitCode)
 	}
 
-	var fullPath string
 	if truncBytes || truncLines {
-		fullPath = writeFullOutput(output)
 		if fullPath != "" {
 			fmt.Fprintf(&sb, " (full output: %s)", fullPath)
 		}
+	} else if fullPath != "" {
+		os.Remove(fullPath)
+		fullPath = ""
 	}
 	fmt.Fprintf(&sb, "  Took %s", humanDuration(elapsed))
 
@@ -210,10 +259,24 @@ func executeShell(ctx context.Context, raw json.RawMessage, progress func(string
 	if runCtx.Err() == context.Canceled {
 		status = "cancelled"
 	}
+	structured := map[string]any{
+		"output":            scriptOutput,
+		"truncated":         scriptTruncated,
+		"exit_code":         exitCode,
+		"wall_time_seconds": elapsed.Seconds(),
+	}
+	if scriptTruncated && fullPath != "" {
+		structured["full_output_path"] = fullPath
+	}
+	structuredJSON, _ := json.Marshal(structured)
+	if runCtx.Err() != nil {
+		structuredJSON = nil
+	}
 	return core.ToolResult{
-		Status:  status,
-		Content: []provider.Content{provider.TextBlock{Text: sb.String()}},
-		IsError: isErr,
+		StructuredContent: structuredJSON,
+		Status:            status,
+		Content:           []provider.Content{provider.TextBlock{Text: sb.String()}},
+		IsError:           isErr,
 		Details: map[string]any{
 			"exit_code":        exitCode,
 			"full_output_path": fullPath,

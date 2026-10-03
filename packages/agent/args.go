@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/patriceckhart/zot/packages/agent/codemode"
 	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/tui"
 	"golang.org/x/term"
@@ -56,10 +57,13 @@ type Args struct {
 	Session  string
 	NoSess   bool
 
-	CWD      string
-	NoTools  bool
-	Tools    []string
-	MaxSteps int
+	CWD              string
+	NoTools          bool
+	Tools            []string
+	MaxSteps         int
+	Codemode         bool
+	CodemodeMode     string
+	CodemodeSettings *codemode.Settings
 
 	// Exts is a list of directory paths the user passed via --ext.
 	// Each must contain an extension.json. Loaded for one session
@@ -170,6 +174,12 @@ func ParseArgs(in []string) (Args, error) {
 			a.NoSess = true
 		case "--no-tools":
 			a.NoTools = true
+		case "--codemode":
+			a.Codemode = true
+			a.CodemodeMode = "on"
+		case "--codemode-only":
+			a.Codemode = true
+			a.CodemodeMode = "only"
 		case "--list-models":
 			a.ListModels = true
 		case "--experimental-oauth":
@@ -454,6 +464,8 @@ func printHelp(out *os.File, version string) {
 		row{"--cwd PATH", "treat PATH as the working directory"},
 		row{"--no-tools", "disable all tools"},
 		row{"--tools csv", "only enable the listed tools"},
+		row{"--codemode", "add JavaScript tool orchestration"},
+		row{"--codemode-only", "expose client tools only through codemode"},
 		row{"--no-yolo", "ask before running every tool call"},
 		row{"-y, --yes", "accept zot run consent without prompting"},
 		row{"--no-ext", "skip extension discovery for this run"},

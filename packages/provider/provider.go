@@ -131,11 +131,25 @@ type Message struct {
 
 // Tool is a tool definition advertised to the LLM.
 type Tool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Schema      json.RawMessage `json:"schema"` // JSON Schema for arguments
+	Name                  string               `json:"name"`
+	Description           string               `json:"description"`
+	Schema                json.RawMessage      `json:"schema"`                  // JSON Schema for arguments
+	OutputSchema          json.RawMessage      `json:"output_schema,omitempty"` // orchestration metadata, not a request schema
+	Namespace             string               `json:"namespace,omitempty"`
+	NamespaceDescription  string               `json:"namespace_description,omitempty"`
+	NamespaceInstructions string               `json:"namespace_instructions,omitempty"`
+	Exposure              string               `json:"exposure,omitempty"`
+	ConstrainedSampling   *ConstrainedSampling `json:"constrained_sampling,omitempty"`
 	// Deferred hides the definition until a tool result activates it.
 	Deferred bool `json:"deferred,omitempty"`
+}
+
+// ConstrainedSampling declares provider-specific grammars for a string input.
+// Providers without native grammar support retain the JSON function schema.
+type ConstrainedSampling struct {
+	Type          string            `json:"type"`
+	Variants      map[string]string `json:"variants"`
+	InputProperty string            `json:"input_property,omitempty"`
 }
 
 // activeToolDefinitions returns eager tools plus deferred tools activated by
