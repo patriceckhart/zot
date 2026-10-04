@@ -42,7 +42,7 @@ func run(output string, check bool) error {
 	}
 	defer os.RemoveAll(dir)
 	wasm := filepath.Join(dir, "worker.wasm")
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w -buildid=", "-o", wasm, "./packages/codemode/internal/vm/cmd")
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-trimpath", "-ldflags=-s -w -buildid=", "-o", wasm, "./packages/codemode/internal/vm/cmd")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm", "CGO_ENABLED=0")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

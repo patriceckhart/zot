@@ -208,4 +208,11 @@ go generate ./packages/codemode
 go run ./packages/codemode/internal/vm/generate -check -output packages/codemode/worker.wasm.gz
 ```
 
-The compressed asset is built with `GOOS=wasip1`, `GOARCH=wasm`, and `CGO_ENABLED=0`. Reproduction requires the same Go toolchain and dependency versions.
+The compressed asset is built with `GOOS=wasip1`, `GOARCH=wasm`, and `CGO_ENABLED=0`. The generator disables VCS stamping with `-buildvcs=false`, so Git revisions and unrelated working-tree edits do not change the asset. Reproduction still requires the same Go toolchain and dependency versions. The checked-in asset was generated with Go 1.26.3. To reproduce it with that toolchain explicitly:
+
+```sh
+GOTOOLCHAIN=go1.26.3 go generate ./packages/codemode
+GOTOOLCHAIN=go1.26.3 go run ./packages/codemode/internal/vm/generate -check -output packages/codemode/worker.wasm.gz
+```
+
+If regeneration intentionally uses a different Go version, update the documented asset toolchain alongside the asset.
