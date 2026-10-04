@@ -6281,6 +6281,17 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 	}
 
 	go func() {
+		// Keep compaction on the active loop goroutine, never racing tools
+		// or another provider call. Restore an embedder's hook before settling.
+		previous := i.agent.BeforeNextTurn
+		i.agent.BeforeNextTurn = func(ctx context.Context) error {
+			if previous != nil {
+				if err := previous(ctx); err != nil {
+					return err
+				}
+			}
+			return i.compactBetweenTurns(ctx)
+		}
 		var err error
 		if overflowRecoveryAttempted {
 			err = i.agent.Continue(ctx, sink)
@@ -6291,6 +6302,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 		} else {
 			err = i.agent.Prompt(ctx, prompt, images, sink)
 		}
+		i.agent.BeforeNextTurn = previous
 		i.mu.Lock()
 		i.busy = false
 		// Don't touch streamPending / streamFlushPending here — the

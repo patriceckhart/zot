@@ -93,6 +93,9 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 			}
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	summary = strings.TrimSpace(sb.String())
 	if summary == "" {
 		return "", fmt.Errorf("empty summary from model")

@@ -63,6 +63,13 @@ type Agent struct {
 	// limiting, business-hour gates, and deny-by-default setups.
 	BeforeTurn func(step int) (allowed bool, reason string)
 
+	// BeforeNextTurn runs synchronously before a continuation model call,
+	// after the previous response and all tool results have been appended.
+	// It can compact the transcript safely before queued messages are drained.
+	// It does not run for the first call or when the loop is stopping.
+	// Returning an error stops the run without sending another request.
+	BeforeNextTurn func(context.Context) error
+
 	// BeforeAssistantMessage, if set, is called after the model's
 	// final assistant message is assembled but before it's appended
 	// to the transcript. Returning (allowed=false) suppresses both
@@ -449,6 +456,16 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 		// Preparation is cached across steps and user messages. Only an
 		// explicit prompt/model/session change invokes BeforeStart again.
 		if err := a.prepareStart(ctx); err != nil {
+			sink(EvDone{})
+			return err
+		}
+		if step > 1 && a.BeforeNextTurn != nil {
+			if err := a.BeforeNextTurn(ctx); err != nil {
+				sink(EvDone{})
+				return err
+			}
+		}
+		if err := ctx.Err(); err != nil {
 			sink(EvDone{})
 			return err
 		}
