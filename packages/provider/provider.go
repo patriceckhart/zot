@@ -28,6 +28,8 @@ type Content interface {
 
 // TextBlock is plain text content.
 type TextBlock struct {
+	// Format is an optional display hint for tool output. Providers receive only Text.
+	Format           string `json:"format,omitempty"`
 	Text             string `json:"text"`
 	ThoughtSignature string `json:"thought_signature,omitempty"`
 }

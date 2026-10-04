@@ -329,9 +329,11 @@ func (d *btwDialog) handleAgentEvent(turnIdx int, ev core.AgentEvent) {
 		if tool := findBtwTool(turn, e.ID); tool != nil {
 			tool.Done = true
 			tool.Error = e.Result.IsError
+			tool.ResultContent = nil
 			var text strings.Builder
 			for _, content := range e.Result.Content {
 				if block, ok := content.(provider.TextBlock); ok {
+					tool.ResultContent = append(tool.ResultContent, block)
 					if text.Len() > 0 {
 						text.WriteString("\n")
 					}

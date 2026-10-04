@@ -108,7 +108,7 @@ func (t *extensionTool) Execute(ctx context.Context, args json.RawMessage, _ fun
 		switch b.Type {
 		case "text":
 			if b.Text != "" {
-				out.Content = append(out.Content, provider.TextBlock{Text: b.Text})
+				out.Content = append(out.Content, provider.TextBlock{Text: b.Text, Format: b.Format})
 			}
 		case "image":
 			data, dErr := decodeBase64(b.Data)

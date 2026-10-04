@@ -308,6 +308,14 @@ message blocks; each block is `{"type":"text","text":"..."}` or
 registered deferred tools that become available after this result. Optional
 `structured_content` is a JSON value for callers of tools declaring `output_schema`.
 
+Text blocks may include `"format":"markdown"` to opt into Markdown rendering
+inside interactive tool results. Omitted or unknown formats retain ordinary
+plain-text rendering. This is a display hint only: models receive the original
+text, and saved sessions preserve the hint. It does not change extension panel
+rendering or add ANSI styling to print/RPC output. Older hosts ignore the hint.
+The Go SDK provides `ext.MarkdownResult(text)` for a single Markdown block,
+or `ToolContent{Type: "text", Text: text, Format: "markdown"}` for mixed results.
+
 ```json
 {"type":"tool_result","id":"...",
  "content":[{"type":"text","text":"Berlin: 16°C, fog"}]}

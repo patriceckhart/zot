@@ -6648,9 +6648,11 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			tc.Done = true
 			tc.Error = e.Result.IsError
 			tc.Preview = ""
+			tc.ResultContent = nil
 			var text strings.Builder
 			for _, c := range e.Result.Content {
 				if tb, ok := c.(provider.TextBlock); ok {
+					tc.ResultContent = append(tc.ResultContent, tb)
 					if text.Len() > 0 {
 						text.WriteString("\n")
 					}

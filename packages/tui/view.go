@@ -228,13 +228,14 @@ const (
 
 // ToolCallView is a pending tool invocation plus optional result.
 type ToolCallView struct {
-	ID      string
-	Name    string
-	Args    string // rendered argument summary
-	Preview string // side-effect-free result shown before confirmation
-	Result  string // rendered result preview (truncated)
-	Error   bool
-	Done    bool
+	ID            string
+	Name          string
+	Args          string             // rendered argument summary
+	Preview       string             // side-effect-free result shown before confirmation
+	Result        string             // rendered result preview (truncated)
+	ResultContent []provider.Content // typed result blocks, preserving display hints
+	Error         bool
+	Done          bool
 
 	// Streaming is true while the model is still typing the tool
 	// call's JSON arguments. The TUI renders a live preview of any
@@ -960,7 +961,7 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	// Finished tool call with no body: just the labelled top edge
 	// directly closed by the bottom. Avoids a blank interior row
 	// for no-output tools.
-	if bodyText == "" {
+	if bodyText == "" && len(tc.ResultContent) == 0 {
 		if v.FlatTools || v.CompactMode {
 			if v.CompactMode {
 				lines = append(lines, compactToolBlank(v.Theme, width))
@@ -990,8 +991,8 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 			lines = append(lines, compactToolBlank(v.Theme, width))
 		}
 		lines = append(lines, toolHeaderLine(v.Theme, label, width, v.CompactMode))
-		body := v.renderLiveToolResult(bodyText, flatToolBodyRenderWidth(width), color, tc.LivePath)
-		for _, l := range v.collapseToolBody(body, false) {
+		body := v.renderToolCallResult(tc, bodyText, width, color)
+		for _, l := range body {
 			_, stripped := parseImageFootprint(l)
 			lines = append(lines, toolBodyLine(v.Theme, stripped, width, v.CompactMode))
 		}
@@ -1002,8 +1003,8 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	}
 	lines = append(lines, toolBoxTop(v.Theme, label, width))
 	lines = append(lines, toolBoxSide(v.Theme, "", width))
-	body := v.renderLiveToolResult(bodyText, toolBoxBodyRenderWidth(width), color, tc.LivePath)
-	for _, l := range v.collapseToolBody(body, false) {
+	body := v.renderToolCallResult(tc, bodyText, width, color)
+	for _, l := range body {
 		imgCells, stripped := parseImageFootprint(l)
 		if hasImageEscapeLine(stripped) {
 			lines = append(lines, toolBoxSideWithImage(v.Theme, stripped, imgCells, width))
@@ -1014,6 +1015,18 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	lines = append(lines, toolBoxSide(v.Theme, "", width))
 	lines = append(lines, toolBoxBottom(v.Theme, width))
 	return lines
+}
+
+// renderToolCallResult preserves per-block display hints in completed live calls.
+func (v *View) renderToolCallResult(tc ToolCallView, text string, width, color int) []string {
+	if len(tc.ResultContent) > 0 {
+		return v.renderToolResultContent(tc.ResultContent, width, color, tc.LivePath, 1)
+	}
+	bodyWidth := toolBoxBodyRenderWidth(width)
+	if v.FlatTools || v.CompactMode {
+		bodyWidth = flatToolBodyRenderWidth(width)
+	}
+	return v.collapseToolBody(v.renderLiveToolResult(text, bodyWidth, color, tc.LivePath), false)
 }
 
 // renderLiveToolResult uses the transcript's text renderer so every rich
@@ -1585,7 +1598,13 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width, color i
 			if v.FlatTools || v.CompactMode {
 				bodyWidth = flatToolBodyRenderWidth(width)
 			}
-			body = append(body, v.renderToolText(bb.Text, bodyWidth, color, sourcePath, startLine)...)
+			if bb.Format == "markdown" {
+				for _, line := range strings.Split(RenderMarkdown(bb.Text, v.Theme, max(1, bodyWidth-4)), "\n") {
+					body = append(body, "    "+line)
+				}
+			} else {
+				body = append(body, v.renderToolText(bb.Text, bodyWidth, color, sourcePath, startLine)...)
+			}
 		case provider.ImageBlock:
 			hasImage = true
 			body = append(body, v.renderImageBlock(bb, width)...)

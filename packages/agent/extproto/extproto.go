@@ -83,6 +83,7 @@ type ToolResultFromExt struct {
 }
 
 type ContentBlock struct {
+	Format   string `json:"format,omitempty"`
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`
 	MimeType string `json:"mime_type,omitempty"`

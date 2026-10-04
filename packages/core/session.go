@@ -872,6 +872,7 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 			block := provider.ToolResultBlock{CallID: tr.CallID, IsError: tr.IsError}
 			for _, c := range tr.Content {
 				var inner struct {
+					Format   string `json:"format"`
 					Text     string `json:"text"`
 					MimeType string `json:"mime_type"`
 					Data     []byte `json:"data"`
@@ -880,7 +881,7 @@ func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 				if inner.MimeType != "" {
 					block.Content = append(block.Content, provider.ImageBlock{MimeType: inner.MimeType, Data: inner.Data})
 				} else {
-					block.Content = append(block.Content, provider.TextBlock{Text: inner.Text})
+					block.Content = append(block.Content, provider.TextBlock{Text: inner.Text, Format: inner.Format})
 				}
 			}
 			msg.Content = append(msg.Content, block)

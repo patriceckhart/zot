@@ -52,7 +52,7 @@ func extensionEventResult(result core.ToolResult) *extproto.EventResult {
 				out.Truncated = true
 			}
 			remaining -= len(text)
-			out.Content = append(out.Content, extproto.ContentBlock{Type: "text", Text: text})
+			out.Content = append(out.Content, extproto.ContentBlock{Type: "text", Text: text, Format: b.Format})
 		case provider.ImageBlock:
 			size := base64.StdEncoding.EncodedLen(len(b.Data)) + len(b.MimeType)
 			if size > remaining {

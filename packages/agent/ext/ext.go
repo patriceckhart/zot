@@ -216,6 +216,7 @@ type ToolResult struct {
 // ToolContent is one block of tool output. Either Text is set, or
 // MimeType+Data (base64-encoded). Use the Text/Image helpers below.
 type ToolContent struct {
+	Format   string // optional display hint, "markdown" for formatted tool output
 	Type     string // "text" | "image"
 	Text     string
 	MimeType string
@@ -239,6 +240,12 @@ func ImageBytes(mimeType string, data []byte) ToolContent {
 
 // TextResult returns a tool result with one text block, success.
 func TextResult(s string) ToolResult { return ToolResult{Content: []ToolContent{Text(s)}} }
+
+// MarkdownResult returns text that zot renders as Markdown in tool results.
+// The original Markdown is preserved for the model and in saved sessions.
+func MarkdownResult(s string) ToolResult {
+	return ToolResult{Content: []ToolContent{{Type: "text", Text: s, Format: "markdown"}}}
+}
 
 // TextErrorResult returns a tool result with one text block, marked
 // as an error to the model.
@@ -913,6 +920,7 @@ func (e *Extension) respondTool(id string, r ToolResult) {
 	for _, c := range r.Content {
 		blocks = append(blocks, extproto.ContentBlock{
 			Type:     c.Type,
+			Format:   c.Format,
 			Text:     c.Text,
 			MimeType: c.MimeType,
 			Data:     c.Data,
