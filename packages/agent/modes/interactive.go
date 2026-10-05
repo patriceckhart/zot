@@ -3157,6 +3157,13 @@ func (i *Interactive) invokeExtensionCommand(ctx context.Context, name, args str
 		i.invalidate()
 		return
 	}
+	i.applyExtensionCommandResponse(name, resp)
+}
+
+// applyExtensionCommandResponse applies the action requested by an extension
+// slash command. It is split out of invokeExtensionCommand so the action
+// handling can be exercised without a running extension manager.
+func (i *Interactive) applyExtensionCommandResponse(name string, resp extproto.CommandResponseFromExt) {
 	switch resp.Action {
 	case "open_panel":
 		if resp.OpenPanel != nil {
@@ -3190,6 +3197,7 @@ func (i *Interactive) invokeExtensionCommand(ctx context.Context, name, args str
 		i.invalidate()
 	case "display":
 		i.appendExtensionNote(name, resp.Display, "info")
+		i.invalidate()
 	case "noop", "":
 		// nothing
 	default:
