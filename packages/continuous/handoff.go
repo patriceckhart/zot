@@ -14,9 +14,9 @@ import (
 )
 
 // HandoffTool lets the model close its current context and continue in a
-// fresh one: the tool result carries a control marker, and the service, after
-// recording the result, commits a reset entry with the handoff note and admits
-// exactly one continuation input in the same transaction. The continuation
+// fresh one: the tool result carries a control marker, and the service commits
+// the result, a reset entry with the handoff note, and exactly one continuation
+// input in the same transaction. The continuation
 // uses a request ID derived from the tool call, so a replayed or re-stepped
 // round cannot admit it twice. The current run ends completed.
 type HandoffTool struct{}

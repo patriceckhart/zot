@@ -347,6 +347,7 @@ run.retry      attempt entry, attempt+1                       -> phase request (
 run.failed     attempt entry, submissions failed              -> done
 tool.intent    intent running with effective args and replay policy
 tool.result    tool_result entry, intent done
+run.handoff    tool result + skipped siblings + reset + continuation, original run done
 run.next       round complete                                 -> phase request, turn+1
 ```
 
@@ -362,14 +363,22 @@ its phase:
 - `tools` with a `running` intent: the tool started and its effect is unknown.
   If the stored policy and the current tool both declare `ReplaySafe` and the
   current authorization hook allows it, the tool runs once more with the same
-  committed arguments. Otherwise the model receives an `interrupted` error
+  committed arguments. Authorization checks those effective arguments, not
+  the model's original arguments before a guard rewrite. If the current guard
+  requires another argument rewrite, recovery refuses replay and reconciliation
+  rather than changing the operation associated with the committed intent.
+  Otherwise, when replay is refused, the model receives an `interrupted` error
   result and a recovery notice is appended to the run. Nothing is retried
   silently.
 - `tools` with all intents `done`: the next request starts.
 
 Cancelling the context (`Ctrl+C` for the CLI) is treated like a crash: the
 step returns, the run stays where it is, and the next step recovers it. The
-model never sees a tool call without a result. Failed attempts are stored as
+model never sees a tool call without a result. An explicit conversation abort
+is different from cancelling the caller's context: its committed intent survives
+an in-flight model response, and the run settles aborted before any pending tool
+executes or failed request retries. An already-started external effect is not
+cancelled by an abort. Failed attempts are stored as
 `attempt` entries so they remain inspectable but are excluded from the next
 request and from legacy export.
 
@@ -428,7 +437,12 @@ timers, and returns when `ctx` ends. Interrupted work stays recoverable.
   `recovery.unblock`.
 - `all` unblocks everything, reporting interrupted unsafe tools to the model as
   errors. It never replays what the policy forbids.
-- `none` performs no recovery. Only new submissions run.
+- `none` performs no recovery until a held run is explicitly unblocked. New
+  submissions run in conversations without a held run.
+
+Queued submissions do not release a recovery hold or a pending approval. They
+wait until the held run is unblocked or the approval is decided. An explicit
+abort can settle a run waiting on approval without authorizing the tool.
 
 `HostServer{Host, Engine, Tokens, Version, MaxWatches}` serves newline-delimited
 JSON frames. Requests are `{"id","method","params"}`. Responses are

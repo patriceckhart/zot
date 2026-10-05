@@ -232,15 +232,23 @@ func (h *Host) dispatch(ctx context.Context, snap storage.Snapshot) (bool, error
 			if json.Unmarshal(row.Value, &run) != nil {
 				return false, storage.ErrCorrupt
 			}
-			if run.Phase != "done" && h.allowed(run) {
+			if run.Phase != "done" {
+				// Queue admissions cannot release a recovery hold. Step would
+				// recover this run before processing the newly queued input.
+				if !h.allowed(run) {
+					delete(want, run.ConversationID)
+					continue
+				}
 				// A run parked on a human decision is not work until the
 				// decision commits, which wakes the host through Wait.
 				pending, err := pendingApprovals(snap, run.ConversationID)
 				if err != nil {
 					return false, err
 				}
-				if len(pending) == 0 {
+				if len(pending) == 0 || run.AbortRequested {
 					want[run.ConversationID] = true
+				} else {
+					delete(want, run.ConversationID)
 				}
 			}
 		}

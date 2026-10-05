@@ -393,6 +393,7 @@ func (s *Service) load(ctx context.Context, run Run) (*core.Agent, Conversation,
 // committed in the run record. The assembled response and the tool intents
 // commit atomically; a failed attempt commits an attempt entry instead.
 func (s *Service) request(ctx context.Context, run Run) (Run, error) {
+	requestRun := run
 	agent, c, snap, err := s.load(ctx, run)
 	if err != nil {
 		return run, err
@@ -471,6 +472,18 @@ func (s *Service) request(ctx context.Context, run Run) (Run, error) {
 	if err != nil {
 		return run, err
 	}
+	latest, ok, err := read[Run](snap, runKey(c.ID))
+	if err != nil {
+		return run, err
+	}
+	// Only an abort may change this run while the request is in flight.
+	// Preserve it when recording the response instead of overwriting it.
+	expected := requestRun
+	expected.AbortRequested, expected.Revision = latest.AbortRequested, latest.Revision
+	if !ok || !sameJSON(expected, latest) {
+		return run, fmt.Errorf("%w: run changed during model request", ErrBusy)
+	}
+	run.AbortRequested, run.Revision = latest.AbortRequested, latest.Revision
 	var clear []storage.Operation
 	if completed {
 		clear = partialClearOp(snap, c.ID)
@@ -485,7 +498,7 @@ func (s *Service) request(ctx context.Context, run Run) (Run, error) {
 	}
 	clear = append(clear, promptOps(snap, c, run, agent.Model, system, toolJSON, names)...)
 	ledger := s.usageRow(&c, run, agent, usage, usageKnown)
-	if turnErr != nil && !run.Compacted && s.opts.Compaction.ContextWindow > 0 && isContextOverflow(turnErr) {
+	if turnErr != nil && !run.AbortRequested && !run.Compacted && s.opts.Compaction.ContextWindow > 0 && isContextOverflow(turnErr) {
 		// Overflow: record the attempt, compact once, and retry the request
 		// without counting it against the retry budget.
 		c.EntrySequence++
@@ -505,6 +518,19 @@ func (s *Service) request(ctx context.Context, run Run) (Run, error) {
 			if cErr != nil {
 				return committed, cErr
 			}
+			latest, ok, readErr := read[Run](snap, runKey(c.ID))
+			if readErr != nil {
+				return committed, readErr
+			}
+			expected := committed
+			expected.AbortRequested, expected.Revision = latest.AbortRequested, latest.Revision
+			if !ok || !sameJSON(expected, latest) {
+				return committed, fmt.Errorf("%w: run changed during overflow compaction", ErrBusy)
+			}
+			if latest.AbortRequested {
+				return s.abort(ctx, latest)
+			}
+			committed = latest
 			committed.Phase, committed.Outcome, committed.Error = "done", "failed", fmt.Sprintf("%v (compaction after overflow failed: %v)", turnErr, err)
 			return s.commitRun(ctx, snap, fresh, committed, "run.failed", s.settle(snap, committed, "failed")...)
 		}
@@ -531,7 +557,9 @@ func (s *Service) request(ctx context.Context, run Run) (Run, error) {
 	entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, Revision: snap.Revision() + 1, Type: entryAssistant, Content: core.MessageText(msg), Time: time.Now().UTC()}
 	entry.Message = marshalMessage(msg)
 	ops := append([]storage.Operation{record(entryKey(c.ID, c.EntrySequence), entry), ledger}, clear...)
-	if stop == provider.StopToolUse && len(calls) > 0 {
+	if next.AbortRequested || (stop == provider.StopToolUse && len(calls) > 0) {
+		// drive settles a pending abort before any tool can execute, even
+		// when this response has no tool calls.
 		next.Phase = "tools"
 	} else {
 		next.Phase = "done"
@@ -580,6 +608,11 @@ func (s *Service) failedAttempt(ctx context.Context, run Run, c Conversation, sn
 	}
 	ops := append([]storage.Operation{record(entryKey(c.ID, c.EntrySequence), entry), ledger}, extra...)
 	next := run
+	if next.AbortRequested {
+		// Record the attempt and let drive settle the abort without retrying
+		// or reporting a provider failure in place of the user's decision.
+		return s.commitRun(ctx, snap, c, next, "run.abort_pending", ops...)
+	}
 	// Context cancellation is the caller's decision, not a provider failure.
 	// The run stays in its request phase for the next Step.
 	if errors.Is(turnErr, context.Canceled) || errors.Is(turnErr, context.DeadlineExceeded) || (stop == provider.StopAborted && turnErr == nil && ctx.Err() != nil) {
@@ -785,6 +818,15 @@ func (s *Service) tools(ctx context.Context, run Run) (Run, error) {
 		run.Tools[i].Entry = c.EntrySequence
 		entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, Revision: snap.Revision() + 1, Type: entryToolResult, Content: core.ToolResultText(result), Time: time.Now().UTC()}
 		entry.Message = marshalMessage(provider.Message{Role: provider.RoleTool, Content: []provider.Content{block}, Time: time.Now().UTC()})
+		if req, ok := handoffFromResult(call.Name, result); ok && !run.AbortRequested {
+			// The result and its control effect must be one commit. Recovery
+			// must never skip a done intent whose continuation is missing.
+			run, err = s.handoff(ctx, snap, c, run, i, call.ID, req, entry)
+			if err == nil {
+				s.opts.Sink(core.EvToolResult{ID: call.ID, Name: call.Name, Args: call.Arguments, Status: status, Executed: executed, Result: result})
+			}
+			return run, err
+		}
 		run, c, snap, err = s.commitResult(ctx, snap, c, run, i, entry)
 		if err != nil {
 			return run, err
@@ -793,9 +835,6 @@ func (s *Service) tools(ctx context.Context, run Run) (Run, error) {
 		snap, err = s.r.store.Snapshot(ctx)
 		if err != nil {
 			return run, err
-		}
-		if req, ok := handoffFromResult(call.Name, result); ok {
-			return s.handoff(ctx, snap, c, run, i, call.ID, req)
 		}
 	}
 	// Round complete: next request includes every result entry.
@@ -853,8 +892,8 @@ func (s *Service) claimSteering(snap storage.Snapshot, c *Conversation, run *Run
 // round receive aborted results so the transcript stays paired, a reset entry
 // with the note closes the context, and the continuation is admitted. All in
 // one commit, deduplicated by the call so a re-step cannot admit it twice.
-func (s *Service) handoff(ctx context.Context, snap storage.Snapshot, c Conversation, run Run, index int, callID string, req handoffRequest) (Run, error) {
-	var ops []storage.Operation
+func (s *Service) handoff(ctx context.Context, snap storage.Snapshot, c Conversation, run Run, index int, callID string, req handoffRequest, result Entry) (Run, error) {
+	ops := []storage.Operation{record(entryKey(c.ID, c.EntrySequence), result)}
 	for i := index + 1; i < len(run.Tools); i++ {
 		if run.Tools[i].State == "done" {
 			continue
@@ -943,11 +982,16 @@ func (s *Service) recoverInterrupted(ctx context.Context, agent *core.Agent, c C
 	if live != intent.Replay {
 		return fmt.Sprintf("tool %s interrupted, not replayed: stored policy %s, live policy %s", call.ID, intent.Replay, live), none, false
 	}
-	_, allowed, reason, _ := s.authorize(ctx, agent, run, call)
+	// Give hooks their own copy so an in-place rewrite cannot alter the
+	// committed arguments used for comparison or reconciliation.
+	call.Arguments = append(json.RawMessage(nil), intent.Args...)
+	args, allowed, reason, _ := s.authorize(ctx, agent, run, call)
 	if !allowed {
 		return fmt.Sprintf("tool %s interrupted, replay denied by current authorization: %s", call.ID, reason), none, false
 	}
-	call.Arguments = intent.Args
+	if !sameJSON(args, intent.Args) {
+		return fmt.Sprintf("tool %s interrupted, not replayed: committed arguments changed by current authorization", call.ID), none, false
+	}
 	switch intent.Replay {
 	case core.ReplaySafe:
 		return fmt.Sprintf("tool %s replayed after interruption (policy safe)", call.ID), s.execute(ctx, agent, run, call), true
