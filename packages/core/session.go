@@ -809,6 +809,16 @@ func hydrateMessage(lineBytes []byte) (provider.Message, error) {
 	return hydrateMessageObject(row.Message)
 }
 
+// DecodeMessage rebuilds a provider.Message from its JSON object form, the
+// same representation session files and durable stores persist. It is the
+// single decoder for the interface-typed Content slice.
+func DecodeMessage(raw []byte) (provider.Message, error) {
+	if !json.Valid(raw) {
+		return provider.Message{}, fmt.Errorf("invalid message JSON")
+	}
+	return hydrateMessageObject(raw)
+}
+
 func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 	var row struct {
 		Role           provider.Role     `json:"role"`

@@ -33,6 +33,7 @@ type extensionTool struct {
 	timeout               time.Duration
 	deferred              bool
 	interactive           bool
+	replay                string
 }
 
 // NewTool returns a core.Tool that round-trips invocations through
@@ -57,7 +58,53 @@ func NewTool(mgr *Manager, info ToolInfo) core.Tool {
 		timeout:               timeout,
 		deferred:              info.Deferred,
 		interactive:           info.Interactive,
+		replay:                info.Replay,
 	}
+}
+
+// ReplayPolicy maps the extension's declaration onto the core contract.
+// Extensions default to never; reconcile is not expressible over the wire.
+func (t *extensionTool) ReplayPolicy() core.ToolReplayPolicy {
+	switch t.replay {
+	case "safe":
+		return core.ReplaySafe
+	case "idempotent":
+		return core.ReplayIdempotent
+	case "reconcile":
+		return core.ReplayReconcile
+	}
+	return core.ReplayNever
+}
+
+// Reconcile implements core.ToolReconciler for extensions declaring replay
+// "reconcile". A missing or malformed answer is unknown, never a retry.
+func (t *extensionTool) Reconcile(ctx context.Context, key string, args json.RawMessage) (core.ReconcileOutcome, core.ToolResult, error) {
+	if t.replay != "reconcile" {
+		return core.ReconcileUnknown, core.ToolResult{}, nil
+	}
+	resp, err := t.manager.ReconcileTool(core.WithToolOperationKey(ctx, key), t.name, args, t.timeout)
+	if err != nil {
+		return core.ReconcileUnknown, core.ToolResult{}, err
+	}
+	var answer struct {
+		State string `json:"state"`
+	}
+	if json.Unmarshal(resp.StructuredContent, &answer) != nil {
+		return core.ReconcileUnknown, core.ToolResult{}, nil
+	}
+	switch answer.State {
+	case "completed":
+		out := core.ToolResult{IsError: resp.IsError}
+		for _, b := range resp.Content {
+			if b.Type == "text" && b.Text != "" {
+				out.Content = append(out.Content, provider.TextBlock{Text: b.Text, Format: b.Format})
+			}
+		}
+		return core.ReconcileCompleted, out, nil
+	case "not_started":
+		return core.ReconcileNotStarted, core.ToolResult{}, nil
+	}
+	return core.ReconcileUnknown, core.ToolResult{}, nil
 }
 
 func (t *extensionTool) Name() string                  { return t.name }

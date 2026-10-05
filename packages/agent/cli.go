@@ -238,6 +238,9 @@ func Run(rawArgs []string, version string) error {
 	if handled, err := runSessionsCommand(rawArgs); handled {
 		return err
 	}
+	if handled, err := runContinuousCommand(rawArgs); handled {
+		return err
+	}
 	if handled, err := runZotfileCommand(rawArgs, version); handled {
 		return err
 	}
@@ -740,9 +743,21 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// further down the function, which is why we keep the variable
 	// in this outer scope rather than scoping it tighter.
 	var swarmMgr *swarm.Swarm
+	// Attached to a continuous host, swarm agents run as owned conversations
+	// on the host instead of child processes: the host schedules, recovers,
+	// and keeps their transcripts.
+	var swarmRunner func(*swarm.Agent) swarm.Runner
+	if args.Continuous != "" {
+		dial, err := continuousDialer(args)
+		if err != nil {
+			return err
+		}
+		swarmRunner = swarm.NewHostRunnerFactory(dial, continuousWorkspace(args, r))
+	}
 	swarmMgr = swarm.New(swarm.Config{
 		Root:        filepath.Join(ZotHome(), "swarm"),
 		RepoRoot:    r.CWD,
+		NewRunner:   swarmRunner,
 		OnLifecycle: func(e swarm.LifecycleEvent) { emitSwarmLifecycle(extMgr, e) },
 		ResolveCredential: func(ctx context.Context, providerID string) (swarm.Credential, error) {
 			if providerID == "ollama" {
@@ -936,6 +951,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	var ag *core.Agent
 	if r.HasCredential() {
 		ag = wireAgentExt(r)
+	} else if args.Continuous != "" {
+		// Attached mode never calls a provider from this process; the host
+		// holds the credentials. A client-less agent mirrors the transcript.
+		ag = core.NewAgent(nil, r.Model, r.SystemPrompt, r.ToolRegistry)
 	}
 
 	// /reload-ext callback: after the manager has respawned every
@@ -1361,7 +1380,23 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		startupSkills = r.SkillTool.Skills()
 	}
 
+	// Attached execution: the host runs the model and tools, this process
+	// renders committed state. The agent object only mirrors the host's
+	// transcript; its client is never used for requests.
+	var promptDriver func(context.Context, *core.Agent, string, func(core.AgentEvent)) error
+	executionLabel := ""
+	if args.Continuous != "" {
+		attached, label, closeAttached, err := attachContinuous(ctx, args, r, ag)
+		if err != nil {
+			return err
+		}
+		defer closeAttached()
+		promptDriver, executionLabel = attached, label
+	}
+
 	iv = modes.NewInteractive(modes.InteractiveConfig{
+		PromptDriver:                  promptDriver,
+		ExecutionLabel:                executionLabel,
 		Terminal:                      term,
 		Theme:                         theme,
 		InlineImagesEnabled:           initialCfg.InlineImagesEnabled,

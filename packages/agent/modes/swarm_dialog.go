@@ -1095,6 +1095,9 @@ func (d *swarmDialog) renderTranscript(th tui.Theme, width int) []string {
 		}
 		header = append(header, "  "+th.FG256(th.Muted, modelLine))
 	}
+	if a.ConversationID != "" {
+		header = append(header, "  "+th.FG256(th.Muted, "host:   conversation "+a.ConversationID))
+	}
 	if a.Err != "" {
 		header = append(header, "  "+th.FG256(th.Muted, "error:  "+a.Err))
 	}

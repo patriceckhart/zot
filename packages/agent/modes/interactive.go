@@ -347,6 +347,19 @@ type InteractiveConfig struct {
 	// session. When nil (yolo mode), /yolo reports that there's
 	// nothing to disable.
 	ConfirmGate *core.ConfirmGate
+
+	// PromptDriver, when set, replaces the in-process agent loop for
+	// user prompts. A durable host (zot continuous) drives the model and
+	// tools elsewhere and streams events back; the TUI only renders. The
+	// driver must deliver the same event sequence Agent.Prompt would and
+	// keep the agent's transcript in sync through SetMessages or
+	// AppendUserContext. Cancelling ctx detaches the view from the turn;
+	// whether host work stops is the driver's documented policy.
+	PromptDriver func(ctx context.Context, agent *core.Agent, prompt string, sink func(core.AgentEvent)) error
+
+	// ExecutionLabel is shown in the status bar when execution does not
+	// happen in this process, for example "attached: host.sock".
+	ExecutionLabel string
 }
 
 // ChangelogPayload mirrors agent.ChangelogInfo without the import
@@ -1555,6 +1568,7 @@ func (i *Interactive) redraw() {
 		ContextMax:     ctxMax,
 		AutoCompacting: i.autoCompacting,
 		Telegram:       i.telegramBridge != nil && i.telegramBridge.Active(),
+		Execution:      i.cfg.ExecutionLabel,
 		Cols:           cols,
 	})
 	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
@@ -6293,7 +6307,9 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 			return i.compactBetweenTurns(ctx)
 		}
 		var err error
-		if overflowRecoveryAttempted {
+		if i.cfg.PromptDriver != nil && !overflowRecoveryAttempted && tool == nil {
+			err = i.cfg.PromptDriver(ctx, i.agent, prompt, sink)
+		} else if overflowRecoveryAttempted {
 			err = i.agent.Continue(ctx, sink)
 		} else if tool != nil {
 			stopTracking := i.cfg.Extensions.TrackToolCall(tool.call.ID, tool.origin)

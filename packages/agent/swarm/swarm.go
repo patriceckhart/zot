@@ -284,6 +284,14 @@ func (f *Swarm) SendInput(id, msg string) error {
 	if a == nil {
 		return fmt.Errorf("no such agent %q", id)
 	}
+	if direct, ok := a.runner.(interface{ SendInput(string) error }); ok && a.runner != nil {
+		switch a.Status() {
+		case StatusRunning, StatusPending:
+			return direct.SendInput(msg)
+		default:
+			return ErrNotReady
+		}
+	}
 	if a.inbox == nil {
 		return fmt.Errorf("agent %s has no inbox", a.ID)
 	}
@@ -511,11 +519,19 @@ type AgentSnapshot struct {
 	InboxPath    string
 	EventLogPath string
 	SessionPath  string
+
+	// ConversationID is set for agents that run on a continuous host: the
+	// owned conversation that holds the durable transcript.
+	ConversationID string
 }
 
 // Snapshot copies the live agent state into a value the caller can
 // inspect at leisure.
 func (a *Agent) Snapshot() AgentSnapshot {
+	conversationID := ""
+	if hosted, ok := a.runner.(interface{ ConversationID() string }); ok && a.runner != nil {
+		conversationID = hosted.ConversationID()
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	tail := strings.Join(lastN(a.transcript, 6), "\n")
@@ -536,6 +552,8 @@ func (a *Agent) Snapshot() AgentSnapshot {
 		InboxPath:     a.InboxPath,
 		EventLogPath:  a.EventLogPath,
 		SessionPath:   a.SessionPath,
+
+		ConversationID: conversationID,
 	}
 }
 

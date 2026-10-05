@@ -51,6 +51,14 @@ type RegisterToolFromExt struct {
 	Exposure              string          `json:"exposure,omitempty"`
 	Deferred              bool            `json:"deferred,omitempty"`
 	Interactive           bool            `json:"interactive,omitempty"`
+	// Replay declares what a durable host may do when the process died
+	// after this tool's call started and before its result was recorded.
+	// Accepted values are "never" (default), "safe" (read-only, may run
+	// again), "idempotent" (may run again with the same operation key,
+	// delivered as operation_key in the call), and "reconcile" (the host
+	// first sends a tool_call with reconcile true and acts on the answer).
+	// Unknown values are never.
+	Replay string `json:"replay,omitempty"`
 }
 
 type ReadyFromExt struct {
@@ -198,6 +206,17 @@ type ToolCallFromHost struct {
 	ID   string          `json:"id"`
 	Name string          `json:"name"`
 	Args json.RawMessage `json:"args"`
+	// OperationKey is set by durable hosts: the stable idempotency key of
+	// the call, identical across replays of one committed intent. Tools
+	// declaring replay "idempotent" forward it to their receiver. Absent
+	// for ordinary sessions.
+	OperationKey string `json:"operation_key,omitempty"`
+	// Reconcile asks a tool declaring replay "reconcile" whether the
+	// operation identified by OperationKey completed, without performing
+	// it. The extension answers with a tool_result whose structured_content
+	// is {"state":"completed"|"not_started"|"unknown"} and, for completed,
+	// the recovered content blocks.
+	Reconcile bool `json:"reconcile,omitempty"`
 }
 
 // CallToolFromExt asks the host to execute an active tool. ParentID is set

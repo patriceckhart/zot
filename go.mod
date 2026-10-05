@@ -8,6 +8,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.19.0
 	github.com/mattn/go-runewidth v0.0.16
+	github.com/ncruces/go-sqlite3 v0.32.0
 	github.com/sahilm/fuzzy v0.1.1
 	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/image v0.43.0
@@ -22,6 +23,7 @@ require (
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
+	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 )

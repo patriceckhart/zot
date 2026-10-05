@@ -27,6 +27,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 - standing instructions via `AGENTS.md` files (global and per-project); see [Persistent instructions](#persistent-instructions-agentsmd).
 - reusable instructions via `SKILL.md` files; see [docs/skills.md](docs/skills.md).
 - portable agents from local directories, `.zot` files, or temporary public GitHub downloads; see [docs/zotfiles.md](docs/zotfiles.md).
+- durable, crash-recoverable runs in a persistent local store via `zot continuous run`, or hosted for multiple clients with `zot continuous serve`, `zot continuous attach`, and `zot --continuous`. Interrupted tools are reported, never silently repeated; approvals, steering, budgets, and tasks are persisted. Experimental, see [docs/continuous.md](docs/continuous.md).
 
 ## Install
 
@@ -461,6 +462,8 @@ Background subagents that run alongside your main session. Each one is a separat
 **Persistence across zot restarts** — every spawn writes a `meta.json` next to its event log and session file under `$ZOT_HOME/swarm/agents/<id>/`. On the next `zot` launch they show up in the dashboard as **detached**; press `R` (or `/swarm resume <id>`) to bring one back. Startup reads only the last 4 MiB of each large event log. Opening `/swarm` or resuming an agent loads its full log on demand, which can briefly delay that action for very large logs. The displayed transcript still retains at most 2000 lines. Resumed agents reattach to the same session and inbox socket, so the conversation continues from where it left off.
 
 **Where state lives** — everything per-agent (session file, events log, inbox socket, meta) lives under `$ZOT_HOME/swarm/agents/<id>/`. The agent's actual code edits land directly in your repo; track them with normal `git status` / `git diff`.
+
+**On a continuous host.** When zot is attached with `--continuous`, swarm agents do not run as child processes. Each one is an owned conversation on the host, scheduled and recovered there, and the dashboard mirrors its committed transcript. Kill detaches, resume reattaches to the same conversation. See [docs/continuous.md](docs/continuous.md#swarm-on-a-host).
 
 **`/session export` does NOT bundle subagents.** A `.zotsession` is just the main chat transcript; per-agent state (session file, unix-socket inbox) is machine-local and doesn't round-trip through a JSONL file. To share what an agent said, copy it out of the transcript view manually.
 

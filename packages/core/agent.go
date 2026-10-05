@@ -574,8 +574,35 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 	return nil
 }
 
+// Turn performs exactly one model request against the current transcript and
+// appends the assembled assistant message. It runs no tools and no agent-level
+// retries, so a durable host can commit the request intent before and the
+// response after this single boundary. The returned message is the complete
+// assistant message even when the stream was aborted.
+func (a *Agent) Turn(ctx context.Context, sink func(AgentEvent)) (provider.StopReason, provider.Message, error) {
+	if sink == nil {
+		sink = func(AgentEvent) {}
+	}
+	sink = a.wrapSink(sink)
+	if err := ctx.Err(); err != nil {
+		return provider.StopAborted, provider.Message{}, err
+	}
+	stop, msg, err := a.oneTurn(ctx, sink)
+	sink(EvTurnEnd{Stop: stop, Err: err})
+	return stop, msg, err
+}
+
 func (a *Agent) canRetryError(err error, attempt int) bool {
 	if err == nil || a.MaxRetries <= 0 || attempt >= a.MaxRetries {
+		return false
+	}
+	return RetryableProviderError(err)
+}
+
+// RetryableProviderError classifies a provider failure as transient. Context
+// cancellation and usage or billing limits are never retryable.
+func RetryableProviderError(err error) bool {
+	if err == nil {
 		return false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -958,12 +985,18 @@ func (a *Agent) runTool(ctx context.Context, tc provider.ToolCallBlock, sink fun
 				res = ToolResult{
 					Content: []provider.Content{provider.TextBlock{Text: "aborted: " + err.Error()}},
 					IsError: true,
+					Status:  status,
 				}
 				return
 			}
 			res = ToolResult{
 				Content: []provider.Content{provider.TextBlock{Text: err.Error()}},
 				IsError: true,
+			}
+			if status == "unknown" {
+				// Preserve the distinction for durable hosts; the model
+				// still sees an error result in ordinary sessions.
+				res.Status = status
 			}
 			return
 		}
@@ -1007,6 +1040,9 @@ func (a *Agent) runTool(ctx context.Context, tc provider.ToolCallBlock, sink fun
 }
 
 func executionErrorStatus(err error) string {
+	if errors.Is(err, ErrToolOutcomeUnknown) {
+		return "unknown"
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timed_out"
 	}
@@ -1059,6 +1095,16 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// MessageText joins the text blocks of a message with newlines. Tool calls,
+// images, and reasoning blocks are omitted.
+func MessageText(msg provider.Message) string { return extractText(msg) }
+
+// ToolResultText joins the text blocks of a tool result for display and
+// indexing. Images are omitted.
+func ToolResultText(res ToolResult) string {
+	return extractText(provider.Message{Content: res.Content})
 }
 
 func extractText(msg provider.Message) string {

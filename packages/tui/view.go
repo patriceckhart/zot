@@ -2561,6 +2561,11 @@ type StatusBarParams struct {
 	// glance that dms are being mirrored into this session.
 	Telegram bool
 
+	// Execution names where model and tool work happens when it is not
+	// this process, for example "attached: host.sock". Empty means
+	// embedded execution and adds no tag.
+	Execution string
+
 	Cols int // terminal width; drives right-alignment of cwd
 }
 
@@ -2679,6 +2684,9 @@ func StatusBar(p StatusBarParams) []string {
 	}
 	if p.Telegram {
 		tags += "telegram connected "
+	}
+	if p.Execution != "" {
+		tags += p.Execution + " "
 	}
 	if tags != "" && cwd != "" {
 		cwd = tags + "- " + cwd

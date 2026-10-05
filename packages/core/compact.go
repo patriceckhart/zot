@@ -53,56 +53,10 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 		return "", fmt.Errorf("nothing to compact: keep-tail covers the whole transcript")
 	}
 
-	// Serialize the summarizable transcript to text and wrap it in tags
-	// so the model treats it as material to summarize, not to continue.
-	transcript := serializeTranscript(summarizable)
-
-	prompt := "<conversation>\n" + transcript + "\n</conversation>\n\n" + compactionPrompt
-
-	req := provider.Request{
-		Model:       a.Model,
-		System:      summarizationSystem,
-		MaxTokens:   4096,
-		Temperature: a.Temperature,
-		SessionID:   a.SessionID,
-		Messages: []provider.Message{
-			{
-				Role:    provider.RoleUser,
-				Content: []provider.Content{provider.TextBlock{Text: prompt}},
-				Time:    time.Now(),
-			},
-		},
-	}
-
-	stream, err := a.Client.Stream(ctx, req)
+	summary, tokensBefore, err := a.Summarize(ctx, summarizable, "", sink)
 	if err != nil {
 		return "", err
 	}
-
-	var sb strings.Builder
-	for ev := range stream {
-		switch e := ev.(type) {
-		case provider.EventTextDelta:
-			sb.WriteString(e.Delta)
-			if sink != nil {
-				sink(e.Delta)
-			}
-		case provider.EventDone:
-			if e.Err != nil {
-				return "", e.Err
-			}
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	summary = strings.TrimSpace(sb.String())
-	if summary == "" {
-		return "", fmt.Errorf("empty summary from model")
-	}
-
-	// Estimate token count before compaction (rough: 1 token ~ 4 chars).
-	tokensBefore := len(transcript) / 4
 
 	// Replace transcript: one synthetic user message with the summary,
 	// followed by the preserved tail (if any).
@@ -154,6 +108,74 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 	}
 
 	return summary, nil
+}
+
+// Summarize requests a summary of the given messages without changing the
+// transcript. Durable hosts use it as one model request between two commits
+// and publish the summary themselves. Extra instructions, when given, are
+// appended to the compaction prompt. It returns the summary and a rough
+// token estimate of the summarized text.
+func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, instructions string, sink func(delta string)) (string, int, error) {
+	if len(messages) == 0 {
+		return "", 0, fmt.Errorf("nothing to summarize")
+	}
+	// Serialize the summarizable transcript to text and wrap it in tags
+	// so the model treats it as material to summarize, not to continue.
+	transcript := serializeTranscript(messages)
+	prompt := "<conversation>\n" + transcript + "\n</conversation>\n\n" + compactionPrompt
+	if strings.TrimSpace(instructions) != "" {
+		prompt += "\n\nAdditional instructions: " + strings.TrimSpace(instructions)
+	}
+	req := provider.Request{
+		Model:       a.Model,
+		System:      summarizationSystem,
+		MaxTokens:   4096,
+		Temperature: a.Temperature,
+		SessionID:   a.SessionID,
+		Messages: []provider.Message{
+			{
+				Role:    provider.RoleUser,
+				Content: []provider.Content{provider.TextBlock{Text: prompt}},
+				Time:    time.Now(),
+			},
+		},
+	}
+	stream, err := a.Client.Stream(ctx, req)
+	if err != nil {
+		return "", 0, err
+	}
+	var sb strings.Builder
+	for ev := range stream {
+		switch e := ev.(type) {
+		case provider.EventTextDelta:
+			sb.WriteString(e.Delta)
+			if sink != nil {
+				sink(e.Delta)
+			}
+		case provider.EventUsage:
+			a.mu.Lock()
+			lastTurn := a.cost.LastTurn
+			cum := a.cost.Add(e.Usage)
+			a.cost.LastTurn = lastTurn
+			a.mu.Unlock()
+			if a.OnUsage != nil {
+				a.OnUsage(cum)
+			}
+		case provider.EventDone:
+			if e.Err != nil {
+				return "", 0, e.Err
+			}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
+	summary := strings.TrimSpace(sb.String())
+	if summary == "" {
+		return "", 0, fmt.Errorf("empty summary from model")
+	}
+	// Rough estimate: 1 token is about 4 characters.
+	return summary, len(transcript) / 4, nil
 }
 
 // repairOrphanedToolResults removes tool_result content blocks (and

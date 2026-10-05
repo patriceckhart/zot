@@ -32,6 +32,7 @@ import (
 
 	"github.com/patriceckhart/zot/packages/agent/extproto"
 	"github.com/patriceckhart/zot/packages/agent/skills"
+	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/tui"
 )
 
@@ -962,6 +963,14 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 				ext.recordDiagnostic(fmt.Sprintf("tool %q has unknown exposure %q, skipped", rt.Name, rt.Exposure))
 				continue
 			}
+			switch rt.Replay {
+			case "", "never", "safe", "idempotent", "reconcile":
+			default:
+				// A replay policy the host does not understand must not
+				// widen replay: record it and treat the tool as never.
+				ext.recordDiagnostic(fmt.Sprintf("tool %q has unknown replay policy %q, treated as never", rt.Name, rt.Replay))
+				rt.Replay = ""
+			}
 			// Validate the schema parses as JSON. If not, refuse to
 			// register — a broken schema confuses the model.
 			if len(rt.Schema) > 0 {
@@ -1263,6 +1272,7 @@ type ToolInfo struct {
 	Exposure              string
 	Deferred              bool
 	Interactive           bool
+	Replay                string
 }
 
 // Tools returns a snapshot of every (extension, tool) pair currently
@@ -1286,6 +1296,7 @@ func (m *Manager) Tools() []ToolInfo {
 				Exposure:              t.Exposure,
 				Deferred:              t.Deferred,
 				Interactive:           t.Interactive,
+				Replay:                t.Replay,
 			})
 		}
 	}
@@ -1304,6 +1315,16 @@ func (m *Manager) HasTool(name string) bool {
 // the matching tool_result. Used by the core.Tool wrapper that the
 // agent registers per extension-defined tool.
 func (m *Manager) InvokeTool(ctx context.Context, name string, args json.RawMessage, timeout time.Duration) (extproto.ToolResultFromExt, error) {
+	return m.invokeTool(ctx, name, args, timeout, false)
+}
+
+// ReconcileTool asks the extension whether the operation with the key in ctx
+// completed. The extension must not perform the operation.
+func (m *Manager) ReconcileTool(ctx context.Context, name string, args json.RawMessage, timeout time.Duration) (extproto.ToolResultFromExt, error) {
+	return m.invokeTool(ctx, name, args, timeout, true)
+}
+
+func (m *Manager) invokeTool(ctx context.Context, name string, args json.RawMessage, timeout time.Duration, reconcile bool) (extproto.ToolResultFromExt, error) {
 	if err := ctx.Err(); err != nil {
 		return extproto.ToolResultFromExt{}, err
 	}
@@ -1337,10 +1358,12 @@ func (m *Manager) InvokeTool(ctx context.Context, name string, args json.RawMess
 	}()
 
 	frame, _ := extproto.Encode(extproto.ToolCallFromHost{
-		Type: "tool_call",
-		ID:   id,
-		Name: name,
-		Args: args,
+		Type:         "tool_call",
+		ID:           id,
+		Name:         name,
+		Args:         args,
+		OperationKey: core.ToolOperationKey(ctx),
+		Reconcile:    reconcile,
 	})
 	var disconnected <-chan struct{}
 	var err error

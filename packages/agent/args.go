@@ -57,6 +57,18 @@ type Args struct {
 	Session  string
 	NoSess   bool
 
+	// Continuous attaches the interactive TUI to a running
+	// `zot continuous serve` host instead of executing in-process. The
+	// value is a Unix socket path or loopback host:port. The store is the
+	// authority, so session files are disabled. ContinuousWorkspace selects
+	// the workspace root conversation (default: cwd), ContinuousToken the
+	// shared secret for token-protected hosts.
+	Continuous          string
+	ContinuousWorkspace string
+	ContinuousToken     string
+	ContinuousTokenFile string
+	ContinuousTLSCA     string
+
 	CWD              string
 	NoTools          bool
 	Tools            []string
@@ -172,6 +184,37 @@ func ParseArgs(in []string) (Args, error) {
 			a.Resume = true
 		case "--no-session":
 			a.NoSess = true
+		case "--continuous":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			a.Continuous = v
+			a.NoSess = true
+		case "--continuous-workspace":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			a.ContinuousWorkspace = v
+		case "--continuous-token":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			a.ContinuousToken = v
+		case "--continuous-token-file":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			a.ContinuousTokenFile = v
+		case "--continuous-tls-ca":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			a.ContinuousTLSCA = v
 		case "--no-tools":
 			a.NoTools = true
 		case "--codemode":
@@ -326,6 +369,14 @@ func ParseArgs(in []string) (Args, error) {
 		a.Prompt = strings.Join(positional, " ")
 	}
 
+	if a.Continuous != "" {
+		if a.Mode != ModeInteractive {
+			return a, fmt.Errorf("--continuous attaches the interactive TUI and cannot be combined with print, stream, json, or rpc modes")
+		}
+		if a.Continue || a.Resume || a.Session != "" {
+			return a, fmt.Errorf("--continuous uses the host's store; session flags do not apply")
+		}
+	}
 	if a.StatsPath != "" && a.Mode != ModePrint {
 		return a, fmt.Errorf("--stats requires -p or --print")
 	}
@@ -431,6 +482,14 @@ func printHelp(out *os.File, version string) {
 		row{"zot sessions prune", "select sessions for directories that no longer exist"},
 		row{"zot sessions prune --older-than 30d", "select sessions by time since last activity"},
 		row{"zot sessions prune --dry-run", "list matching session groups without deleting them"},
+	)
+	section("continuous (experimental)",
+		row{"zot continuous run \"<prompt>\" --store <dir>", "durable, crash-recoverable run in a persistent store"},
+		row{"zot continuous run --resume --store <dir>", "continue an interrupted run"},
+		row{"zot continuous serve --store <dir>", "host a store for attachable clients"},
+		row{"zot continuous attach \"<prompt>\" --socket <path> --workspace <id>", "submit to a running host"},
+		row{"zot --continuous <socket|host:port> [--continuous-workspace <id>]", "interactive TUI attached to a running host"},
+		row{"zot continuous --help", "import/export, inspection, backup and restore"},
 	)
 	section("telegram",
 		row{"zot telegram-bot setup", "configure a telegram bot (from BotFather)"},

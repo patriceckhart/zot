@@ -638,6 +638,38 @@ cooperative, the SDK cannot stop a handler that ignores its context. It
 cancels active handler contexts on `tool_cancel`, shutdown, or host EOF.
 Existing `Tool` and `DeferredTool` handlers remain source-compatible.
 
+#### Durable replay policy
+
+Under zot continuous (see [docs/continuous.md](continuous.md)) a crash can
+happen after a tool call started and before its result was recorded. The
+host then consults the tool's replay policy. Extension tools default to
+`never`: the interruption is reported to the model and the call is not
+repeated. Set `"replay"` on `register_tool` to opt in:
+
+```json
+{"type":"register_tool","name":"lookup","schema":{"type":"object"},
+ "replay":"safe"}
+```
+
+- `safe`: read-only, may run again with the same arguments after a fresh
+  authorization check.
+- `idempotent`: may run again with the same stable operation key. Durable
+  hosts send it as `operation_key` on `tool_call`; the extension must forward
+  it to the receiver, and the receiver must enforce it. The guarantee is only
+  as strong as that receiver.
+- `reconcile`: before deciding, the host sends a `tool_call` with
+  `"reconcile": true` and the operation key. The extension must not perform
+  the operation; it answers with a `tool_result` whose `structured_content`
+  is `{"state":"completed"}` (with the recovered content blocks),
+  `{"state":"not_started"}`, or `{"state":"unknown"}`. Completed recovers
+  the result, not started executes once, unknown is reported to the model.
+
+Unknown values are recorded as a diagnostic and treated as `never`. The Go
+SDK sets the policy through `ToolOptions.Replay`, reads the key with
+`ext.OperationKey(ctx)`, and registers a reconciliation handler with
+`e.Reconciler(name, fn)`. Ordinary sessions never send `operation_key` or
+`reconcile`.
+
 The registration field is additive and does not change the protocol version.
 Older hosts ignore it and still apply their normal timeout. Legacy extensions
 that do not advertise `"tool_cancel"` receive no cancellation frames. The host
@@ -655,6 +687,9 @@ responsible for validating/coercing it.
 {"type":"tool_call","id":"...","name":"weather",
  "args":{"city":"Berlin"}}
 ```
+
+Durable hosts add `"operation_key"`, the stable idempotency key of the call
+(see Durable replay policy). Ordinary sessions omit it.
 
 Reply with `tool_result` within the host's tool timeout (default 60s).
 Interactive tools have no reply timeout. Missing a bounded timeout surfaces

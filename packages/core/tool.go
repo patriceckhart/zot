@@ -6,6 +6,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -31,6 +32,95 @@ type Tool interface {
 type ToolPreviewer interface {
 	Preview(ctx context.Context, args json.RawMessage) (ToolResult, error)
 }
+
+// ToolReplayer is optionally implemented by tools that declare what a durable
+// host may do when the process died after their intent was recorded but before
+// their result was. Tools without it are treated as ReplayNever: an interrupted
+// call is reported to the model as an error, never repeated automatically.
+type ToolReplayer interface {
+	ReplayPolicy() ToolReplayPolicy
+}
+
+// ToolReplayPolicy is the replay contract of a tool after an ambiguous crash.
+type ToolReplayPolicy string
+
+const (
+	// ReplayNever reports the interruption and leaves the decision to a human.
+	ReplayNever ToolReplayPolicy = "never"
+	// ReplaySafe allows re-execution with the same arguments after a fresh
+	// authorization check. Only read-only tools should declare it.
+	ReplaySafe ToolReplayPolicy = "safe"
+	// ReplayIdempotent allows re-execution with the same arguments and the
+	// same stable operation key. The tool must pass the key to the external
+	// receiver, which must enforce it; the guarantee is only as strong as
+	// that receiver. The key is read with ToolOperationKey.
+	ReplayIdempotent ToolReplayPolicy = "idempotent"
+	// ReplayReconcile asks the tool, through ToolReconciler, whether the
+	// interrupted operation completed before deciding. Unknown outcomes are
+	// reported, never retried automatically.
+	ReplayReconcile ToolReplayPolicy = "reconcile"
+)
+
+// ReplayPolicyOf returns the declared replay policy, defaulting to ReplayNever.
+// A tool declaring ReplayReconcile without implementing ToolReconciler is
+// treated as ReplayNever, so a missing method never widens replay.
+func ReplayPolicyOf(t Tool) ToolReplayPolicy {
+	r, ok := t.(ToolReplayer)
+	if !ok {
+		return ReplayNever
+	}
+	switch p := r.ReplayPolicy(); p {
+	case ReplaySafe, ReplayIdempotent:
+		return p
+	case ReplayReconcile:
+		if _, ok := t.(ToolReconciler); ok {
+			return p
+		}
+	}
+	return ReplayNever
+}
+
+// ReconcileOutcome is the answer of a ToolReconciler.
+type ReconcileOutcome string
+
+const (
+	// ReconcileCompleted means the effect happened; Result holds its output.
+	ReconcileCompleted ReconcileOutcome = "completed"
+	// ReconcileNotStarted means the effect did not happen; the call may run.
+	ReconcileNotStarted ReconcileOutcome = "not_started"
+	// ReconcileUnknown means the tool cannot tell; the host reports it.
+	ReconcileUnknown ReconcileOutcome = "unknown"
+)
+
+// ToolReconciler is implemented by tools with ReplayReconcile. Reconcile is a
+// read-only lookup of the operation identified by key and args; it must not
+// perform the effect.
+type ToolReconciler interface {
+	Reconcile(ctx context.Context, key string, args json.RawMessage) (ReconcileOutcome, ToolResult, error)
+}
+
+type toolOperationKey struct{}
+
+// WithToolOperationKey attaches the stable operation key of a durable tool
+// call to ctx. Hosts set it before Execute; tools with ReplayIdempotent read
+// it with ToolOperationKey and forward it to their external receiver.
+func WithToolOperationKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, toolOperationKey{}, key)
+}
+
+// ToolOperationKey returns the operation key set by the host, or "" when the
+// call is not durable.
+func ToolOperationKey(ctx context.Context) string {
+	key, _ := ctx.Value(toolOperationKey{}).(string)
+	return key
+}
+
+// ErrToolOutcomeUnknown is returned by a tool when it started an external
+// operation and lost track of it (for example a remote worker disconnected).
+// A durable host treats it like a crash after the intent commit: the call
+// stays recorded as running and recovery applies the replay contract. An
+// ordinary session reports it as a failed call.
+var ErrToolOutcomeUnknown = errors.New("tool outcome unknown")
 
 // ToolPolicyError marks a tool-local policy refusal without changing its text.
 // It does not imply that other calls in the same batch were rolled back.

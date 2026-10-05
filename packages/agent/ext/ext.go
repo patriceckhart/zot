@@ -333,6 +333,7 @@ type Extension struct {
 	descriptions  []descTuple // ordered so register frames arrive in registration order
 	tools         map[string]InteractiveToolHandler
 	toolCancels   map[string]context.CancelFunc
+	reconcilers   map[string]ReconcileHandler
 	pendingCalls  map[string]chan extproto.ToolResultFromHost
 	callSeq       atomic.Uint64
 	callToolReady atomic.Bool
@@ -373,6 +374,7 @@ type toolDef struct {
 	exposure              string
 	deferred              bool
 	interactive           bool
+	replay                string
 }
 
 // HostInfo is what the host (zot) tells us in HelloAck. Useful for
@@ -507,6 +509,44 @@ type ToolOptions struct {
 	Exposure              string
 	Deferred              bool
 	Interactive           bool
+	// Replay declares the tool's durable replay contract: "" or "never"
+	// (default), "safe" for read-only tools, or "idempotent" for tools that
+	// forward the call's OperationKey to a receiver that enforces it.
+	Replay string
+}
+
+type operationKeyKey struct{}
+
+// Reconciliation is the answer of a ReconcileHandler. State is "completed",
+// "not_started", or "unknown". Result carries the recovered output when the
+// operation completed.
+type Reconciliation struct {
+	State  string
+	Result ToolResult
+}
+
+// ReconcileHandler answers whether the operation identified by key (the
+// host's operation key) completed. It must not perform the operation.
+type ReconcileHandler func(ctx context.Context, key string, args json.RawMessage) Reconciliation
+
+// Reconciler registers the reconciliation handler for a tool registered with
+// Replay "reconcile". Without one, every reconciliation answers unknown.
+func (e *Extension) Reconciler(tool string, fn ReconcileHandler) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.reconcilers == nil {
+		e.reconcilers = map[string]ReconcileHandler{}
+	}
+	e.reconcilers[tool] = fn
+}
+
+// OperationKey returns the durable host's stable idempotency key for the
+// tool call running under ctx, or "" when the host is not durable. Tools
+// registered with Replay "idempotent" must forward it to the receiver that
+// deduplicates on it.
+func OperationKey(ctx context.Context) string {
+	key, _ := ctx.Value(operationKeyKey{}).(string)
+	return key
 }
 
 // ToolWithOptions registers a context-aware tool. Cancellation applies to all
@@ -519,7 +559,7 @@ func (e *Extension) ToolWithOptions(name, description string, schema json.RawMes
 	e.toolDefs = append(e.toolDefs, toolDef{name: name, description: description, schema: schema,
 		outputSchema: options.OutputSchema, namespace: options.Namespace, namespaceDescription: options.NamespaceDescription,
 		namespaceInstructions: options.NamespaceInstructions, exposure: options.Exposure,
-		deferred: options.Deferred, interactive: options.Interactive})
+		deferred: options.Deferred, interactive: options.Interactive, replay: options.Replay})
 }
 
 // DeferredTool registers a tool whose definition stays hidden until another
@@ -709,6 +749,7 @@ func (e *Extension) Run() error {
 			Exposure:              td.exposure,
 			Deferred:              td.deferred,
 			Interactive:           td.interactive,
+			Replay:                td.replay,
 		})
 	}
 	var intercepts []string
@@ -783,6 +824,28 @@ func (e *Extension) Run() error {
 				continue
 			}
 			ctx, cancel := context.WithCancel(context.WithValue(context.Background(), parentCallKey{}, tc.ID))
+			if tc.OperationKey != "" {
+				ctx = context.WithValue(ctx, operationKeyKey{}, tc.OperationKey)
+			}
+			if tc.Reconcile {
+				e.mu.Lock()
+				rec := e.reconcilers[tc.Name]
+				e.mu.Unlock()
+				if rec == nil {
+					e.respondTool(tc.ID, ToolResult{StructuredContent: json.RawMessage(`{"state":"unknown"}`)})
+					cancel()
+					continue
+				}
+				go func(id string, args json.RawMessage) {
+					defer cancel()
+					outcome := rec(ctx, tc.OperationKey, args)
+					state, _ := json.Marshal(map[string]string{"state": outcome.State})
+					res := outcome.Result
+					res.StructuredContent = state
+					e.respondTool(id, res)
+				}(tc.ID, tc.Args)
+				continue
+			}
 			e.mu.Lock()
 			e.toolCancels[tc.ID] = cancel
 			e.mu.Unlock()

@@ -40,6 +40,9 @@ func (t *GlobTool) Description() string {
 }
 func (t *GlobTool) Schema() json.RawMessage { return json.RawMessage(globSchema) }
 
+// ReplayPolicy declares glob safe to repeat after an interrupted durable run.
+func (t *GlobTool) ReplayPolicy() core.ToolReplayPolicy { return core.ReplaySafe }
+
 func (t *GlobTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
 	var a globArgs
 	if err := json.Unmarshal(raw, &a); err != nil {

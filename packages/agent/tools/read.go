@@ -44,6 +44,10 @@ func (t *ReadTool) Description() string {
 }
 func (t *ReadTool) Schema() json.RawMessage { return json.RawMessage(readSchema) }
 
+// ReplayPolicy declares reads safe to repeat after an interrupted durable run.
+// Reading has no external effect; a repeat returns current file contents.
+func (t *ReadTool) ReplayPolicy() core.ToolReplayPolicy { return core.ReplaySafe }
+
 func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
 	var a readArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
