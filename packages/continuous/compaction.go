@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -214,6 +213,9 @@ func (r *Runtime) summarize(ctx context.Context, engine Engine, conversationID, 
 	} else if ok && run.Phase != "done" && reason == "manual" {
 		return nil, ErrBusy
 	}
+	if _, ok := snap.Get(chainKey(conversationID)); ok && reason == "manual" {
+		return nil, ErrBusy
+	}
 	head, err := selectCut(ctx, snap, conversationID, c.EntrySequence, keepTokens)
 	if err != nil {
 		return nil, err
@@ -258,57 +260,92 @@ func (r *Runtime) summarize(ctx context.Context, engine Engine, conversationID, 
 	return pending, nil
 }
 
+// PendingSummary is the durable form of a computed, unpublished summary. It
+// is the result of a compaction task, so a summary survives a restart until
+// a request boundary publishes or discards it.
+type PendingSummary struct {
+	ConversationID  string         `json:"conversation_id"`
+	Head            uint64         `json:"head"`
+	ContextRevision uint64         `json:"context_revision"`
+	Reason          string         `json:"reason"`
+	Summary         string         `json:"summary"`
+	TokensBefore    int            `json:"tokens_before"`
+	Provider        string         `json:"provider"`
+	Model           string         `json:"model"`
+	Usage           provider.Usage `json:"usage"`
+	UsageKnown      bool           `json:"usage_known"`
+}
+
+func (p *pendingCompaction) durable() PendingSummary {
+	return PendingSummary{ConversationID: p.conversationID, Head: p.head, ContextRevision: p.contextRevision, Reason: p.reason, Summary: p.summary, TokensBefore: p.tokensBefore, Provider: p.provider, Model: p.model, Usage: p.usage, UsageKnown: p.usageKnown}
+}
+
+func (d PendingSummary) pending() *pendingCompaction {
+	return &pendingCompaction{conversationID: d.ConversationID, head: d.Head, contextRevision: d.ContextRevision, reason: d.Reason, summary: d.Summary, tokensBefore: d.TokensBefore, provider: d.Provider, model: d.Model, usage: d.Usage, usageKnown: d.UsageKnown}
+}
+
+// compactionOps builds the publication of a summary against snap: the
+// compaction entry, its usage row, and the conversation counters, which it
+// advances on c. It returns ErrCompactionStale when a reset or compaction at
+// or after the head superseded the summarized range.
+func compactionOps(ctx context.Context, snap storage.Snapshot, c *Conversation, p *pendingCompaction) ([]storage.Operation, error) {
+	stale := false
+	if err := History(ctx, snap, c.ID, c.EntrySequence, func(owner string, seq uint64, e Entry) error {
+		if owner == c.ID && seq >= p.head && (e.Type == entryReset || e.Type == entryCompaction) {
+			stale = true
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if stale {
+		return nil, ErrCompactionStale
+	}
+	c.EntrySequence++
+	c.UsageSequence++
+	c.Revision = snap.Revision() + 1
+	info := CompactionInfo{Head: p.head, Reason: p.reason, TokensBefore: p.tokensBefore, ContextRevision: p.contextRevision}
+	entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, Revision: c.Revision, Type: entryCompaction, Content: p.summary, Time: time.Now().UTC()}
+	entry.Message = marshalMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "## Context Summary (compacted)\n\n" + p.summary}}, Time: time.Now().UTC(), Meta: map[string]string{"compaction": "true", "head": fmt.Sprint(p.head)}})
+	entry.Data = marshalAny(info)
+	status := "unknown"
+	if p.usageKnown {
+		status = "known"
+	}
+	ledger := record(usageKey(c.ID, c.UsageSequence), UsageRecord{ConversationID: c.ID, RunID: "compaction", Turn: 1, Attempt: 1, Provider: p.provider, Model: p.model, Usage: p.usage, Status: status, Source: "model", Tool: "compaction", Time: time.Now().UTC()})
+	return []storage.Operation{record("conversation/"+c.ID, *c), record(entryKey(c.ID, c.EntrySequence), entry), ledger}, nil
+}
+
 // publishCompaction commits a summary as a compaction entry after checking
 // that its source range is still the active context. New entries after the
 // head are kept verbatim; a reset or compaction at or after the head makes
 // the summary stale and it is discarded.
 func (r *Runtime) publishCompaction(ctx context.Context, p *pendingCompaction, sink func(core.AgentEvent)) (Conversation, error) {
-	conversationID, head := p.conversationID, p.head
 	for {
 		snap, err := r.store.Snapshot(ctx)
 		if err != nil {
 			return Conversation{}, err
 		}
-		latest, err := conversation(snap, conversationID)
+		latest, err := conversation(snap, p.conversationID)
 		if err != nil {
 			return Conversation{}, err
 		}
-		// Stale check: the context boundary must not have moved past the
-		// range we summarized. New entries after the head are fine (they are
-		// kept verbatim); a reset or compaction at or after the head is not.
-		stale := false
-		if err := History(ctx, snap, conversationID, latest.EntrySequence, func(owner string, seq uint64, e Entry) error {
-			if owner == conversationID && seq >= head && (e.Type == entryReset || e.Type == entryCompaction) {
-				stale = true
+		ops, err := compactionOps(ctx, snap, &latest, p)
+		if errors.Is(err, ErrCompactionStale) {
+			if sink != nil {
+				sink(core.EvCompact{Phase: "post", ID: p.conversationID, Status: "failed", Err: ErrCompactionStale})
 			}
-			return nil
-		}); err != nil {
+			return latest, err
+		}
+		if err != nil {
 			return Conversation{}, err
 		}
-		if stale {
-			if sink != nil {
-				sink(core.EvCompact{Phase: "post", ID: conversationID, Status: "failed", Err: ErrCompactionStale})
-			}
-			return latest, ErrCompactionStale
-		}
-		latest.EntrySequence++
-		latest.UsageSequence++
-		latest.Revision = snap.Revision() + 1
-		info := CompactionInfo{Head: head, Reason: p.reason, TokensBefore: p.tokensBefore, ContextRevision: p.contextRevision}
-		entry := Entry{ID: uuid.NewString(), ConversationID: conversationID, Revision: latest.Revision, Type: entryCompaction, Content: p.summary, Time: time.Now().UTC()}
-		entry.Message = marshalMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "## Context Summary (compacted)\n\n" + p.summary}}, Time: time.Now().UTC(), Meta: map[string]string{"compaction": "true", "head": fmt.Sprint(head)}})
-		entry.Data = marshalAny(info)
-		status := "unknown"
-		if p.usageKnown {
-			status = "known"
-		}
-		ledger := record(usageKey(conversationID, latest.UsageSequence), UsageRecord{ConversationID: conversationID, RunID: "compaction", Turn: 1, Attempt: 1, Provider: p.provider, Model: p.model, Usage: p.usage, Status: status, Source: "model", Tool: "compaction", Time: time.Now().UTC()})
-		err = r.commit(ctx, snap, "conversation.compact", record("conversation/"+conversationID, latest), record(entryKey(conversationID, latest.EntrySequence), entry), ledger)
+		err = r.commit(ctx, snap, "conversation.compact", ops...)
 		if errors.Is(err, storage.ErrConflict) {
 			continue
 		}
 		if sink != nil {
-			sink(core.EvCompact{Phase: "post", ID: conversationID, Status: "completed", TokenEstimate: p.tokensBefore})
+			sink(core.EvCompact{Phase: "post", ID: p.conversationID, Status: "completed", TokenEstimate: p.tokensBefore})
 		}
 		return latest, err
 	}
@@ -346,65 +383,6 @@ func isContextOverflow(err error) bool {
 	return false
 }
 
-// backgroundCompactor runs at most one summary per conversation concurrently
-// with execution and holds the result until a request boundary publishes it.
-type backgroundCompactor struct {
-	mu      sync.Mutex
-	running map[string]bool
-	ready   map[string]*pendingCompaction
-	// stale counts summaries discarded at publication, for metrics.
-	stale    uint64
-	started  uint64
-	finished uint64
-	wg       sync.WaitGroup
-}
-
-func newBackgroundCompactor() *backgroundCompactor {
-	return &backgroundCompactor{running: map[string]bool{}, ready: map[string]*pendingCompaction{}}
-}
-
-// start begins a summary for the conversation unless one is running or
-// waiting for publication. The summary runs on ctx, which is the host's
-// context, so shutdown cancels it; a cancelled summary is never published.
-func (b *backgroundCompactor) start(ctx context.Context, r *Runtime, engine Engine, conversationID string, keepTokens int, sink func(core.AgentEvent)) bool {
-	b.mu.Lock()
-	if b.running[conversationID] || b.ready[conversationID] != nil {
-		b.mu.Unlock()
-		return false
-	}
-	b.running[conversationID] = true
-	b.started++
-	b.mu.Unlock()
-	b.wg.Add(1)
-	go func() {
-		defer b.wg.Done()
-		pending, err := r.summarize(ctx, engine, conversationID, "", keepTokens, "background", sink)
-		b.mu.Lock()
-		delete(b.running, conversationID)
-		b.finished++
-		if err == nil {
-			b.ready[conversationID] = pending
-		}
-		b.mu.Unlock()
-	}()
-	return true
-}
-
-// take removes and returns a summary waiting for publication.
-func (b *backgroundCompactor) take(conversationID string) *pendingCompaction {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	p := b.ready[conversationID]
-	delete(b.ready, conversationID)
-	return p
-}
-
-func (b *backgroundCompactor) markStale() {
-	b.mu.Lock()
-	b.stale++
-	b.mu.Unlock()
-}
-
 // CompactionMetrics reports background compaction activity.
 type CompactionMetrics struct {
 	Started  uint64 `json:"started"`
@@ -414,18 +392,37 @@ type CompactionMetrics struct {
 	Stale    uint64 `json:"stale"`
 }
 
-func (b *backgroundCompactor) metrics() CompactionMetrics {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return CompactionMetrics{Started: b.started, Finished: b.finished, Running: len(b.running), Pending: len(b.ready), Stale: b.stale}
-}
-
-// wait blocks until running summaries finish or ctx ends.
-func (b *backgroundCompactor) wait(ctx context.Context) {
-	done := make(chan struct{})
-	go func() { b.wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-ctx.Done():
+// compactionMetrics derives compaction activity from committed compaction
+// tasks: started counts every task, finished the terminal ones, running the
+// live ones, pending finished background summaries not yet published, and
+// stale the ones discarded at publication.
+func compactionMetrics(snap storage.Snapshot) CompactionMetrics {
+	var m CompactionMetrics
+	_ = pageAll(snap, "task/", func(row storage.Record) error {
+		var t Task
+		if json.Unmarshal(row.Value, &t) != nil || t.Kind != TaskKindCompaction {
+			return nil
+		}
+		m.Started++
+		if t.State == "terminal" {
+			m.Finished++
+		} else {
+			m.Running++
+		}
+		return nil
+	})
+	_ = pageAll(snap, "bgcompaction/", func(row storage.Record) error {
+		var id string
+		if json.Unmarshal(row.Value, &id) != nil {
+			return nil
+		}
+		if t, ok, _ := read[Task](snap, taskKey(id)); ok && t.State == "terminal" {
+			m.Pending++
+		}
+		return nil
+	})
+	if stats, ok, _ := read[CompactionMetrics](snap, compactionStatsKey); ok {
+		m.Stale = stats.Stale
 	}
+	return m
 }

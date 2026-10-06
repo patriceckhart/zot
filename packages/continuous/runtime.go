@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -126,7 +127,14 @@ type Entry struct {
 	SessionProjection []json.RawMessage `json:"session_projection,omitempty"`
 }
 
-type Runtime struct{ store storage.Store }
+type Runtime struct {
+	store storage.Store
+	// claims are the tasks an invocation of this process is running. A
+	// task found running in storage but not claimed was interrupted; one
+	// that is claimed belongs to a live invocation of another scheduler of
+	// this runtime and must not be taken over.
+	claims sync.Map
+}
 
 // New takes ownership of an already opened store. This initial trusted-local API
 // has no authentication or public listener. Actor is audit data, not authorization.
@@ -134,7 +142,57 @@ func New(store storage.Store) (*Runtime, error) {
 	if store == nil {
 		return nil, fmt.Errorf("continuous requires a store")
 	}
+	snap, err := store.Snapshot(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	if f, ok, err := read[RuntimeFormat](snap, runtimeFormatKey); err != nil {
+		return nil, err
+	} else if ok && f.Version > RuntimeFormatVersion {
+		return nil, fmt.Errorf("%w: store uses runtime record format %d, this build supports up to %d", ErrUnsupportedFormat, f.Version, RuntimeFormatVersion)
+	}
 	return &Runtime{store: store}, nil
+}
+
+// RuntimeFormat is the version of the runtime's record layout, separate from
+// the backend's commit framing (storage schema). Version 1 is the run-based
+// layout; version 2 adds generation chains and task records (chain, progress,
+// bgcompaction, task effect and approval waits). A store is raised to 2 by
+// the first switch to task execution; older builds would not understand
+// those records, so a build refuses stores newer than it supports.
+type RuntimeFormat struct {
+	Version  int    `json:"version"`
+	Revision uint64 `json:"revision"`
+}
+
+// RuntimeFormatVersion is the newest runtime record format this build reads.
+const RuntimeFormatVersion = 2
+
+const runtimeFormatKey = "runtime/format"
+
+// ErrUnsupportedFormat reports a store written by a newer build.
+var ErrUnsupportedFormat = errors.New("continuous store format unsupported")
+
+// formatOps raises the store's runtime format to v when it is lower.
+func formatOps(snap storage.Snapshot, v int) []storage.Operation {
+	f, ok, _ := read[RuntimeFormat](snap, runtimeFormatKey)
+	if ok && f.Version >= v {
+		return nil
+	}
+	return []storage.Operation{record(runtimeFormatKey, RuntimeFormat{Version: v, Revision: snap.Revision() + 1})}
+}
+
+// Format reports the store's runtime record format. Absent means 1.
+func (r *Runtime) Format(ctx context.Context) (RuntimeFormat, error) {
+	snap, err := r.store.Snapshot(ctx)
+	if err != nil {
+		return RuntimeFormat{}, err
+	}
+	f, ok, err := read[RuntimeFormat](snap, runtimeFormatKey)
+	if !ok && err == nil {
+		f.Version = 1
+	}
+	return f, err
 }
 func (r *Runtime) Close() error { return r.store.Close() }
 
@@ -295,10 +353,17 @@ func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content 
 				return original, nil
 			}
 		}
+		held, err := legacyBlocked(snap, id)
+		if err != nil {
+			return Submission{}, err
+		}
 		if opts.RejectBusy {
 			if run, ok, err := read[Run](snap, runKey(id)); err != nil {
 				return Submission{}, err
 			} else if ok && run.Phase != "done" {
+				return Submission{}, ErrBusy
+			}
+			if _, ok := snap.Get(chainKey(id)); ok {
 				return Submission{}, ErrBusy
 			}
 		}
@@ -314,6 +379,20 @@ func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content 
 		s, ops, err := admissionOps(snap, &c, actor, requestID, content, policy)
 		if err != nil {
 			return Submission{}, err
+		}
+		if _, active := snap.Get(chainKey(id)); !held && !active {
+			// Admission and the generation task that answers it commit
+			// together, so an admitted input is never left without its
+			// executor after a crash. A conversation still holding an
+			// unfinished run of the earlier executor queues instead.
+			start, err := startChainOps(pendingSnapshot(snap, ops), c)
+			if err != nil {
+				return Submission{}, err
+			}
+			ops = mergeOps(append(ops, start...))
+			if len(start) > 0 {
+				s.State = "running"
+			}
 		}
 		ops = append(ops, record("conversation/"+id, c))
 		err = r.commit(ctx, snap, actor, ops...)

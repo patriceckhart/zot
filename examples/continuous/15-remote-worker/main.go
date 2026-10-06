@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -76,7 +77,16 @@ func main() {
 	close(tool.release) // the worker finishes on its own
 	time.Sleep(50 * time.Millisecond)
 	remote.Worker = dial()
-	run, _, err := svc.Step(ctx, c.ID)
+	// The call stays parked on its unknown outcome and is reconciled with
+	// backoff through the operation key; Step reports that until it settles.
+	var run continuous.Run
+	for {
+		run, _, err = svc.Step(ctx, c.ID)
+		if !errors.Is(err, core.ErrToolOutcomeUnknown) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	synthetic.Must(err)
 	fmt.Printf("run %s, worker executed the deploy %d time(s)\n", run.Outcome, tool.calls)
 	for _, n := range run.Notices {

@@ -124,10 +124,8 @@ func TestCompactionRejectedWhileBusyAndStale(t *testing.T) {
 		h.r.Submit(ctx, c.ID, "actor", "", q)
 		h.svc.Step(ctx, c.ID)
 	}
+	// Admission starts the chain; nothing drives it, so it stays active.
 	h.r.Submit(ctx, c.ID, "actor", "", "busy")
-	if _, _, err := h.svc.start(ctx, c.ID); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := h.r.Compact(ctx, h.svc.currentEngine(), c.ID, "", 300); !errors.Is(err, ErrBusy) {
 		t.Fatalf("compact while busy: %v", err)
 	}
@@ -281,7 +279,8 @@ func TestSelectCutNeverSplitsToolRound(t *testing.T) {
 // Background compaction starts above its threshold without blocking the
 // request, and the summary is published at the next request boundary. A
 // reset between summarization and publication makes the summary stale: it
-// is discarded and counted, never published over the newer context.
+// is discarded and counted, never published over the newer context (see
+// TestBackgroundCompactionStaleAfterReset).
 func TestBackgroundCompactionPublishesAtNextBoundary(t *testing.T) {
 	ctx := context.Background()
 	h, sc := compactionHarness(t, []scriptStep{{text: long(200)}, {text: long(200)}, {text: "third"}, {text: "fourth"}})
@@ -298,8 +297,7 @@ func TestBackgroundCompactionPublishesAtNextBoundary(t *testing.T) {
 	}
 	// The second request exceeded 300 tokens: a background summary started
 	// and the request was not blocked (no compaction entry yet).
-	h.svc.WaitCompactions(ctx)
-	if m := h.svc.CompactionMetrics(); m.Started != 1 || m.Finished != 1 || m.Pending != 1 || sc.summaries != 1 {
+	if m, _ := h.svc.CompactionMetrics(ctx); m.Started != 1 || m.Finished != 1 || m.Pending != 1 || sc.summaries != 1 {
 		t.Fatalf("metrics after background summary: %+v summaries=%d", m, sc.summaries)
 	}
 	if got := entryTypes(h.entries(t, c.ID)); strings.Contains(got, "compaction") {
@@ -332,46 +330,50 @@ func TestBackgroundCompactionPublishesAtNextBoundary(t *testing.T) {
 	if info.Reason != "background" || info.Head == 0 {
 		t.Fatalf("compaction info: %+v", info)
 	}
-	if m := h.svc.CompactionMetrics(); m.Pending != 0 || m.Stale != 0 {
+	if m, _ := h.svc.CompactionMetrics(ctx); m.Pending != 0 || m.Stale != 0 {
 		t.Fatalf("metrics after publication: %+v", m)
 	}
 
-	// Stale path: fill the context again so another background summary
-	// starts, then reset before the next boundary.
-	h.client.steps = []scriptStep{{text: long(200)}, {text: long(200)}, {text: "after reset"}}
+	if report, err := h.r.CheckIntegrity(ctx); err != nil || !report.Valid {
+		t.Fatalf("integrity: %+v %v", report, err)
+	}
+}
+
+func TestBackgroundCompactionStaleAfterReset(t *testing.T) {
+	ctx := context.Background()
+	h, _ := compactionHarness(t, []scriptStep{{text: long(200)}, {text: long(200)}, {text: "after reset"}})
+	defer h.r.Close()
+	h.svc.opts.Compaction = CompactionPolicy{ContextWindow: 100000, ReserveTokens: 1000, KeepRecentTokens: 300, BackgroundTokens: 300}
+	c := h.root(t)
 	for _, q := range []string{long(200), long(200)} {
 		h.r.Submit(ctx, c.ID, "actor", "", q)
 		if run, _, err := h.svc.Step(ctx, c.ID); err != nil || run.Outcome != "completed" {
 			t.Fatalf("run: %+v %v", run, err)
 		}
 	}
-	h.svc.WaitCompactions(ctx)
-	if m := h.svc.CompactionMetrics(); m.Pending != 1 {
-		t.Fatalf("second background summary not pending: %+v", m)
+	if m, _ := h.svc.CompactionMetrics(ctx); m.Pending != 1 {
+		t.Fatalf("background summary not pending: %+v", m)
 	}
+	// A reset after the summarized range makes the summary stale.
 	if _, err := h.r.Reset(ctx, c.ID, "handoff"); err != nil {
 		t.Fatal(err)
 	}
 	h.r.Submit(ctx, c.ID, "actor", "", "after")
-	run, _, err = h.svc.Step(ctx, c.ID)
+	run, _, err := h.svc.Step(ctx, c.ID)
 	if err != nil || run.Outcome != "completed" {
 		t.Fatalf("run after reset: %+v %v", run, err)
 	}
-	if m := h.svc.CompactionMetrics(); m.Stale != 1 || m.Pending != 0 {
+	if m, _ := h.svc.CompactionMetrics(ctx); m.Stale != 1 || m.Pending != 0 {
 		t.Fatalf("stale summary not discarded: %+v", m)
 	}
-	compactions := 0
 	for _, e := range h.entries(t, c.ID) {
 		if e.Type == entryCompaction {
-			compactions++
+			t.Fatal("stale summary was published")
 		}
 	}
-	if compactions != 1 {
-		t.Fatalf("stale summary was published: %d compaction entries", compactions)
-	}
-	last = h.client.requests[len(h.client.requests)-1]
+	last := h.client.requests[len(h.client.requests)-1]
 	if !strings.Contains(core.MessageText(last.Messages[0]), "handoff") || len(last.Messages) != 2 {
-		t.Fatalf("context after reset: %d messages, first %q", len(last.Messages), core.MessageText(last.Messages[0]))
+		t.Fatalf("context after reset: %d messages", len(last.Messages))
 	}
 	if report, err := h.r.CheckIntegrity(ctx); err != nil || !report.Valid {
 		t.Fatalf("integrity: %+v %v", report, err)

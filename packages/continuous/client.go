@@ -333,13 +333,46 @@ func EntriesFromCommit(cm storage.Commit, conversationID string) []Entry {
 }
 
 // RunFromCommit extracts the run record a commit wrote, when any.
+//
+// A commit carries the chain record of the conversation: a
+// written chain projects to an active run with the chain's run ID; a
+// deleted chain projects to a done run whose outcome comes from the
+// settled submissions in the same commit. Turn and tool detail are not
+// carried by a commit; fetch task.view or a snapshot for them.
 func RunFromCommit(cm storage.Commit, conversationID string) (Run, bool) {
-	for _, op := range cm.Operations {
+	var chainOp *storage.Operation
+	for i, op := range cm.Operations {
 		if op.Key == runKey(conversationID) && !op.Delete {
 			var run Run
-			if json.Unmarshal(op.Value, &run) == nil {
+			if json.Unmarshal(op.Value, &run) == nil && run.Outcome != "migrated" {
 				return run, true
 			}
+		}
+		if op.Key == chainKey(conversationID) {
+			chainOp = &cm.Operations[i]
+		}
+	}
+	if chainOp == nil {
+		return Run{}, false
+	}
+	if !chainOp.Delete {
+		var chain Chain
+		if json.Unmarshal(chainOp.Value, &chain) != nil {
+			return Run{}, false
+		}
+		return Run{ID: chain.RunID, ConversationID: conversationID, Submissions: chain.Submissions, Phase: "request", Turn: 1, Attempt: 1, Notices: chain.Notices, Revision: cm.Revision}, true
+	}
+	// Settlement: the generation task's terminal record names the run.
+	for _, op := range cm.Operations {
+		if !strings.HasPrefix(op.Key, "task/") || op.Delete {
+			continue
+		}
+		var t Task
+		if json.Unmarshal(op.Value, &t) != nil || t.Kind != TaskKindGeneration || t.ConversationID != conversationID || t.State != "terminal" {
+			continue
+		}
+		if run, ok := settledRun(t); ok {
+			return run, true
 		}
 	}
 	return Run{}, false

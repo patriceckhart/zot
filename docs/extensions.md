@@ -640,6 +640,7 @@ Existing `Tool` and `DeferredTool` handlers remain source-compatible.
 
 #### Durable replay policy
 
+
 Under zot continuous (see [docs/continuous.md](continuous.md)) a crash can
 happen after a tool call started and before its result was recorded. The
 host then consults the tool's replay policy. Extension tools default to

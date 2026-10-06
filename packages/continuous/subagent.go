@@ -47,21 +47,31 @@ func (r *Runtime) CreateOwnedConversation(ctx context.Context, parentID, ownerID
 		} else if ok {
 			return conversation(snap, existing)
 		}
-		parent, err := conversation(snap, parentID)
+		c, ops, err := ownedConversationOps(snap, parentID, ownerID, key, config)
 		if err != nil {
 			return Conversation{}, err
 		}
-		cfg := parent.Config
-		if config != nil {
-			cfg = *config
-		}
-		c := Conversation{ID: uuid.NewString(), Created: time.Now().UTC(), Revision: snap.Revision() + 1, Config: cfg, Owner: &Owner{ConversationID: parentID, ID: ownerID}}
-		err = r.commit(ctx, snap, "conversation.create.owned", record("conversation/"+c.ID, c), record(ownedConversationKey(ownerID, c.ID), c.ID), record(dedup, c.ID))
+		err = r.commit(ctx, snap, "conversation.create.owned", ops...)
 		if errors.Is(err, storage.ErrConflict) {
 			continue
 		}
 		return c, err
 	}
+}
+
+// ownedConversationOps builds a new owned conversation.
+func ownedConversationOps(snap storage.Snapshot, parentID, ownerID, key string, config *AgentConfig) (Conversation, []storage.Operation, error) {
+	parent, err := conversation(snap, parentID)
+	if err != nil {
+		return Conversation{}, nil, err
+	}
+	cfg := parent.Config
+	if config != nil {
+		cfg = *config
+	}
+	c := Conversation{ID: uuid.NewString(), Created: time.Now().UTC(), Revision: snap.Revision() + 1, Config: cfg, Owner: &Owner{ConversationID: parentID, ID: ownerID}}
+	ops := []storage.Operation{record("conversation/"+c.ID, c), record(ownedConversationKey(ownerID, c.ID), c.ID), record(hashedKey("owned-key/", ownerID, key), c.ID)}
+	return c, ops, nil
 }
 
 // OwnedConversations lists the conversations an owner created.

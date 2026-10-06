@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
@@ -135,11 +136,14 @@ func TestReplayReconcileOutcomes(t *testing.T) {
 		wantCalls int
 		wantText  string
 		isError   bool
+		// wantRec is how often reconciliation is asked. An unanswered
+		// reconciliation is asked again with backoff, then reported.
+		wantRec int
 	}{
-		{"completed", "", nil, 1, "already sent", false},
-		{"not started", core.ReconcileNotStarted, nil, 2, "sent with key", false},
-		{"unknown", core.ReconcileUnknown, nil, 1, "interrupted", true},
-		{"error", "", errors.New("lookup failed"), 1, "interrupted", true},
+		{"completed", "", nil, 1, "already sent", false, 1},
+		{"not started", core.ReconcileNotStarted, nil, 2, "sent with key", false, 1},
+		{"unknown", core.ReconcileUnknown, nil, 1, "interrupted", true, maxUnresolved + 1},
+		{"error", "", errors.New("lookup failed"), 1, "interrupted", true, maxUnresolved + 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -157,11 +161,22 @@ func TestReplayReconcileOutcomes(t *testing.T) {
 				t.Fatalf("plan: %+v", plan)
 			}
 			tool.block = nil
-			run, _, err := h.svc.Step(ctx, c.ID)
+			// An unanswered reconciliation returns ErrToolOutcomeUnknown and
+			// is asked again on the next Step, until the limit reports it.
+			var run Run
+			var err error
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				run, _, err = h.svc.Step(ctx, c.ID)
+				if !errors.Is(err, core.ErrToolOutcomeUnknown) {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
 			if err != nil || run.Outcome != "completed" {
 				t.Fatalf("run: %+v %v", run, err)
 			}
-			if tool.recCalls != 1 || len(tool.keys) != tc.wantCalls {
+			if tool.recCalls != tc.wantRec || len(tool.keys) != tc.wantCalls {
 				t.Fatalf("reconcile=%d executions=%d", tool.recCalls, len(tool.keys))
 			}
 			result := h.client.requests[1].Messages[2].Content[0].(provider.ToolResultBlock)

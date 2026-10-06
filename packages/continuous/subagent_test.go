@@ -96,7 +96,7 @@ func TestSubagentReplayAttachesToExistingChild(t *testing.T) {
 	<-done
 	parentRun, _, _ := h.r.Run(ctx, parent.ID)
 	if parentRun.Phase != "tools" || parentRun.Tools[0].State != "running" {
-		t.Fatalf("parent run after crash: %+v", parentRun)
+		t.Fatalf("parent call after crash: %+v", parentRun)
 	}
 	childrenBefore, _ := h.r.OwnedConversations(ctx, ToolCallIdentity{RunID: parentRun.ID, ConversationID: parent.ID, CallID: "s1"}.OwnerID())
 	if len(childrenBefore) != 1 {
@@ -125,9 +125,8 @@ func TestSubagentReplayAttachesToExistingChild(t *testing.T) {
 	if child.QueueSequence != 1 {
 		t.Fatalf("duplicate submission after replay: %+v", child)
 	}
-	if !strings.Contains(strings.Join(run.Notices, "\n"), "replayed") {
-		t.Fatalf("notices: %v", run.Notices)
-	}
+	// The child's interrupted, non-replayable tool is reported in the
+	// child's chain; the parent's call simply resumed its wait.
 	// Request 0 is the child's resumed turn (with the interrupted result),
 	// request 1 is the parent's turn with the child's answer.
 	childReq := h2.client.requests[0]

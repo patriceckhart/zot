@@ -50,12 +50,20 @@ func main() {
 	// Document history is indexed by the conversation's entry sequence, so
 	// a fork point is an entry. Add one, fork there, then let the parent
 	// move on with another entry and another write.
+	// An input is answered before the fork: a conversation with an active
+	// run cannot be forked.
+	svc, err := continuous.NewService(rt, synthetic.Engine(synthetic.NewClient(synthetic.Step{Text: "Monday: spec."}, synthetic.Step{Text: "Tuesday: code."})), continuous.ExecutionOptions{})
+	synthetic.Must(err)
 	_, err = rt.Submit(ctx, c.ID, "user", "", "plan the week")
+	synthetic.Must(err)
+	_, _, err = svc.Step(ctx, c.ID)
 	synthetic.Must(err)
 	cur, _ := rt.Conversation(ctx, c.ID)
 	fork, err := rt.Fork(ctx, c.ID, cur.EntrySequence, nil)
 	synthetic.Must(err)
 	_, err = rt.Submit(ctx, c.ID, "user", "", "add implementation")
+	synthetic.Must(err)
+	_, _, err = svc.Step(ctx, c.ID)
 	synthetic.Must(err)
 	_, err = rt.WriteDocument(ctx, docs, "todo", c.ID, doc.Revision, todo{Items: []string{"write spec", "implement"}})
 	synthetic.Must(err)

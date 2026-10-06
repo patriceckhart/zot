@@ -2,8 +2,12 @@ package continuous
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
+	"github.com/patriceckhart/zot/packages/provider"
+	"time"
 
 	"github.com/patriceckhart/zot/packages/continuous/storage"
 	"github.com/patriceckhart/zot/packages/core"
@@ -27,6 +31,9 @@ type RecoveryAction struct {
 	// Interrupted lists tool calls whose effect is unknown.
 	Interrupted    []ToolIntent `json:"interrupted,omitempty"`
 	AbortRequested bool         `json:"abort_requested,omitempty"`
+	// Executor is "tasks" for a generation chain, empty for an unmigrated
+	// run of an earlier build.
+	Executor string `json:"executor,omitempty"`
 }
 
 // RecoveryPlan lists every unfinished run in the store.
@@ -46,6 +53,20 @@ func (r *Runtime) RecoveryPreview(ctx context.Context) (RecoveryPlan, error) {
 		return RecoveryPlan{}, err
 	}
 	plan := RecoveryPlan{Revision: snap.Revision(), Actions: []RecoveryAction{}}
+	if err := pageAll(snap, "chain/", func(row storage.Record) error {
+		var chain Chain
+		if json.Unmarshal(row.Value, &chain) != nil {
+			return storage.ErrCorrupt
+		}
+		action := planChain(snap, chain)
+		if !action.Automatic {
+			plan.Blocked++
+		}
+		plan.Actions = append(plan.Actions, action)
+		return nil
+	}); err != nil {
+		return plan, err
+	}
 	after := ""
 	for {
 		if err := ctx.Err(); err != nil {
@@ -136,15 +157,30 @@ func planRun(run Run, awaitingApproval bool) RecoveryAction {
 
 var ErrNoRun = errors.New("continuous conversation has no active run")
 
-// Abort records abort intent for the active run. The commit is the decision;
-// the running stepper, or the next one, carries it out at the next boundary
-// and settles the run aborted. Abort never cancels an external effect that
-// already started and never deletes queued submissions.
+// Abort stops a conversation's work. An active chain is aborted as a task
+// abort of its generation and, bottom-up, the tool tasks and owned
+// conversations it is responsible for; a started effect is joined, not
+// cancelled. An unfinished run of the earlier executor that could not be
+// migrated is settled in one commit: every unfinished call gets an aborted
+// result, its approvals expire, and its inputs settle aborted. Queued inputs
+// stay queued.
 func (r *Runtime) Abort(ctx context.Context, conversationID string) (Run, error) {
 	for {
 		snap, err := r.store.Snapshot(ctx)
 		if err != nil {
 			return Run{}, err
+		}
+		if chain, ok, err := read[Chain](snap, chainKey(conversationID)); err != nil {
+			return Run{}, err
+		} else if ok {
+			if err := r.AbortTask(ctx, chain.Task, false); err != nil {
+				return Run{}, err
+			}
+			snap, err := r.store.Snapshot(ctx)
+			if err != nil {
+				return Run{}, err
+			}
+			return chainRun(snap, chain), nil
 		}
 		run, ok, err := read[Run](snap, runKey(conversationID))
 		if err != nil {
@@ -153,77 +189,56 @@ func (r *Runtime) Abort(ctx context.Context, conversationID string) (Run, error)
 		if !ok || run.Phase == "done" {
 			return run, ErrNoRun
 		}
-		if run.AbortRequested {
-			return run, nil
-		}
-		c, err := conversation(snap, conversationID)
+		ops, settled, err := abortLegacyOps(snap, run)
 		if err != nil {
 			return Run{}, err
 		}
-		run.AbortRequested = true
-		c.Revision = snap.Revision() + 1
-		run.Revision = c.Revision
-		ops := []storage.Operation{record("conversation/"+c.ID, c), record(runKey(c.ID), run)}
-		// Cascade bottom-up: every conversation owned by a tool call of this
-		// run that has an active run is marked too, in the same commit.
-		cascade, err := ownedRunAbortOps(snap, run)
-		if err != nil {
-			return Run{}, err
-		}
-		ops = append(ops, cascade...)
-		err = r.commit(ctx, snap, "run.abort.request", ops...)
+		err = r.commit(ctx, snap, "run.abort", ops...)
 		if errors.Is(err, storage.ErrConflict) {
 			continue
 		}
-		return run, err
+		return settled, err
 	}
 }
 
-// ownedRunAbortOps marks abort on the active runs of conversations owned by
-// the given run's tool calls, recursively. Terminal runs are skipped.
-func ownedRunAbortOps(snap storage.Snapshot, run Run) ([]storage.Operation, error) {
+// abortLegacyOps settles an unmigrated run of the earlier executor as
+// aborted, keeping tool calls and results paired.
+func abortLegacyOps(snap storage.Snapshot, run Run) ([]storage.Operation, Run, error) {
+	c, err := conversation(snap, run.ConversationID)
+	if err != nil {
+		return nil, run, err
+	}
 	var ops []storage.Operation
-	seen := map[string]bool{run.ConversationID: true}
-	var walk func(parent Run) error
-	walk = func(parent Run) error {
-		for _, intent := range parent.Tools {
-			ownerID := ToolCallIdentity{RunID: parent.ID, ConversationID: parent.ConversationID, CallID: intent.CallID}.OwnerID()
-			children, err := ownedConversations(snap, ownerID)
-			if err != nil {
-				return err
-			}
-			for _, childID := range children {
-				if seen[childID] {
-					return fmt.Errorf("%w: ownership cycle", storage.ErrCorrupt)
-				}
-				seen[childID] = true
-				childRun, ok, err := read[Run](snap, runKey(childID))
-				if err != nil {
-					return err
-				}
-				if !ok || childRun.Phase == "done" {
-					continue
-				}
-				if err := walk(childRun); err != nil {
-					return err
-				}
-				if childRun.AbortRequested {
-					continue
-				}
-				c, err := conversation(snap, childID)
-				if err != nil {
-					return err
-				}
-				childRun.AbortRequested = true
-				c.Revision = snap.Revision() + 1
-				childRun.Revision = c.Revision
-				ops = append(ops, record("conversation/"+childID, c), record(runKey(childID), childRun))
-			}
+	for i, intent := range run.Tools {
+		if intent.State == "done" {
+			continue
 		}
-		return nil
+		text := "aborted: the run was aborted before this tool call started."
+		if intent.State == "running" {
+			text = "aborted: the run was aborted after this tool call started. Its effect is unknown."
+			run.Notices = append(run.Notices, fmt.Sprintf("tool %s aborted while running, effect unknown", intent.CallID))
+		}
+		block := provider.ToolResultBlock{CallID: intent.CallID, Content: []provider.Content{provider.TextBlock{Text: text}}, IsError: true}
+		c.EntrySequence++
+		run.Tools[i].State, run.Tools[i].Entry = "done", c.EntrySequence
+		entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, Revision: snap.Revision() + 1, Type: entryToolResult, Content: text, Time: time.Now().UTC()}
+		entry.Message = marshalMessage(provider.Message{Role: provider.RoleTool, Content: []provider.Content{block}, Time: time.Now().UTC()})
+		ops = append(ops, record(entryKey(c.ID, c.EntrySequence), entry))
 	}
-	if err := walk(run); err != nil {
-		return nil, err
+	pending, err := pendingApprovals(snap, c.ID)
+	if err != nil {
+		return nil, run, err
 	}
-	return ops, nil
+	for _, a := range pending {
+		if a.RunID == run.ID {
+			a.State, a.Reason, a.Revision = approvalExpired, "run aborted", snap.Revision()+1
+			ops = append(ops, record(approvalKey(a.ID), a))
+		}
+	}
+	run.Phase, run.Outcome, run.Error, run.AbortRequested = "done", "aborted", "aborted by request", true
+	c.Revision = snap.Revision() + 1
+	run.Revision = c.Revision
+	ops = append(ops, settleOps(snap, run.Submissions, "aborted")...)
+	ops = append(ops, record("conversation/"+c.ID, c), record(runKey(c.ID), run))
+	return ops, run, nil
 }

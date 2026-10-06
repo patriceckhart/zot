@@ -48,6 +48,9 @@ func (r *Runtime) Fork(ctx context.Context, parentID string, at uint64, config *
 		} else if ok && run.Phase != "done" {
 			return Conversation{}, ErrBusy
 		}
+		if _, active := snap.Get(chainKey(parentID)); active {
+			return Conversation{}, ErrBusy
+		}
 		// The fork point must be a turn boundary: forking between a tool call
 		// and its result would hand the child a dangling call.
 		e, ok, err := read[Entry](snap, entryKey(parentID, at))
@@ -98,6 +101,9 @@ func (r *Runtime) Reset(ctx context.Context, conversationID, handoff string) (Co
 		if run, ok, err := read[Run](snap, runKey(conversationID)); err != nil {
 			return Conversation{}, err
 		} else if ok && run.Phase != "done" {
+			return Conversation{}, ErrBusy
+		}
+		if _, active := snap.Get(chainKey(conversationID)); active {
 			return Conversation{}, ErrBusy
 		}
 		if c.EntrySequence == ^uint64(0) {

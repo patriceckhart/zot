@@ -335,60 +335,79 @@ writer. API callers must manage cancellation of their own I/O.
 
 ## Execution model
 
-A conversation has at most one run. `Service.Step(ctx, conversationID)` first
-finishes any committed run that is not `done`, then claims every queued
-submission into a new run, and repeats until the queue is empty or `ctx` ends.
-The run record is the state machine:
+Every model generation, tool call, compaction, and subagent is a durable task
+run by one scheduler. There is no second loop driving runs. A conversation
+has at most one active generation chain, recorded under `chain/<id>`, which is
+also the run identity clients see.
 
 ```text
-run.start      queue rows removed, submissions running, run{phase:request, turn:1, attempt:1}
-run.response   assistant entry + tool intents (pending)       -> phase tools, or done
-run.retry      attempt entry, attempt+1                       -> phase request (after backoff)
-run.failed     attempt entry, submissions failed              -> done
-tool.intent    intent running with effective args and replay policy
-tool.result    tool_result entry, intent done
-run.handoff    tool result + skipped siblings + reset + continuation, original run done
-run.next       round complete                                 -> phase request, turn+1
+admission  submission + user entry + chain/<conversation> + zot.generation task, one commit
+request    background summary published if ready; threshold compaction as an
+           owned zot.compaction task; StartEffect; one model attempt
+           (Agent.Turn, no in-memory retries); then assistant entry + usage +
+           prompt record + owned zot.tool tasks, one commit
+tool       authorize (configuration, host guard); approval; StartEffect with
+           effective args, replay policy, approval ID, engine generation;
+           execute; then tool_result entry + task outcome, one commit
+collect    after every tool task is terminal: handoff, steering, next turn,
+           or final answer + submission settlement + next queued chain
 ```
 
 Every external step (one provider request, one tool execution) sits between
-two of these commits. The commit before records what is about to happen, the
-commit after records what happened. Recovery reads the run and continues from
-its phase:
+two commits. The commit before records that the effect may start
+(`Task.Effect = "started"`), the commit after records what happened. A task
+picked up by the scheduler without that mark definitely did not start its
+effect. Recovery resumes each task from its last commit:
 
-- `request`: the request may or may not have been sent. It is sent again. The
-  provider may have charged for the first attempt; no usage is invented.
-- `tools` with a `pending` intent: the tool has not started. Authorization
-  runs, the intent commits, the tool runs.
-- `tools` with a `running` intent: the tool started and its effect is unknown.
-  If the stored policy and the current tool both declare `ReplaySafe` and the
-  current authorization hook allows it, the tool runs once more with the same
-  committed arguments. Authorization checks those effective arguments, not
-  the model's original arguments before a guard rewrite. If the current guard
-  requires another argument rewrite, recovery refuses replay and reconciliation
-  rather than changing the operation associated with the committed intent.
-  Otherwise, when replay is refused, the model receives an `interrupted` error
-  result and a recovery notice is appended to the run. Nothing is retried
+- A generation with its effect started may have sent its request. It is sent
+  again and the earlier attempt's usage is recorded as unknown, never zero.
+- A tool task that never started runs after fresh authorization.
+- A tool task with its effect started went through the replay contract. If
+  the stored policy and the current tool both allow replay and the current
+  authorization accepts the committed effective arguments unchanged, it runs
+  again (`safe`, `idempotent` with the same operation key) or is reconciled
+  (`reconcile`). Otherwise the model receives an `interrupted` error result
+  and a recovery notice is recorded on the chain. Nothing is retried
   silently.
-- `tools` with all intents `done`: the next request starts.
+- A `reconcile` tool whose outcome is unknown (for example a lost remote
+  worker) keeps its effect marked and waits on a backoff timer. Each wake
+  reconciles through the operation key; after 5 unanswered passes the call is
+  reported to the model as possibly applied. It is never retried as if it had
+  failed.
 
-Cancelling the context (`Ctrl+C` for the CLI) is treated like a crash: the
-step returns, the run stays where it is, and the next step recovers it. The
-model never sees a tool call without a result. An explicit conversation abort
-is different from cancelling the caller's context: its committed intent survives
-an in-flight model response, and the run settles aborted before any pending tool
-executes or failed request retries. An already-started external effect is not
-cancelled by an abort. Failed attempts are stored as
-`attempt` entries so they remain inspectable but are excluded from the next
-request and from legacy export.
+Identities: the chain's run ID is used for operation keys, approvals, usage
+rows, prompt records, and subagent ownership. It survives retries, turns,
+migration, and restarts; task IDs do not. The provider-facing session ID is
+the conversation ID. Inputs admitted while a chain is active queue and start
+the next chain in the commit that settles the current one.
+
+Cancelling the context (`Ctrl+C` for the CLI) or shutting a host down is
+treated like a crash: committed intent stays and the next start resumes it.
+Observer disconnects cancel nothing. An explicit abort is different: its
+committed mark survives an in-flight model response, a started effect is
+joined rather than cancelled, the remaining calls get aborted results, and
+the inputs settle aborted. The model never sees a tool call without a result.
+Failed attempts are stored as `attempt` entries; they stay inspectable and
+are excluded from model context and legacy export.
+
+Waiting never holds a worker: a generation waiting on its tool tasks, a tool
+waiting on an approval, and a subagent call waiting on its child are parked
+records the scheduler revisits when a commit or persisted deadline wakes it.
+Tools of a round run sequentially, each tool task waiting on its predecessor.
+
+`Service.Step(ctx, conversationID)` drives one conversation and the
+conversations it owns in the caller's goroutine, on the same task
+definitions, until no chain is active and nothing is queued. It returns the
+run-shaped projection of the last chain, `ErrAwaitingApproval` when a call
+waits for a human, and `core.ErrToolOutcomeUnknown` while a reconciliation is
+pending. `Host.Run` drives every conversation.
 
 The `Engine` interface builds a `core.Agent` per request from the host's
 configuration. The runtime only replaces its transcript with the committed
 context, applies the conversation's model, reasoning, and instructions, and
 calls `Agent.Turn` for exactly one request and `Agent.CallTool` for exactly one
 authorized call. Provider clients, credentials, tool registries, sandboxes,
-extensions, and confirmation remain host concerns. There is no second agent
-loop.
+extensions, and confirmation remain host concerns.
 
 `core.ToolReplayer` is the opt-in contract for tool authors:
 
@@ -403,11 +422,12 @@ Tools without it default to `ReplayNever`. Extension tools default to
 ### Limits of the current execution
 
 - Tools within one round execute sequentially, in call order.
-- Partial streamed output is not committed. A crash during a request loses
-  that attempt's text, never a committed entry.
-- Queue-policy submissions made while a run is active are answered by the
-  next run, in slot order (`Reorder` changes it); steer-policy submissions
-  join the active run at its next request boundary.
+- Streamed text is committed as a bounded `partial` record (at most
+  `MaxPartialBytes`, 256 KiB) at the flush interval; a crash loses at most
+  that window. Tool progress keeps the last 16 KiB per running call.
+- Queue-policy submissions made while a chain is active are answered by the
+  next chain, in slot order (`Reorder` changes it); steer-policy submissions
+  join the active chain at its next request boundary.
 - Authorization is layered: the conversation's tool allow and deny lists,
   the host's `BeforeToolExecute` guard, and the optional `Approver`.
   `run`/`serve` do not open confirmation prompts; approvals are decided
@@ -427,14 +447,16 @@ Tools without it default to `ReplayNever`. Extension tools default to
 ## Host and protocol
 
 `continuous.NewHost(runtime, engine, HostOptions{...})` returns a `Host`.
-`Host.Run(ctx)` dispatches one goroutine per conversation with work, ticks the
-task scheduler when `HostOptions.Tasks` is set, sleeps on store commits and
-timers, and returns when `ctx` ends. Interrupted work stays recoverable.
+`Host.Run(ctx)` migrates interrupted runs written by earlier builds, applies
+the recovery policy, runs the task scheduler (with any additional
+`HostOptions.Tasks` definitions), sleeps on store commits and persisted
+deadlines, joins every task invocation, and returns when `ctx` ends.
+Interrupted work stays recoverable.
 `RecoveryPolicy` decides what happens at start:
 
-- `safe` (default) runs automatic recovery actions. Runs whose interrupted tool
-  cannot be replayed stay blocked until `Host.Unblock(runID)` or the protocol's
-  `recovery.unblock`.
+- `safe` (default) runs automatic recovery actions. Chains whose interrupted
+  tool cannot be replayed stay held, every task of the conversation parked,
+  until `Host.Unblock(runID)` or the protocol's `recovery.unblock`.
 - `all` unblocks everything, reporting interrupted unsafe tools to the model as
   errors. It never replays what the policy forbids.
 - `none` performs no recovery until a held run is explicitly unblocked. New
@@ -454,7 +476,7 @@ every connection is admin, which is only acceptable on a private local socket.
 
 | Role | Methods |
 |---|---|
-| read | `hello`, `runtime.status`, `conversation.list`, `conversation.snapshot`, `conversation.watch`, `watch.cancel`, `conversation.search`, `submission.get`, `submission.wait`, `usage.get`, `recovery.preview`, `approval.get`, `approval.list`, `task.get`, `task.list`, `document.read`, `budget.get`, `memo.get`, `prompt.records`, `prompt.section`, `partial.get` |
+| read | `hello`, `runtime.status`, `conversation.list`, `conversation.snapshot`, `conversation.watch`, `watch.cancel`, `conversation.search`, `submission.get`, `submission.wait`, `usage.get`, `recovery.preview`, `approval.get`, `approval.list`, `task.get`, `task.list`, `task.view`, `document.read`, `budget.get`, `memo.get`, `prompt.records`, `prompt.section`, `partial.get` |
 | submit | read plus `conversation.create`, `conversation.submit`, `conversation.configure`, `conversation.compact`, `conversation.reset`, `conversation.fork`, `document.write`, `memo.set` |
 | approve | submit plus `approval.decide` |
 | admin | approve plus `conversation.abort`, `recovery.unblock`, `task.abort`, `task.retry-cleanup`, `budget.set`, `runtime.reload`, `runtime.retain`, `outbox.ack`, `submission.withdraw`, `submission.reorder` |
@@ -526,6 +548,106 @@ are refused. `Runtime.Reset(id, handoff)` appends a reset entry; the model
 context starts from the handoff text. `Runtime.CreateOwnedConversation` makes a
 child owned by a run or task; the `subagent` tool uses it, and aborting the
 owner aborts the children.
+
+### Task-scoped commits
+
+A phase may need to record intent before its external effect. Inside a
+handler, `tc.StartEffect(ctx, checkpoint, build)` commits the task with
+`Effect: "started"`, an optional new checkpoint, and any operations added
+through the `TaskTx`. It is fenced on the task's current invocation
+(`Task.Invocation`, renewed at every reservation), so a stale invocation gets
+`ErrStaleInvocation`, and it is refused with `ErrTaskAborting` once abort was
+requested, so no effect starts after a committed abort. The next applied
+`Next` clears `Effect`. A reservation alone never sets it: after a crash,
+`TaskContext.Interrupted` is true only when an effect may have started.
+`tc.Commit` writes task-scoped records without the effect marker.
+
+`Next.Commit` builds the final `Next` inside the transaction that applies it,
+against the fenced snapshot. `TaskTx.CreateChild` creates an owned task whose
+ID the returned `Next` may wait on in the same commit. On an unrelated storage
+conflict the builder reruns on fresh state, so a phase whose effect already
+happened is not repeated. `Next.AfterCommit` runs once after the commit, for
+observers that must not see uncommitted state.
+
+`TaskDefinition.JoinOnAbort` keeps a running invocation alive when abort is
+requested: the abort handler runs after the invocation committed what
+happened. Without it, abort cancels the invocation's context. Waiting tasks
+hold no worker. `TaskScheduler.Join` waits for every started invocation;
+`Host.Run` joins before it returns.
+
+`Next.WaitApproval` parks a task on an approval record until it is decided
+or expires. `Next.Link` makes the task responsible for tasks outside its
+ownership tree (a subagent's generation in its own conversation): abort
+marks them, and the task settles after them. `TaskScheduler.Filter`,
+`Hold`, and `Prepare` restrict dispatch, hold tasks for the recovery policy,
+and run admission work at every tick.
+
+Recovery cannot guarantee exactly-once external effects. A started effect is
+reported as possibly applied unless the receiver enforces the operation key or
+reconciliation succeeds.
+
+### Built-in tasks
+
+The built-in kinds are `zot.generation`, `zot.tool`, and `zot.compaction`, all
+at checkpoint schema version 1. Clients see tasks as `pending`, `running`,
+`waiting` (on tasks, a timer, or an approval), `aborting` (cleanup), or
+`terminal`. `ConversationSnapshot` carries the active `chain`, a run-shaped
+`run` projection (or the last settled one), `recovery`, and committed tool
+`progress`; `task.view` returns live tasks with `owns`, `waits`, and `links`
+edges.
+
+- Approvals park the tool task on the approval record. Decisions bind to the
+  effective arguments. Abort expires the chain's pending approvals.
+- Compaction runs as `zot.compaction` tasks whose result is the summary.
+  Threshold and overflow compactions make the generation wait; overflow
+  compacts at most once per turn. Background summaries are durable
+  conversation-level tasks published at the next request boundary, or
+  discarded as stale after a reset or competing compaction.
+- A `handoff` result commits the result, skipped results for later calls
+  (their tasks settle without running), the reset entry, and the
+  continuation admission together.
+- The `subagent` tool creates an owned conversation and its submission in one
+  commit, keyed by the call, and parks on the child's generation. The child's
+  generation is linked: aborting the call aborts the child, and the call
+  settles only after it. Nesting is bounded.
+- Partial output is written through fenced task commits, so a stale
+  invocation cannot overwrite a newer attempt; the response commit replaces
+  it. Observers receive in-process events immediately; tool results are
+  published to them after their commit.
+
+### Upgrading stores from earlier builds
+
+Earlier builds drove conversations with a run record (`run/<id>`). On open,
+`run`, `serve`, `Service.Step`, and `Host.Run` convert every unfinished run
+into a chain, one conversation per commit (`Runtime.MigrateLegacy`, CLI
+`migrate-runs`). A pass interrupted by a crash resumes on the next open and
+never converts a run twice. The chain keeps the run ID and submissions. A
+`request` run becomes a generation whose effect may have started. A `tools`
+run becomes a generation waiting on one tool task per intent: `pending`
+intents start fresh, `running` intents carry their committed arguments and
+replay policy with the effect marked started, `done` intents become terminal
+tasks naming the existing result entry. Approvals, results, and usage stay
+where they are. The old run settles with outcome `migrated`.
+
+A run that cannot be converted without guessing what an interrupted effect
+did (for example a running intent without committed arguments) is left as
+it was and blocks its conversation: new inputs queue, nothing executes, the
+outbox carries a `migration.blocked` notice, and `Runtime.Abort` (CLI
+`abort`) settles it with paired aborted results, after which the queue
+proceeds. Nothing is inferred.
+
+The store carries a `runtime/format` record, separate from the backend's
+commit schema. Version 1 is the run layout; the first chain raises it to 2.
+A build refuses a store whose format is newer than it supports
+(`ErrUnsupportedFormat`) instead of reinterpreting unknown records. `status`
+reports `runtime_format`. Builds that only understand version 1 cannot open
+an upgraded store; take a backup before upgrading if you may roll back.
+
+Measured on one machine (`go test ./packages/continuous -run '^$' -bench .`):
+an answered submission takes 4 commits and about 4.8 ms on memory, 6 ms on
+the journal (`RunRoundTrip`); an idle host uses about 1% of one core
+(`IdleHost`); opening a journal store with 200 settled chains and computing
+the recovery preview takes about 6.8 ms (`RestartTasks`).
 
 ### Swarm on a host
 
@@ -915,13 +1037,15 @@ Not implemented from the specification:
   The search index is memory only and rebuilt at host start.
 - Only schema 1 exists; `migrate` has no older schema to convert yet. It is
   the tested path for the first format change.
-- Background summaries are held in memory until a request boundary. A host
-  restart loses an unpublished summary; it is recomputed when the context
-  crosses the threshold again. Only the compaction entry is durable.
+- Background summaries are durable task results; one runs per conversation
+  at a time.
 - The remote worker is a reference implementation of the contract: one
   process, a JSONL operation ledger, no scheduling across workers.
 - Permission lists select tools by name; argument-level policies belong to
   the host guard or an `Approver`.
+- Tools run sequentially. Recovery cannot guarantee exactly-once external
+  effects without receiver-enforced operation keys or successful
+  reconciliation.
 - Native non-macOS lifecycle runs remain release gates. Linux and Windows
   builds and vet are checked; the named pipe transport is exercised by the
   endpoint tests only when they run on Windows.

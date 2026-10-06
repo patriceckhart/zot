@@ -303,12 +303,17 @@ func checkFaultRecovery(t *testing.T, path string, opts Options, stage, point st
 		if err != nil {
 			t.Fatal(err)
 		}
-		// All five admission records must be present together, or all absent.
-		for _, prefix := range []string{"submission/", "queue/" + c.ID + "/", "entry/" + c.ID + "/", "dedup/submit/"} {
+		// All admission records must be present together, or all absent. The
+		// first input is claimed by a chain at admission; later ones queue
+		// behind it, so queue rows count only the inputs after the first.
+		for _, prefix := range []string{"submission/", "entry/" + c.ID + "/", "dedup/submit/"} {
 			rows, err := snap.Page(prefix, "", 100)
 			if err != nil || len(rows) != int(c.QueueSequence) {
 				t.Fatalf("partial admission for %s: %d, %v", prefix, len(rows), err)
 			}
+		}
+		if rows, err := snap.Page("queue/"+c.ID+"/", "", 100); err != nil || len(rows) != int(c.QueueSequence)-1 {
+			t.Fatalf("partial admission for the queue: %d, %v", len(rows), err)
 		}
 		var persisted continuous.Submission
 		if c.QueueSequence == 2 {

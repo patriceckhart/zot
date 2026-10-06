@@ -91,6 +91,15 @@ func (r *Runtime) Retain(ctx context.Context, policy RetentionPolicy, dryRun boo
 		}); err != nil {
 			return report, err
 		}
+		if err := each("chain/", func(row storage.Record) error {
+			var chain Chain
+			if json.Unmarshal(row.Value, &chain) == nil {
+				liveRuns["run/"+chain.RunID] = true
+			}
+			return nil
+		}); err != nil {
+			return report, err
+		}
 		liveTasks := map[string]bool{}
 		if err := each("task/", func(row storage.Record) error {
 			var t Task

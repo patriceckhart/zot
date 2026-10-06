@@ -89,6 +89,7 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 	queueSlots := make(map[string]string)
 	runSubmissions := make(map[string]string)
 	runs := make(map[string]Run)
+	chains := make(map[string]Chain)
 	submissionCounts := make(map[string]uint64)
 	submissionMax := make(map[string]uint64)
 	err = page("submission/", func(row storage.Record) error {
@@ -144,6 +145,11 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 				}
 			}
 		case "done":
+			if run.Outcome == "migrated" {
+				// Continued as a generation chain, which owns its inputs.
+				runs[id] = run
+				return nil
+			}
 			if run.Outcome != "completed" && run.Outcome != "failed" && run.Outcome != "aborted" {
 				return bad("done run without outcome")
 			}
@@ -382,8 +388,77 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 	if err != nil {
 		return Integrity{}, err
 	}
+	err = page("chain/", func(row storage.Record) error {
+		var chain Chain
+		id := strings.TrimPrefix(row.Key, "chain/")
+		if json.Unmarshal(row.Value, &chain) != nil || chain.ConversationID != id || !validID(chain.RunID) || !validRevision(chain.Revision) || len(chain.Submissions) == 0 {
+			return bad("invalid generation chain")
+		}
+		if _, err := getConversation(id); err != nil {
+			return err
+		}
+		if _, ok := runs[id]; ok && runs[id].Phase != "done" {
+			return bad("conversation with an unmigrated run and a chain")
+		}
+		chains[id] = chain
+		t, ok, err := read[Task](snap, taskKey(chain.Task))
+		if err != nil || !ok || t.Kind != TaskKindGeneration || t.ConversationID != id || t.State == "terminal" {
+			return bad("generation chain without live generation task")
+		}
+		for _, sid := range chain.Submissions {
+			if runSubmissions[sid] != "" {
+				return bad("submission claimed twice")
+			}
+			runSubmissions[sid] = chain.RunID
+			sub, err := getSubmission(sid)
+			if err != nil {
+				return err
+			}
+			if sub.ConversationID != id || sub.State != "running" {
+				return bad("chain submission state mismatch")
+			}
+		}
+		report.ActiveRuns++
+		return nil
+	})
+	if err != nil {
+		return Integrity{}, err
+	}
 	err = page("", func(row storage.Record) error {
 		switch {
+		case row.Key == compactionStatsKey:
+			var m CompactionMetrics
+			if json.Unmarshal(row.Value, &m) != nil {
+				return bad("invalid compaction stats")
+			}
+		case row.Key == runtimeFormatKey:
+			var f RuntimeFormat
+			if json.Unmarshal(row.Value, &f) != nil || f.Version < 1 || f.Version > RuntimeFormatVersion || !validRevision(f.Revision) {
+				return bad("invalid runtime format")
+			}
+		case strings.HasPrefix(row.Key, "chain/"):
+		case strings.HasPrefix(row.Key, "bgcompaction/"):
+			var id string
+			if json.Unmarshal(row.Value, &id) != nil {
+				return bad("invalid background compaction reference")
+			}
+			t, ok, err := read[Task](snap, taskKey(id))
+			if err != nil || !ok || t.Kind != TaskKindCompaction || row.Key != backgroundKey(t.ConversationID) {
+				return bad("background compaction reference without its task")
+			}
+		case strings.HasPrefix(row.Key, "progress/"):
+			var p ToolProgress
+			if json.Unmarshal(row.Value, &p) != nil || row.Key != progressKey(p.TaskID) || len(p.Text) > MaxToolProgressBytes {
+				return bad("invalid tool progress")
+			}
+			t, ok, err := read[Task](snap, taskKey(p.TaskID))
+			if err != nil || !ok || t.Kind != TaskKindTool || t.State == "terminal" {
+				return bad("tool progress without its running task")
+			}
+		case strings.HasPrefix(row.Key, "executor/"):
+			// Written by an earlier build that switched executors per
+			// conversation. There is only one executor now; the record is
+			// inert and kept for audit.
 		case strings.HasPrefix(row.Key, "conversation/"), strings.HasPrefix(row.Key, "run/"), strings.HasPrefix(row.Key, "usage/"):
 		case strings.HasPrefix(row.Key, "outbox/"):
 			var n Notification
@@ -421,6 +496,12 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 			if _, err := getConversation(p.ConversationID); err != nil {
 				return err
 			}
+			if chain, ok := chains[p.ConversationID]; ok && chain.RunID == p.RunID {
+				return nil
+			}
+			if p.Final {
+				return nil
+			}
 			run, ok := runs[p.ConversationID]
 			if !ok || run.ID != p.RunID {
 				return bad("partial output without its run")
@@ -454,6 +535,9 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 				if a.Decided != nil || a.Actor != "" {
 					return bad("pending approval with decision")
 				}
+				if chain, ok := chains[a.ConversationID]; ok && chain.RunID == a.RunID {
+					break
+				}
 				run, ok := runs[a.ConversationID]
 				if !ok || run.ID != a.RunID || run.Phase != "tools" {
 					return bad("pending approval without parked run")
@@ -486,6 +570,17 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 			if _, ok := snap.Get(taskConversationKey(t.ConversationID, t.ID)); !ok {
 				return bad("task without conversation index")
 			}
+			for _, id := range t.Linked {
+				if _, ok := snap.Get(taskKey(id)); !ok || id == t.ID {
+					return bad("task links a missing task")
+				}
+			}
+			if t.WaitApproval != "" && t.State != "waiting" {
+				return bad("approval wait outside waiting state")
+			}
+			if t.Effect != "" && (t.Effect != effectStarted || (t.State != "running" && t.State != "waiting")) {
+				return bad("task effect intent outside a running phase")
+			}
 			if t.Blocked != "" && t.State != "aborting" {
 				return bad("blocked task outside cleanup")
 			}
@@ -503,8 +598,19 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 					return bad("aborting task shape")
 				}
 			case "waiting":
-				if t.Phase == "" || t.Outcome != "" || (len(t.WaitOn) == 0) == (t.WakeAt == nil) {
-					return bad("waiting task must have dependencies or a timer")
+				kinds := 0
+				for _, set := range []bool{len(t.WaitOn) > 0, t.WakeAt != nil, t.WaitApproval != ""} {
+					if set {
+						kinds++
+					}
+				}
+				if t.Phase == "" || t.Outcome != "" || kinds != 1 {
+					return bad("waiting task must have exactly one of dependencies, a timer, or an approval")
+				}
+				if t.WaitApproval != "" {
+					if _, ok := snap.Get(approvalKey(t.WaitApproval)); !ok {
+						return bad("task waits on a missing approval")
+					}
 				}
 				if len(t.WaitOn) > 0 && t.WaitPolicy != "all" && t.WaitPolicy != "fail_fast" {
 					return bad("waiting task policy")

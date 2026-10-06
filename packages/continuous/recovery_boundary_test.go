@@ -157,51 +157,40 @@ func TestQueuedInputCannotBypassRecoveryHold(t *testing.T) {
 	for _, policy := range []RecoveryPolicy{RecoverNone, RecoverSafe} {
 		t.Run(string(policy), func(t *testing.T) {
 			ctx := context.Background()
-			h := newHarness(t, newMemoryStore(), []scriptStep{
-				{calls: []provider.ToolCallBlock{call("c1", "effect", `{}`)}},
-			}, &effectTool{name: "effect"})
+			tool := &effectTool{name: "effect"}
+			h := newHarness(t, newMemoryStore(), []scriptStep{{text: "must not run"}}, tool)
 			defer h.r.Close()
 			c := h.root(t)
-			if _, err := h.r.Submit(ctx, c.ID, "actor", "", "first"); err != nil {
-				t.Fatal(err)
-			}
-			run, _, err := h.svc.start(ctx, c.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			run, err = h.svc.request(ctx, run)
-			if err != nil {
-				t.Fatal(err)
-			}
-			snap, _ := h.r.Snapshot(ctx)
-			cur, _ := conversation(snap, c.ID)
-			run.Tools[0].State = "running"
-			run.Tools[0].Args = json.RawMessage(`{}`)
-			run.Tools[0].Replay = core.ReplayNever
-			if _, err := h.svc.commitRun(ctx, snap, cur, run, "test.intent"); err != nil {
-				t.Fatal(err)
-			}
+			queueOnly(t, h.r, c.ID, "first")
+			writeLegacyRun(t, h.r, c.ID, "tools", legacyIntent{call: call("c1", "effect", `{}`), state: "running", replay: core.ReplayNever})
 			host, err := NewHost(h.r, h.svc.currentEngine(), HostOptions{Policy: policy})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := host.recover(ctx); err != nil {
+			hostCtx, stop := context.WithCancel(ctx)
+			done := make(chan error, 1)
+			go func() { done <- host.Run(hostCtx) }()
+			deadline := time.Now().Add(5 * time.Second)
+			for len(host.Blocked()) == 0 {
+				if time.Now().After(deadline) {
+					t.Fatal("run was not held")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			// New input does not release the hold or bypass it.
+			second, err := h.r.Submit(ctx, c.ID, "actor", "", "second")
+			if err != nil {
 				t.Fatal(err)
 			}
-			if host.allowed(run) {
-				t.Fatal("run was not held")
+			host.Nudge()
+			time.Sleep(50 * time.Millisecond)
+			stop()
+			<-done
+			if h.client.requestCount() != 0 || tool.calls.Load() != 0 {
+				t.Fatalf("held conversation executed: requests=%d calls=%d", h.client.requestCount(), tool.calls.Load())
 			}
-			if _, err := h.r.Submit(ctx, c.ID, "actor", "", "second"); err != nil {
-				t.Fatal(err)
-			}
-			snap, _ = h.r.Snapshot(ctx)
-			// A cancelled dispatch context keeps a buggy scheduler from doing
-			// external work, but does not prevent it from selecting a held run.
-			stepCtx, cancel := context.WithCancel(ctx)
-			cancel()
-			busy, err := host.dispatch(stepCtx, snap)
-			if err != nil || busy {
-				t.Fatalf("held conversation dispatched: busy=%v err=%v", busy, err)
+			if s, _ := h.r.Submission(ctx, second.ID); s.State != "queued" {
+				t.Fatalf("second input: %+v", s)
 			}
 		})
 	}
@@ -232,14 +221,8 @@ func TestQueuedInputWaitsForApprovalButAbortCanSettle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := h.r.Snapshot(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stepCtx, cancel := context.WithCancel(ctx)
-	cancel()
-	if busy, err := host.dispatch(stepCtx, snap); err != nil || busy {
-		t.Fatalf("approval-held conversation dispatched: busy=%v err=%v", busy, err)
+	if s, _ := h.r.Submission(ctx, second.ID); s.State != "queued" {
+		t.Fatalf("second input must wait behind the approval: %+v", s)
 	}
 	if _, err := h.r.Abort(ctx, c.ID); err != nil {
 		t.Fatal(err)

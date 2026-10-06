@@ -111,10 +111,8 @@ func TestForkRejectedWhileParentBusy(t *testing.T) {
 	h := newHarness(t, newMemoryStore(), []scriptStep{{text: "never"}})
 	defer h.r.Close()
 	parent := h.root(t)
+	// Admission starts the chain; nothing drives it, so the parent is busy.
 	h.r.Submit(ctx, parent.ID, "actor", "", "first")
-	if _, _, err := h.svc.start(ctx, parent.ID); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := h.r.Fork(ctx, parent.ID, 1, nil); !errors.Is(err, ErrBusy) {
 		t.Fatalf("fork during run: %v", err)
 	}

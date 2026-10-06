@@ -125,17 +125,10 @@ func TestAbortBeforeStepHonoured(t *testing.T) {
 	defer h.r.Close()
 	c := h.root(t)
 	s, _ := h.r.Submit(ctx, c.ID, "actor", "", "hello")
-	// Start the run without executing: use the service's start path through
-	// a cancelled step, then request abort before any model request.
-	cancelled, cancel := context.WithCancel(ctx)
-	cancel()
-	h.svc.Step(cancelled, c.ID)
+	// Admission starts the chain without executing; abort before any model
+	// request.
 	run, ok, _ := h.r.Run(ctx, c.ID)
-	if !ok {
-		// Step returned before starting; start explicitly.
-		run, _, _ = h.svc.start(ctx, c.ID)
-	}
-	if run.Phase != "request" {
+	if !ok || run.Phase != "request" {
 		t.Fatalf("run: %+v", run)
 	}
 	if _, err := h.r.Abort(ctx, c.ID); err != nil {

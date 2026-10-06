@@ -39,6 +39,13 @@ type Task struct {
 	WaitOn []string `json:"wait_on,omitempty"`
 	// WaitPolicy is all or fail_fast.
 	WaitPolicy string `json:"wait_policy,omitempty"`
+	// WaitApproval parks the task until the named approval is decided or
+	// expires. It is the third wait kind next to WaitOn and WakeAt.
+	WaitApproval string `json:"wait_approval,omitempty"`
+	// Linked are tasks outside this task's ownership tree, usually in an
+	// owned conversation, whose abort and settlement this task is
+	// responsible for. Abort marks them and the task settles after them.
+	Linked []string `json:"linked,omitempty"`
 	// WakeAt is an absolute UTC deadline for a persisted timer. Repeat is
 	// the period of a periodic timer, zero for one-shot.
 	WakeAt *time.Time    `json:"wake_at,omitempty"`
@@ -58,8 +65,18 @@ type Task struct {
 	AbortRequested bool            `json:"abort_requested,omitempty"`
 	// Blocked is set when cleanup failed and the task cannot settle without
 	// a human. State stays aborting; the task is not deceptively terminal.
-	Blocked  string    `json:"blocked,omitempty"`
-	Notices  []string  `json:"notices,omitempty"`
+	Blocked string   `json:"blocked,omitempty"`
+	Notices []string `json:"notices,omitempty"`
+	// Invocation identifies the reservation that currently runs the task.
+	// Task-scoped commits from a handler are fenced on it, so a stale
+	// invocation can never write after a newer one was reserved.
+	Invocation string `json:"invocation,omitempty"`
+	// Effect is "started" once a handler committed an effect intent with
+	// BeginEffect and the phase has not committed its outcome since. A
+	// reservation alone never sets it, so a task found running after a
+	// crash distinguishes an effect that may have happened from one that
+	// definitely did not start.
+	Effect   string    `json:"effect,omitempty"`
 	Created  time.Time `json:"created"`
 	Revision uint64    `json:"revision"`
 }
@@ -112,6 +129,10 @@ type Next struct {
 	// one.
 	WakeAt time.Time
 	Repeat time.Duration
+	// WaitApproval parks the task until the approval is decided or expires.
+	WaitApproval string
+	// Link adds tasks to Task.Linked in the same commit.
+	Link []string
 	// Outcome ends the task: completed, failed, or aborted.
 	Outcome string
 	Result  any
@@ -120,10 +141,28 @@ type Next struct {
 	Ops []storage.Operation
 	// Children are created in the same commit, owned by this task.
 	Children []TaskSpec
+	// Commit, when set, builds the final Next inside the transaction that
+	// applies it, against the snapshot the commit is fenced on. It is
+	// rebuilt on an unrelated storage conflict as long as the task record
+	// is unchanged, so a phase whose effect already happened is never rerun
+	// merely because another conversation committed first. Ops and
+	// children added through the TaskTx commit with the returned Next.
+	Commit func(tx *TaskTx) (Next, error)
+	// KeepEffect keeps Task.Effect started across this commit. A phase
+	// that could not learn whether its effect happened (a lost remote
+	// outcome) parks with it, so the next invocation still sees
+	// TaskContext.Interrupted and reconciles instead of assuming.
+	KeepEffect bool
+	// AfterCommit runs once after the Next committed. Observers that must
+	// never see uncommitted state are notified here.
+	AfterCommit func()
 }
 
 // TaskSpec creates a task.
 type TaskSpec struct {
+	// ID is optional. TaskTx.CreateChild assigns one so the caller can
+	// reference the child (for example in WaitOn) in the same commit.
+	ID         string
 	Kind       string
 	Input      any
 	Background bool
@@ -137,6 +176,26 @@ type TaskContext struct {
 	// Outcomes of the tasks this task waited on, in WaitOn order. Nil unless
 	// the task was waiting.
 	Waited []Task
+	// Interrupted is true when a previous invocation of this phase committed
+	// an effect intent (TaskTx.StartEffect) and never settled it. The effect
+	// may or may not have happened. A reservation alone never sets it.
+	Interrupted bool
+
+	inv *taskInvocation
+}
+
+// taskInvocation tracks the committed record an invocation last wrote, so
+// task-scoped commits are fenced on it and runOnce continues from it.
+type taskInvocation struct {
+	s    *TaskScheduler
+	mu   sync.Mutex
+	task Task
+}
+
+func (inv *taskInvocation) current() Task {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	return inv.task
 }
 
 // TaskDefinition is the code for one task kind. Phases run in the order the
@@ -158,6 +217,11 @@ type TaskDefinition struct {
 	Migrate func(fromVersion int, phase string, checkpoint json.RawMessage) (string, json.RawMessage, error)
 	// Retry governs handler errors of phases and Cleanup.
 	Retry RetryPolicy
+	// JoinOnAbort keeps a running invocation alive when abort is requested
+	// instead of cancelling its context. The abort handler runs after the
+	// invocation committed. Use it for phases whose external effect must
+	// not be interrupted midway, such as a model request or a tool call.
+	JoinOnAbort bool
 }
 
 // Registry maps task kinds to definitions. A task whose kind is missing or
@@ -165,6 +229,15 @@ type TaskDefinition struct {
 type TaskRegistry map[string]TaskDefinition
 
 var ErrTaskBlocked = errors.New("continuous task blocked: definition missing or incompatible")
+
+// ErrTaskAborting is returned by StartEffect when the task carries a
+// committed abort request. The handler must not start its effect; the
+// scheduler runs the abort handler at the next pass.
+var ErrTaskAborting = errors.New("continuous task abort requested")
+
+// ErrStaleInvocation is returned by task-scoped commits of an invocation that
+// is no longer the one the committed record names.
+var ErrStaleInvocation = errors.New("continuous task invocation is stale")
 var ErrTaskNotFound = errors.New("continuous task not found")
 
 func taskKey(id string) string { return "task/" + id }
@@ -222,7 +295,11 @@ func buildTask(registry TaskRegistry, conversationID, owner string, spec TaskSpe
 	if err != nil {
 		return Task{}, nil, err
 	}
-	task := Task{ID: uuid.NewString(), ConversationID: conversationID, Kind: spec.Kind, Version: def.Version, Input: input, Owner: owner, Background: spec.Background, State: "pending", Phase: next.Phase, Checkpoint: checkpoint, Created: time.Now().UTC(), Revision: revision}
+	id := spec.ID
+	if id == "" {
+		id = uuid.NewString()
+	}
+	task := Task{ID: id, ConversationID: conversationID, Kind: spec.Kind, Version: def.Version, Input: input, Owner: owner, Background: spec.Background, State: "pending", Phase: next.Phase, Checkpoint: checkpoint, Created: time.Now().UTC(), Revision: revision}
 	if !next.WakeAt.IsZero() {
 		// A task may start parked on a persisted timer (a reminder).
 		wake := next.WakeAt.UTC()
@@ -322,6 +399,11 @@ func (r *Runtime) AbortTask(ctx context.Context, id string, includeBackground bo
 					return err
 				}
 			}
+			for _, linked := range t.Linked {
+				if err := mark(linked); err != nil && !errors.Is(err, ErrTaskNotFound) {
+					return err
+				}
+			}
 			if !t.AbortRequested {
 				t.AbortRequested = true
 				t.Revision = snap.Revision() + 1
@@ -390,6 +472,18 @@ type TaskScheduler struct {
 	Workers int
 	// CatchUp decides how overdue timers behave after downtime.
 	CatchUp TimerCatchUp
+	// Filter, when set, restricts the scheduler to the tasks it accepts.
+	// Two schedulers on one store are safe, since every invocation is
+	// reserved by a fenced commit, but a filter keeps them apart.
+	Filter func(storage.Snapshot, Task) bool
+	// Prepare runs at the start of every Tick, before tasks are selected.
+	// It returns how many commits it made. The built-in executor uses
+	// it to admit queued inputs into new generation chains.
+	Prepare func(ctx context.Context) (int, error)
+	// Hold, when set, keeps a task from being dispatched, for example a
+	// task the recovery policy holds for a human. Abort marks are still
+	// committed; the task runs once Hold releases it.
+	Hold func(Task) bool
 
 	mu     sync.Mutex
 	active map[string]context.CancelFunc
@@ -397,6 +491,7 @@ type TaskScheduler struct {
 	// are never cancelled by a later abort mark.
 	aborting map[string]bool
 	done     chan taskResult
+	running  sync.WaitGroup
 }
 
 func NewTaskScheduler(r *Runtime, registry TaskRegistry) *TaskScheduler {
@@ -423,6 +518,14 @@ func (s *TaskScheduler) Tick(ctx context.Context) (int, time.Time, error) {
 	if err := s.cancelAborting(ctx); err != nil {
 		return 0, time.Time{}, err
 	}
+	prepared := 0
+	if s.Prepare != nil {
+		n, err := s.Prepare(ctx)
+		if err != nil {
+			return 0, time.Time{}, err
+		}
+		prepared = n
+	}
 	var wake time.Time
 	for {
 		if err := ctx.Err(); err != nil {
@@ -448,14 +551,25 @@ func (s *TaskScheduler) Tick(ctx context.Context) (int, time.Time, error) {
 		if runnable.ID == "" {
 			break
 		}
+		if _, taken := s.r.claims.LoadOrStore(runnable.ID, s); taken {
+			// Another scheduler of this process claimed it between
+			// selection and here; the next pass skips it.
+			continue
+		}
 		invCtx, cancelInv := context.WithCancel(ctx)
 		s.mu.Lock()
 		s.active[runnable.ID] = cancelInv
-		s.aborting[runnable.ID] = runnable.AbortRequested && runnable.Phase != "__complete__"
+		// aborting marks invocations a later abort mark must not cancel:
+		// abort handlers themselves, and definitions that join on abort.
+		def, _ := s.definition(runnable)
+		s.aborting[runnable.ID] = (runnable.AbortRequested && runnable.Phase != "__complete__") || def.JoinOnAbort
+		s.running.Add(1)
 		s.mu.Unlock()
 		go func(t Task) {
+			defer s.running.Done()
 			err := s.runOnce(invCtx, t)
 			cancelInv()
+			s.r.claims.Delete(t.ID)
 			s.mu.Lock()
 			delete(s.active, t.ID)
 			delete(s.aborting, t.ID)
@@ -485,12 +599,26 @@ func (s *TaskScheduler) Tick(ctx context.Context) (int, time.Time, error) {
 		}
 		break
 	}
-	return progressed, wake, firstErr
+	return progressed + prepared, wake, firstErr
 }
 
 type taskResult struct {
 	id  string
 	err error
+}
+
+// Join waits until every invocation this scheduler started has returned, or
+// ctx ends. Cancel the context passed to Tick or Run first; Join is how a
+// host makes sure no handler still writes when it closes the store.
+func (s *TaskScheduler) Join(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() { s.running.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // InFlight reports how many handler invocations this scheduler is running.
@@ -534,7 +662,8 @@ func (s *TaskScheduler) waitProgress(ctx context.Context, wake time.Time) error 
 	waitCtx, cancelWait := context.WithCancel(ctx)
 	defer cancelWait()
 	changed := make(chan error, 1)
-	go func() { changed <- s.r.store.Wait(waitCtx, snap.Revision()) }()
+	store, revision := s.r.store, snap.Revision()
+	go func() { changed <- store.Wait(waitCtx, revision) }()
 	var timer <-chan time.Time
 	if !wake.IsZero() {
 		d := wake.Sub(s.now())
@@ -633,10 +762,16 @@ func (s *TaskScheduler) selectRunnable(ctx context.Context, snap storage.Snapsho
 			if t.State == "terminal" {
 				continue
 			}
+			if s.Filter != nil && !s.Filter(snap, t) {
+				continue
+			}
 			s.mu.Lock()
 			_, active := s.active[t.ID]
 			s.mu.Unlock()
 			if active {
+				continue
+			}
+			if _, claimed := s.r.claims.Load(t.ID); claimed {
 				continue
 			}
 			if _, blocked := s.definition(t); blocked != nil {
@@ -644,6 +779,9 @@ func (s *TaskScheduler) selectRunnable(ctx context.Context, snap storage.Snapsho
 			}
 			if t.Blocked != "" {
 				// Blocked cleanup needs a human (Runtime.RetryCleanup).
+				continue
+			}
+			if s.Hold != nil && s.Hold(t) {
 				continue
 			}
 			if t.RetryAt != nil {
@@ -669,6 +807,19 @@ func (s *TaskScheduler) selectRunnable(ctx context.Context, snap storage.Snapsho
 			case "pending", "running", "aborting":
 				return t, wake, nil
 			case "waiting":
+				if t.WaitApproval != "" {
+					a, ok, err := read[Approval](snap, approvalKey(t.WaitApproval))
+					if err != nil {
+						return Task{}, wake, err
+					}
+					// Parked until the decision commits. An approval that
+					// expires undecided stays pending until Decide or abort
+					// records the expiry, so a human always sees it.
+					if !ok || a.State != approvalPending {
+						return t, wake, nil
+					}
+					continue
+				}
 				if t.WakeAt != nil {
 					if !s.now().Before(*t.WakeAt) {
 						return t, wake, nil
@@ -712,6 +863,19 @@ func (s *TaskScheduler) selectRunnable(ctx context.Context, snap storage.Snapsho
 }
 
 func childrenSettled(snap storage.Snapshot, id string) (bool, error) {
+	if t, ok, err := read[Task](snap, taskKey(id)); err != nil {
+		return false, err
+	} else if ok {
+		for _, linked := range t.Linked {
+			l, ok, err := read[Task](snap, taskKey(linked))
+			if err != nil {
+				return false, err
+			}
+			if ok && l.State != "terminal" {
+				return false, nil
+			}
+		}
+	}
 	children, err := snap.Page("task-owner/"+id+"/", "", 1000)
 	if err != nil {
 		return false, err
@@ -799,7 +963,7 @@ func (s *TaskScheduler) runOnce(ctx context.Context, t Task) error {
 		t.Notices = append(t.Notices, fmt.Sprintf("migrated checkpoint to version %d", def.Version))
 	}
 	var waited []Task
-	if t.State == "waiting" && t.WakeAt == nil {
+	if t.State == "waiting" && t.WakeAt == nil && t.WaitApproval == "" {
 		var pendingOps []storage.Operation
 		allTerminal := true
 		for _, id := range t.WaitOn {
@@ -838,7 +1002,11 @@ func (s *TaskScheduler) runOnce(ctx context.Context, t Task) error {
 		t.State = "running"
 	}
 	t.Attempt++
-	t.WaitOn, t.WaitPolicy, t.WakeAt, t.Repeat, t.RetryAt = nil, "", nil, 0, nil
+	t.WaitOn, t.WaitPolicy, t.WakeAt, t.Repeat, t.RetryAt, t.WaitApproval = nil, "", nil, 0, nil, ""
+	// A new invocation identity fences task-scoped commits of any earlier
+	// invocation. Effect is kept: it records that an earlier invocation may
+	// have started its effect, which the reservation does not change.
+	t.Invocation = uuid.NewString()
 	t.Revision = snap.Revision() + 1
 	if err := s.r.commit(ctx, snap, "task.reserve", record(taskKey(t.ID), t)); err != nil {
 		return err
@@ -847,7 +1015,8 @@ func (s *TaskScheduler) runOnce(ctx context.Context, t Task) error {
 	if err != nil {
 		return err
 	}
-	tc := TaskContext{Task: t, Snapshot: snap, Waited: waited}
+	inv := &taskInvocation{s: s, task: t}
+	tc := TaskContext{Task: t, Snapshot: snap, Waited: waited, Interrupted: t.Effect == effectStarted, inv: inv}
 	if cleanup {
 		// Compensation after a decided failed or aborted outcome.
 		var held heldOutcome
@@ -892,7 +1061,7 @@ func (s *TaskScheduler) runOnce(ctx context.Context, t Task) error {
 		} else {
 			next, handlerErr = def.Abort(ctx, tc)
 		}
-		if handlerErr == nil && next.Outcome == "" {
+		if handlerErr == nil && next.Outcome == "" && next.Commit == nil {
 			handlerErr = fmt.Errorf("abort handler returned no outcome")
 		}
 		if handlerErr != nil {
@@ -914,6 +1083,13 @@ func (s *TaskScheduler) runOnce(ctx context.Context, t Task) error {
 		// the phase from its committed checkpoint.
 		return ctx.Err()
 	}
+	// The handler may have committed task-scoped state (StartEffect).
+	t = inv.current()
+	if errors.Is(handlerErr, ErrTaskAborting) || errors.Is(handlerErr, ErrStaleInvocation) {
+		// Nothing started. The next pass runs the abort handler, or the
+		// newer invocation owns the task.
+		return storage.ErrConflict
+	}
 	if handlerErr != nil {
 		return s.retryOrBlock(ctx, t, def, handlerErr, false)
 	}
@@ -932,7 +1108,7 @@ func (s *TaskScheduler) retryOrBlock(ctx context.Context, t Task, def TaskDefini
 	if err != nil {
 		return err
 	}
-	if !ok || current.Revision != t.Revision {
+	if !ok || !sameInvocationState(t, current) {
 		return storage.ErrConflict
 	}
 	t = current
@@ -1020,19 +1196,69 @@ func (r *Runtime) RetryCleanup(ctx context.Context, id, actor string) (Task, err
 // It rejects waits on missing tasks, on itself, or on its owner chain, and
 // faults a continuation that names an undefined phase.
 func (s *TaskScheduler) commitNext(ctx context.Context, t Task, next Next) error {
-	snap, err := s.r.store.Snapshot(ctx)
-	if err != nil {
+	for attempt := 0; ; attempt++ {
+		snap, err := s.r.store.Snapshot(ctx)
+		if err != nil {
+			return err
+		}
+		current, ok, err := read[Task](snap, taskKey(t.ID))
+		if err != nil {
+			return err
+		}
+		if !ok || !sameInvocationState(t, current) {
+			return storage.ErrConflict
+		}
+		n, created := next, map[string]bool(nil)
+		if next.Commit != nil {
+			tx := &TaskTx{Snapshot: snap, task: current, s: s}
+			built, err := next.Commit(tx)
+			if err != nil {
+				if errors.Is(err, ErrTaskAborting) {
+					return storage.ErrConflict
+				}
+				return s.retryOrBlock(ctx, current, s.registry[current.Kind], err, false)
+			}
+			if built.Commit != nil {
+				return s.fault(ctx, snap, current, "commit builder returned another builder")
+			}
+			built.Ops = append(tx.ops, built.Ops...)
+			if built.AfterCommit == nil {
+				built.AfterCommit = next.AfterCommit
+			}
+			n, created = built, tx.created
+		}
+		err = s.applyNext(ctx, snap, current, n, created)
+		if errors.Is(err, storage.ErrConflict) && next.Commit != nil && attempt < 64 {
+			// Another writer committed first. The builder reruns on fresh
+			// state as long as this task's record is unchanged.
+			continue
+		}
+		if err == nil && n.AfterCommit != nil {
+			n.AfterCommit()
+		}
 		return err
 	}
-	current, ok, err := read[Task](snap, taskKey(t.ID))
-	if err != nil {
-		return err
-	}
-	if !ok || current.Revision != t.Revision {
-		return storage.ErrConflict
-	}
-	t = current
+}
+
+// applyNext commits one Next for the current committed task. created names
+// tasks created in this same commit, which may be waited on.
+func (s *TaskScheduler) applyNext(ctx context.Context, snap storage.Snapshot, t Task, next Next, created map[string]bool) error {
+	var err error
 	def := s.registry[t.Kind]
+	// Every applied Next settles the invocation's effect intent, unless it
+	// explicitly keeps an unresolved effect for reconciliation.
+	if !next.KeepEffect || next.Outcome != "" {
+		t.Effect = ""
+	}
+	for _, id := range next.Link {
+		if id == t.ID || slicesContains(t.Linked, id) {
+			continue
+		}
+		if _, ok := snap.Get(taskKey(id)); !ok && !created[id] {
+			return s.fault(ctx, snap, t, "task links a missing task")
+		}
+		t.Linked = append(t.Linked, id)
+	}
 	ops := append([]storage.Operation(nil), next.Ops...)
 	for _, spec := range next.Children {
 		child, childOps, err := buildTask(s.registry, t.ConversationID, t.ID, spec, snap.Revision()+1)
@@ -1041,7 +1267,11 @@ func (s *TaskScheduler) commitNext(ctx context.Context, t Task, next Next) error
 			ops = nil
 			break
 		}
-		_ = child
+		if t.AbortRequested {
+			// Abort intent survives the response that created the work.
+			child.AbortRequested = true
+			childOps[0] = record(taskKey(child.ID), child)
+		}
 		ops = append(ops, childOps...)
 	}
 	switch {
@@ -1094,7 +1324,7 @@ func (s *TaskScheduler) commitNext(ctx context.Context, t Task, next Next) error
 				return err
 			}
 			t.Revision = snap.Revision() + 1
-			return s.r.commit(ctx, snap, "task.hold", append(ops, record(taskKey(t.ID), t))...)
+			return s.r.commit(ctx, snap, "task.hold", mergeOps(append(ops, record(taskKey(t.ID), t)))...)
 		}
 		// Failed and aborted outcomes run Cleanup first. The held outcome
 		// is committed with state aborting so a crash resumes the cleanup
@@ -1111,7 +1341,7 @@ func (s *TaskScheduler) commitNext(ctx context.Context, t Task, next Next) error
 			t.Checkpoint, _ = json.Marshal(held)
 			t.Notices = append(t.Notices, fmt.Sprintf("%s outcome decided, running cleanup", next.Outcome))
 			t.Revision = snap.Revision() + 1
-			return s.r.commit(ctx, snap, "task.cleanup", append(ops, record(taskKey(t.ID), t))...)
+			return s.r.commit(ctx, snap, "task.cleanup", mergeOps(append(ops, record(taskKey(t.ID), t)))...)
 		}
 		t.State, t.Outcome, t.Error = "terminal", next.Outcome, next.Error
 		t.Phase, t.Checkpoint, t.WaitOn, t.WaitPolicy, t.WakeAt, t.RetryAt, t.LastError = "", nil, nil, "", nil, nil, ""
@@ -1121,10 +1351,23 @@ func (s *TaskScheduler) commitNext(ctx context.Context, t Task, next Next) error
 				return err
 			}
 		}
+	case next.WaitApproval != "":
+		if next.Phase == "" || def.Phases[next.Phase] == nil {
+			return s.fault(ctx, snap, t, "approval wait without a defined continuation phase")
+		}
+		t.State, t.WaitApproval, t.Phase = "waiting", next.WaitApproval, next.Phase
+		t.Checkpoint, err = json.Marshal(next.Checkpoint)
+		if err != nil {
+			return err
+		}
+		t.Attempt = 0
 	case len(next.WaitOn) > 0:
 		for _, id := range next.WaitOn {
 			if id == t.ID {
 				return s.fault(ctx, snap, t, "task cannot wait on itself")
+			}
+			if created[id] {
+				continue
 			}
 			dep, ok, err := read[Task](snap, taskKey(id))
 			if err != nil {
@@ -1188,14 +1431,37 @@ func (s *TaskScheduler) commitNext(ctx context.Context, t Task, next Next) error
 		return s.fault(ctx, snap, t, "phase returned nothing")
 	}
 	t.Revision = snap.Revision() + 1
-	return s.r.commit(ctx, snap, "task.step", append(ops, record(taskKey(t.ID), t))...)
+	return s.r.commit(ctx, snap, "task.step", mergeOps(append(ops, record(taskKey(t.ID), t)))...)
+}
+
+func slicesContains(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *TaskScheduler) fault(ctx context.Context, snap storage.Snapshot, t Task, reason string) error {
 	t.State, t.Outcome, t.Error = "terminal", "failed", "faulted: "+reason
-	t.Phase, t.Checkpoint, t.WaitOn, t.WaitPolicy, t.WakeAt, t.RetryAt, t.Blocked = "", nil, nil, "", nil, nil, ""
+	t.Phase, t.Checkpoint, t.WaitOn, t.WaitPolicy, t.WakeAt, t.RetryAt, t.Blocked, t.WaitApproval, t.Effect = "", nil, nil, "", nil, nil, "", "", ""
 	t.Revision = snap.Revision() + 1
 	return s.r.commit(ctx, snap, "task.fault", record(taskKey(t.ID), t))
+}
+
+// sameInvocationState reports whether current is the record expected by the
+// invocation, allowing only an abort mark committed meanwhile. The abort is
+// honoured after the invocation records what already happened.
+func sameInvocationState(expected, current Task) bool {
+	if current.Revision == expected.Revision {
+		return true
+	}
+	if expected.Invocation == "" || current.Invocation != expected.Invocation {
+		return false
+	}
+	expected.AbortRequested, expected.Revision = current.AbortRequested, current.Revision
+	return sameJSON(expected, current)
 }
 
 // heldOutcome is the checkpoint of the internal completion phase and of the
@@ -1239,6 +1505,13 @@ func abortMarks(snap storage.Snapshot, t Task) []storage.Operation {
 			continue
 		}
 		ops = append(ops, abortMarks(snap, child)...)
+	}
+	for _, id := range t.Linked {
+		linked, ok, err := read[Task](snap, taskKey(id))
+		if err != nil || !ok || linked.AbortRequested {
+			continue
+		}
+		ops = append(ops, abortMarks(snap, linked)...)
 	}
 	t.AbortRequested = true
 	t.Revision = snap.Revision() + 1

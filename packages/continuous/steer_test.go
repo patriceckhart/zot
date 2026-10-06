@@ -104,6 +104,11 @@ func TestSubmitPoliciesIdleBusyAndLimits(t *testing.T) {
 	if _, err := h.r.SubmitWith(ctx, c.ID, "a", "", "idle steer", SubmitOptions{Policy: PolicySteer, RejectBusy: true}); err != nil {
 		t.Fatalf("idle steer: %v", err)
 	}
+	// The idle submission started a chain; one more input fills a queue of
+	// one, the next is refused.
+	if _, err := h.r.SubmitWith(ctx, c.ID, "a", "", "x", SubmitOptions{MaxQueue: 1}); err != nil {
+		t.Fatalf("first queued: %v", err)
+	}
 	if _, err := h.r.SubmitWith(ctx, c.ID, "a", "", "x", SubmitOptions{MaxQueue: 1}); !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("queue limit: %v", err)
 	}
@@ -130,7 +135,9 @@ func TestSubmitPoliciesIdleBusyAndLimits(t *testing.T) {
 	if n := h.client.requestCount(); n != 3 {
 		t.Fatalf("requests: %d", n)
 	}
-	if got := entryTypes(h.entries(t, c.ID)); got != "user assistant user tool_result assistant assistant" {
+	// The queued "x" was admitted before the first response and is
+	// answered by the second chain, together with "queued".
+	if got := entryTypes(h.entries(t, c.ID)); got != "user user assistant user tool_result assistant assistant" {
 		t.Fatalf("entries: %s", got)
 	}
 }

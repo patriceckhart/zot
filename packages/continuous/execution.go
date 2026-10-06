@@ -68,9 +68,11 @@ func (o ExecutionOptions) normalized() ExecutionOptions {
 	return o
 }
 
-// Run is the persisted execution state machine of one conversation. At most
-// one run exists per conversation. Its phase is committed before the external
-// work of that phase starts, so recovery knows what may have happened.
+// Run is the run shape clients read. For a conversation's active generation
+// chain it is a read-only projection (see chainRun). Stores written by the
+// earlier run-based executor also hold Run records under run/<conversation>;
+// an unfinished one is migrated into a chain at open (MigrateLegacy) and
+// never driven directly.
 type Run struct {
 	ID             string `json:"id"`
 	ConversationID string `json:"conversation_id"`
@@ -91,8 +93,7 @@ type Run struct {
 	Error   string `json:"error,omitempty"`
 	// Notices are recovery decisions for humans, never model-visible.
 	Notices []string `json:"notices,omitempty"`
-	// AbortRequested is the committed abort intent. The stepper honours it at
-	// its next boundary.
+	// AbortRequested is the committed abort intent.
 	AbortRequested bool `json:"abort_requested,omitempty"`
 	// Compacted records that this turn already compacted once, so a second
 	// overflow fails instead of looping.
@@ -135,9 +136,10 @@ func runKey(conversationID string) string { return "run/" + conversationID }
 var ErrBusy = errors.New("continuous conversation has an active run")
 var ErrNoEngine = errors.New("continuous runtime has no engine")
 
-// Service runs admitted work. It is single-process and trusted-local. One
-// Service per runtime; a second concurrent Service on the same store is
-// prevented by the store's writer fence, not by this type.
+// Service answers admitted work of a runtime on the task scheduler. Step
+// drives one conversation in the caller's goroutine; a Host drives every
+// conversation. Both use the same task definitions, so there is one
+// executor.
 type Service struct {
 	r    *Runtime
 	opts ExecutionOptions
@@ -146,9 +148,6 @@ type Service struct {
 	// the generation it started with.
 	engine     atomic.Pointer[engineGeneration]
 	generation atomic.Uint64
-	// compactor holds background summaries until a request boundary
-	// publishes them.
-	compactor *backgroundCompactor
 }
 
 type engineGeneration struct {
@@ -164,17 +163,38 @@ func NewService(r *Runtime, engine Engine, opts ExecutionOptions) (*Service, err
 	if engine == nil {
 		return nil, ErrNoEngine
 	}
-	s := &Service{r: r, opts: opts.normalized(), compactor: newBackgroundCompactor()}
+	s := &Service{r: r, opts: opts.normalized()}
 	s.engine.Store(&engineGeneration{Engine: engine, Generation: 1})
 	s.generation.Store(1)
 	return s, nil
 }
 
-// Run reads the committed run of a conversation.
+// Run returns the run shape of a conversation: the projection of its active
+// chain, else the last settled chain, else a stored run record of the
+// earlier executor.
 func (r *Runtime) Run(ctx context.Context, conversationID string) (Run, bool, error) {
 	snap, err := r.store.Snapshot(ctx)
 	if err != nil {
 		return Run{}, false, err
+	}
+	return runView(snap, conversationID)
+}
+
+func runView(snap storage.Snapshot, conversationID string) (Run, bool, error) {
+	if chain, ok, err := read[Chain](snap, chainKey(conversationID)); err != nil {
+		return Run{}, false, err
+	} else if ok {
+		return chainRun(snap, chain), true, nil
+	}
+	if legacy, ok, err := read[Run](snap, runKey(conversationID)); err != nil {
+		return Run{}, false, err
+	} else if ok && legacy.Phase != "done" {
+		return legacy, true, nil
+	}
+	if t, ok, _ := read[Task](snap, taskKey(lastGeneration(snap, conversationID))); ok {
+		if run, ok := settledRun(t); ok {
+			return run, true, nil
+		}
 	}
 	return read[Run](snap, runKey(conversationID))
 }
@@ -202,167 +222,41 @@ func (s *Service) Reload(ctx context.Context, engine Engine) (uint64, error) {
 // Generation is the current engine generation.
 func (s *Service) Generation() uint64 { return s.generation.Load() }
 
-// CompactionMetrics reports background compaction activity.
-func (s *Service) CompactionMetrics() CompactionMetrics { return s.compactor.metrics() }
-
-// WaitCompactions blocks until in-flight background summaries finish or ctx
-// ends. Summaries that finish after the host stops are not published.
-func (s *Service) WaitCompactions(ctx context.Context) { s.compactor.wait(ctx) }
-
 func (s *Service) currentEngine() Engine { return s.engine.Load().Engine }
 
-// Step advances one conversation until its queue is empty or ctx ends. It
-// first recovers an interrupted run, then answers queued submissions in
-// order. It returns the last committed run of the conversation and whether
-// this call performed work. Only one Step per conversation may execute at a
-// time; a concurrent stepper loses the revision check with ErrBusy.
-func (s *Service) Step(ctx context.Context, conversationID string) (Run, bool, error) {
-	var last Run
-	did := false
-	for {
-		if err := ctx.Err(); err != nil {
-			return last, did, err
-		}
-		run, ok, err := s.r.Run(ctx, conversationID)
-		if err != nil {
-			return last, did, err
-		}
-		if ok {
-			last = run
-		}
-		if ok && run.Phase != "done" {
-			run, err = s.drive(ctx, run)
-			if err != nil {
-				return run, true, err
-			}
-			last, did = run, true
-			continue
-		}
-		started, ok, err := s.start(ctx, conversationID)
-		if err != nil {
-			return last, did, err
-		}
-		if !ok {
-			return last, did, nil
-		}
-		last, did = started, true
-	}
-}
-
-// start creates a run for the queued submissions of a conversation. The run
-// record, the submission state changes, and the queue removal commit together.
-func (s *Service) start(ctx context.Context, conversationID string) (Run, bool, error) {
-	for {
-		snap, err := s.r.store.Snapshot(ctx)
-		if err != nil {
-			return Run{}, false, err
-		}
-		c, err := conversation(snap, conversationID)
-		if err != nil {
-			return Run{}, false, err
-		}
-		if existing, ok, err := read[Run](snap, runKey(conversationID)); err != nil {
-			return Run{}, false, err
-		} else if ok && existing.Phase != "done" {
-			return existing, true, nil
-		}
-		queue, err := snap.Page("queue/"+conversationID+"/", "", 100)
-		if err != nil {
-			return Run{}, false, err
-		}
-		if len(queue) == 0 {
-			return Run{}, false, nil
-		}
-		run := Run{ID: uuid.NewString(), ConversationID: conversationID, Phase: "request", Turn: 1, Attempt: 1, Cutoff: c.EntrySequence}
-		ops := []storage.Operation{}
-		for _, row := range queue {
-			var id string
-			if err := json.Unmarshal(row.Value, &id); err != nil {
-				return Run{}, false, storage.ErrCorrupt
-			}
-			sub, ok, err := read[Submission](snap, "submission/"+id)
-			if err != nil || !ok {
-				return Run{}, false, fmt.Errorf("%w: queued submission missing", storage.ErrCorrupt)
-			}
-			sub.State = "running"
-			run.Submissions = append(run.Submissions, id)
-			ops = append(ops, record("submission/"+id, sub), storage.Operation{Key: row.Key, Delete: true})
-		}
-		c.Revision = snap.Revision() + 1
-		run.Revision = c.Revision
-		ops = append(ops, record("conversation/"+conversationID, c), record(runKey(conversationID), run))
-		err = s.r.commit(ctx, snap, "run.start", ops...)
-		if errors.Is(err, storage.ErrConflict) {
-			continue
-		}
-		if err != nil {
-			return Run{}, false, err
-		}
-		return run, true, nil
-	}
-}
-
-// drive executes the committed phase of a run until the run is done or ctx
-// ends. Every external effect sits between two commits.
-func (s *Service) drive(ctx context.Context, run Run) (Run, error) {
-	for run.Phase != "done" {
-		if err := ctx.Err(); err != nil {
-			return run, err
-		}
-		// Reread the committed run so an abort requested by another caller
-		// is honoured at this boundary.
-		current, ok, err := s.r.Run(ctx, run.ConversationID)
-		if err != nil {
-			return run, err
-		}
-		if !ok || current.ID != run.ID {
-			return run, fmt.Errorf("%w: run replaced", storage.ErrConflict)
-		}
-		run = current
-		if run.AbortRequested {
-			return s.abort(ctx, run)
-		}
-		switch run.Phase {
-		case "request":
-			run, err = s.request(ctx, run)
-		case "tools":
-			run, err = s.tools(ctx, run)
-		default:
-			return run, fmt.Errorf("%w: unknown run phase", storage.ErrCorrupt)
-		}
-		if err != nil {
-			return run, err
-		}
-	}
-	return run, nil
-}
-
-func (s *Service) load(ctx context.Context, run Run) (*core.Agent, Conversation, storage.Snapshot, error) {
+// CompactionMetrics reports compaction activity from committed state.
+func (s *Service) CompactionMetrics(ctx context.Context) (CompactionMetrics, error) {
 	snap, err := s.r.store.Snapshot(ctx)
 	if err != nil {
-		return nil, Conversation{}, nil, err
+		return CompactionMetrics{}, err
 	}
-	c, err := conversation(snap, run.ConversationID)
+	return compactionMetrics(snap), nil
+}
+
+// Step answers the queued work of one conversation, and of the
+// conversations it owns, on a scheduler restricted to them, until no chain
+// is active and nothing is queued. It first migrates interrupted runs of the
+// earlier executor. It returns the run shape of the last chain and whether
+// work was done. A conversation blocked by an unmigratable run returns
+// ErrMigrationBlocked; Runtime.Abort settles it.
+func (s *Service) Step(ctx context.Context, conversationID string) (Run, bool, error) {
+	return s.stepTasks(ctx, conversationID)
+}
+
+// prepareAgent builds a fresh agent through the host's Engine, replaces its
+// transcript with the committed model context through cutoff, and applies the
+// conversation's configuration.
+func prepareAgent(ctx context.Context, engine Engine, snap storage.Snapshot, c Conversation, cutoff uint64) (*core.Agent, error) {
+	agent, err := engine.Build(ctx, c)
 	if err != nil {
-		return nil, Conversation{}, nil, err
-	}
-	current, ok, err := read[Run](snap, runKey(run.ConversationID))
-	if err != nil {
-		return nil, Conversation{}, nil, err
-	}
-	if !ok || current.ID != run.ID || current.Revision != run.Revision {
-		return nil, Conversation{}, nil, fmt.Errorf("%w: run changed concurrently", storage.ErrConflict)
-	}
-	agent, err := s.currentEngine().Build(ctx, c)
-	if err != nil {
-		return nil, Conversation{}, nil, fmt.Errorf("build engine: %w", err)
+		return nil, fmt.Errorf("build engine: %w", err)
 	}
 	if agent == nil {
-		return nil, Conversation{}, nil, fmt.Errorf("engine returned no agent")
+		return nil, fmt.Errorf("engine returned no agent")
 	}
-	messages, err := ModelContext(ctx, snap, run.ConversationID, run.Cutoff)
+	messages, err := ModelContext(ctx, snap, c.ID, cutoff)
 	if err != nil {
-		return nil, Conversation{}, nil, err
+		return nil, err
 	}
 	agent.SetMessages(messages)
 	// Per-conversation tool selection: narrow the host registry to what the
@@ -386,479 +280,14 @@ func (s *Service) load(ctx context.Context, run Run) (*core.Agent, Conversation,
 		agent.System = strings.TrimSpace(agent.System + "\n\n" + c.Config.Instructions)
 	}
 	agent.SessionID = c.ID
-	return agent, c, snap, nil
-}
-
-// request performs one model attempt. Intent (turn, attempt, cutoff) is already
-// committed in the run record. The assembled response and the tool intents
-// commit atomically; a failed attempt commits an attempt entry instead.
-func (s *Service) request(ctx context.Context, run Run) (Run, error) {
-	requestRun := run
-	agent, c, snap, err := s.load(ctx, run)
-	if err != nil {
-		return run, err
-	}
-	// Budgets: the request must not start when the scope's known spend plus
-	// a conservative reservation exceeds the limit. The run fails with the
-	// reason; nothing is sent, so no unknown charge is incurred here.
-	if _, err := checkBudgets(ctx, snap, c.ID, time.Now().UTC()); err != nil {
-		if !errors.Is(err, ErrBudgetExceeded) {
-			return run, err
-		}
-		run.Phase, run.Outcome, run.Error = "done", "failed", err.Error()
-		run.Notices = append(run.Notices, "request refused: "+err.Error())
-		return s.commitRun(ctx, snap, c, run, "run.budget", s.settle(snap, run, "failed")...)
-	}
-	// A background summary that finished while the run continued is
-	// published here, at the request boundary, if its source range is still
-	// the active context. A stale summary is discarded and counted; the run
-	// is not blocked by it.
-	if pending := s.compactor.take(c.ID); pending != nil {
-		if _, err := s.r.publishCompaction(ctx, pending, s.opts.Sink); err == nil {
-			return s.afterCompaction(ctx, run, "background compaction published before the request")
-		} else if errors.Is(err, ErrCompactionStale) {
-			s.compactor.markStale()
-		} else {
-			return run, err
-		}
-	}
-	// Threshold compaction: when the context is near the window, summarize
-	// first. The compaction commits on its own; the run then reloads so the
-	// request includes the summary and the cutoff advances past it.
-	if !run.Compacted && needsCompaction(s.opts.Compaction, agent.Messages(), agent.System) {
-		if _, err := s.r.compact(ctx, s.currentEngine(), c.ID, "", s.opts.Compaction.KeepRecentTokens, "threshold", s.opts.Sink); err == nil {
-			return s.afterCompaction(ctx, run, "threshold compaction before the request")
-		} else if !errors.Is(err, errNothingToCompact) {
-			run.Notices = append(run.Notices, "threshold compaction failed: "+err.Error())
-		}
-	}
-	// Background start: above the background threshold but below the
-	// blocking one, summarize concurrently with this request. The result
-	// waits for the next request boundary of this conversation.
-	if s.opts.Compaction.BackgroundTokens > 0 && estimateTokens(agent.Messages())+len(agent.System)/4 > s.opts.Compaction.BackgroundTokens {
-		s.compactor.start(ctx, s.r, s.currentEngine(), c.ID, s.opts.Compaction.KeepRecentTokens, s.opts.Sink)
-	}
-	var usage provider.Usage
-	usageKnown := false
-	var partial *partialBatcher
-	if s.opts.PartialFlushInterval >= 0 {
-		partial = s.startPartial(ctx, run)
-	}
-	stop, msg, turnErr := agent.Turn(ctx, func(ev core.AgentEvent) {
-		switch e := ev.(type) {
-		case core.EvUsage:
-			if !e.Auxiliary {
-				usage, usageKnown = usage.Add(e.Usage), true
-			}
-		case core.EvTextDelta:
-			if partial != nil {
-				partial.add(e.Delta)
-			}
-		}
-		s.opts.Sink(ev)
-	})
-	completed := turnErr == nil && stop != provider.StopError && stop != provider.StopAborted
-	if partial != nil {
-		partial.finish(ctx, completed)
-	}
-	// The attempt's final commit removes the live partial record, or, for a
-	// failed attempt, the retained final record stays until the next attempt
-	// replaces it. Reread the snapshot so the clear sees the last flush.
-	snap, err = s.r.store.Snapshot(ctx)
-	if err != nil {
-		return run, err
-	}
-	c, err = conversation(snap, c.ID)
-	if err != nil {
-		return run, err
-	}
-	latest, ok, err := read[Run](snap, runKey(c.ID))
-	if err != nil {
-		return run, err
-	}
-	// Only an abort may change this run while the request is in flight.
-	// Preserve it when recording the response instead of overwriting it.
-	expected := requestRun
-	expected.AbortRequested, expected.Revision = latest.AbortRequested, latest.Revision
-	if !ok || !sameJSON(expected, latest) {
-		return run, fmt.Errorf("%w: run changed during model request", ErrBusy)
-	}
-	run.AbortRequested, run.Revision = latest.AbortRequested, latest.Revision
-	var clear []storage.Operation
-	if completed {
-		clear = partialClearOp(snap, c.ID)
-	}
-	// Record the effective request shape (system prompt and tool schemas by
-	// hash) so the attempt can be explained later.
-	system, toolDefs, _ := agent.ContextSnapshot()
-	toolJSON, _ := json.Marshal(toolDefs)
-	names := make([]string, 0, len(toolDefs))
-	for _, t := range toolDefs {
-		names = append(names, t.Name)
-	}
-	clear = append(clear, promptOps(snap, c, run, agent.Model, system, toolJSON, names)...)
-	ledger := s.usageRow(&c, run, agent, usage, usageKnown)
-	if turnErr != nil && !run.AbortRequested && !run.Compacted && s.opts.Compaction.ContextWindow > 0 && isContextOverflow(turnErr) {
-		// Overflow: record the attempt, compact once, and retry the request
-		// without counting it against the retry budget.
-		c.EntrySequence++
-		attempt := Entry{ID: uuid.NewString(), ConversationID: c.ID, Revision: snap.Revision() + 1, Type: entryAttempt, Content: turnErr.Error(), Time: time.Now().UTC()}
-		committed, err := s.commitRun(ctx, snap, c, run, "run.overflow", append([]storage.Operation{record(entryKey(c.ID, c.EntrySequence), attempt), ledger}, clear...)...)
-		if err != nil {
-			return committed, err
-		}
-		if _, err := s.r.compact(ctx, s.currentEngine(), c.ID, "", s.opts.Compaction.KeepRecentTokens, "overflow", s.opts.Sink); err != nil {
-			// The attempt and its ledger row are already committed. End the
-			// run on fresh state so no entry or counter is written twice.
-			snap, snapErr := s.r.store.Snapshot(ctx)
-			if snapErr != nil {
-				return committed, snapErr
-			}
-			fresh, cErr := conversation(snap, c.ID)
-			if cErr != nil {
-				return committed, cErr
-			}
-			latest, ok, readErr := read[Run](snap, runKey(c.ID))
-			if readErr != nil {
-				return committed, readErr
-			}
-			expected := committed
-			expected.AbortRequested, expected.Revision = latest.AbortRequested, latest.Revision
-			if !ok || !sameJSON(expected, latest) {
-				return committed, fmt.Errorf("%w: run changed during overflow compaction", ErrBusy)
-			}
-			if latest.AbortRequested {
-				return s.abort(ctx, latest)
-			}
-			committed = latest
-			committed.Phase, committed.Outcome, committed.Error = "done", "failed", fmt.Sprintf("%v (compaction after overflow failed: %v)", turnErr, err)
-			return s.commitRun(ctx, snap, fresh, committed, "run.failed", s.settle(snap, committed, "failed")...)
-		}
-		return s.afterCompaction(ctx, committed, "compacted after the provider rejected the context size")
-	}
-	if turnErr != nil || stop == provider.StopError || stop == provider.StopAborted {
-		return s.failedAttempt(ctx, run, c, snap, msg, stop, turnErr, ledger, clear...)
-	}
-	// A successful turn appends the assistant message. Tool intents are
-	// recorded in the same commit so recovery never sees a call without an
-	// owning round or a round without its call.
-	next := run
-	next.Tools = nil
-	var calls []provider.ToolCallBlock
-	for _, block := range msg.Content {
-		if tc, ok := block.(provider.ToolCallBlock); ok && !tc.Server {
-			calls = append(calls, tc)
-		}
-	}
-	for _, tc := range calls {
-		next.Tools = append(next.Tools, ToolIntent{CallID: tc.ID, Name: tc.Name, State: "pending"})
-	}
-	c.EntrySequence++
-	entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, Revision: snap.Revision() + 1, Type: entryAssistant, Content: core.MessageText(msg), Time: time.Now().UTC()}
-	entry.Message = marshalMessage(msg)
-	ops := append([]storage.Operation{record(entryKey(c.ID, c.EntrySequence), entry), ledger}, clear...)
-	if next.AbortRequested || (stop == provider.StopToolUse && len(calls) > 0) {
-		// drive settles a pending abort before any tool can execute, even
-		// when this response has no tool calls.
-		next.Phase = "tools"
-	} else {
-		next.Phase = "done"
-		next.Outcome = "completed"
-		ops = append(ops, s.settle(snap, next, "answered")...)
-	}
-	next.Cutoff = c.EntrySequence
-	return s.commitRun(ctx, snap, c, next, "run.response", ops...)
-}
-
-// afterCompaction moves the run's cutoff past the new compaction entry and
-// marks the turn compacted. The request is then sent on the next drive pass.
-func (s *Service) afterCompaction(ctx context.Context, run Run, notice string) (Run, error) {
-	snap, err := s.r.store.Snapshot(ctx)
-	if err != nil {
-		return run, err
-	}
-	c, err := conversation(snap, run.ConversationID)
-	if err != nil {
-		return run, err
-	}
-	latest, ok, err := read[Run](snap, runKey(c.ID))
-	if err != nil {
-		return run, err
-	}
-	if !ok || latest.ID != run.ID {
-		return run, fmt.Errorf("%w: run replaced", storage.ErrConflict)
-	}
-	latest.Cutoff, latest.Compacted = c.EntrySequence, true
-	latest.Notices = append(latest.Notices, notice)
-	return s.commitRun(ctx, snap, c, latest, "run.compacted")
-}
-
-// failedAttempt records the failed or aborted attempt as a non-context entry
-// and either schedules another attempt or ends the run. Usage already charged
-// is unknown here and is never reported as zero.
-func (s *Service) failedAttempt(ctx context.Context, run Run, c Conversation, snap storage.Snapshot, msg provider.Message, stop provider.StopReason, turnErr error, ledger storage.Operation, extra ...storage.Operation) (Run, error) {
-	reason := string(stop)
-	if turnErr != nil {
-		reason = turnErr.Error()
-	}
-	c.EntrySequence++
-	entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, Revision: snap.Revision() + 1, Type: entryAttempt, Content: reason, Time: time.Now().UTC()}
-	if len(msg.Content) > 0 {
-		entry.Message = marshalMessage(msg)
-	}
-	ops := append([]storage.Operation{record(entryKey(c.ID, c.EntrySequence), entry), ledger}, extra...)
-	next := run
-	if next.AbortRequested {
-		// Record the attempt and let drive settle the abort without retrying
-		// or reporting a provider failure in place of the user's decision.
-		return s.commitRun(ctx, snap, c, next, "run.abort_pending", ops...)
-	}
-	// Context cancellation is the caller's decision, not a provider failure.
-	// The run stays in its request phase for the next Step.
-	if errors.Is(turnErr, context.Canceled) || errors.Is(turnErr, context.DeadlineExceeded) || (stop == provider.StopAborted && turnErr == nil && ctx.Err() != nil) {
-		next.Notices = append(next.Notices, fmt.Sprintf("turn %d attempt %d interrupted by cancellation", run.Turn, run.Attempt))
-		committed, err := s.commitRun(ctx, snap, c, next, "run.interrupt", ops...)
-		if err != nil {
-			return committed, err
-		}
-		return committed, ctx.Err()
-	}
-	if turnErr != nil && run.Attempt < s.opts.MaxAttempts && core.RetryableProviderError(turnErr) {
-		next.Attempt++
-		committed, err := s.commitRun(ctx, snap, c, next, "run.retry", ops...)
-		if err != nil {
-			return committed, err
-		}
-		delay := s.opts.RetryDelay * time.Duration(1<<(run.Attempt-1))
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return committed, ctx.Err()
-		case <-timer.C:
-		}
-		return committed, nil
-	}
-	next.Phase = "done"
-	next.Outcome = "failed"
-	next.Error = reason
-	ops = append(ops, s.settle(snap, next, "failed")...)
-	return s.commitRun(ctx, snap, c, next, "run.failed", ops...)
-}
-
-// tools executes the committed round. For each intent: commit running state
-// with effective arguments and replay policy, execute, commit the result
-// entry. A tool found running at load time was interrupted by a crash and is
-// resolved through its replay policy, never by assuming it did not run.
-func (s *Service) tools(ctx context.Context, run Run) (Run, error) {
-	agent, c, snap, err := s.load(ctx, run)
-	if err != nil {
-		return run, err
-	}
-	assistant, err := lastEntryOfType(snap, c.ID, run.Cutoff, entryAssistant)
-	if err != nil {
-		return run, err
-	}
-	calls := map[string]provider.ToolCallBlock{}
-	for _, block := range assistant.Content {
-		if tc, ok := block.(provider.ToolCallBlock); ok {
-			calls[tc.ID] = tc
-		}
-	}
-	for i := range run.Tools {
-		if err := ctx.Err(); err != nil {
-			return run, err
-		}
-		intent := run.Tools[i]
-		if intent.State == "done" {
-			continue
-		}
-		// An abort requested during the round stops before the next effect.
-		if current, ok, err := s.r.Run(ctx, run.ConversationID); err != nil {
-			return run, err
-		} else if ok && current.ID == run.ID && current.AbortRequested {
-			run.AbortRequested = true
-			return run, nil
-		}
-		call, ok := calls[intent.CallID]
-		if !ok {
-			return run, fmt.Errorf("%w: tool intent without call", storage.ErrCorrupt)
-		}
-		var result core.ToolResult
-		var status string
-		executed := false
-		switch intent.State {
-		case "pending":
-			// Fresh authorization and argument rewrite run before the intent
-			// commit so recovery can rerun with the effective arguments.
-			args, allowed, reason, policy := s.authorize(ctx, agent, run, call)
-			if !allowed {
-				result = core.ToolResult{IsError: true, Content: []provider.Content{provider.TextBlock{Text: reason}}}
-				status = "blocked"
-				break
-			}
-			// Persisted approval: a pending record parks the run until a
-			// human decides. The decision binds to these exact arguments.
-			if s.opts.Approver != nil {
-				pending, approved, decided, err := approvalFor(snap, c, run, call, args)
-				if err != nil {
-					return run, err
-				}
-				switch {
-				case pending != nil:
-					return run, ErrAwaitingApproval
-				case decided != nil && !approved:
-					result = core.ToolResult{IsError: true, Status: "blocked", Content: []provider.Content{provider.TextBlock{Text: "denied: " + firstNonEmpty(decided.Reason, "a human denied this tool call")}}}
-					status = "blocked"
-					run.Tools[i].Approval = decided.ID
-				case approved:
-					run.Tools[i].Approval = decided.ID
-				default:
-					if req, need := s.opts.Approver(ctx, c, call, args); need {
-						if _, err := s.requestApproval(ctx, snap, c, run, call, args, req); err != nil {
-							return run, err
-						}
-						return run, ErrAwaitingApproval
-					}
-				}
-				if status == "blocked" {
-					break
-				}
-			}
-			run.Tools[i].State, run.Tools[i].Args, run.Tools[i].Replay = "running", args, policy
-			run, err = s.commitRun(ctx, snap, c, run, "tool.intent")
-			if err != nil {
-				return run, err
-			}
-			snap, err = s.r.store.Snapshot(ctx)
-			if err != nil {
-				return run, err
-			}
-			call.Arguments = args
-			result = s.execute(ctx, agent, run, call)
-			executed = true
-			if ctx.Err() != nil {
-				// The process is still alive and knows the call was interrupted
-				// by cancellation. Leave the intent running so the next Step
-				// resolves it through the replay policy like a crash.
-				return run, ctx.Err()
-			}
-			if result.Status == "unknown" {
-				// The tool lost track of an external operation. Nothing is
-				// recorded as a result; the intent stays running and the
-				// next Step reconciles or reports it.
-				run.Notices = append(run.Notices, fmt.Sprintf("tool %s outcome unknown: %s", call.ID, core.ToolResultText(result)))
-				return run, fmt.Errorf("%w: tool %s", core.ErrToolOutcomeUnknown, call.ID)
-			}
-		case "running":
-			// Interrupted after the intent commit. The stored policy and the
-			// live tool must agree, and authorization is checked again.
-			// Nothing here assumes the earlier execution did not happen.
-			decision, replayResult, replayed := s.recoverInterrupted(ctx, agent, c, run, intent, call)
-			if ctx.Err() != nil {
-				return run, ctx.Err()
-			}
-			run.Notices = append(run.Notices, decision)
-			if replayed {
-				if replayResult.Status == "unknown" {
-					run.Notices = append(run.Notices, fmt.Sprintf("tool %s outcome unknown after replay: %s", call.ID, core.ToolResultText(replayResult)))
-					return run, fmt.Errorf("%w: tool %s", core.ErrToolOutcomeUnknown, call.ID)
-				}
-				result, executed = replayResult, true
-				break
-			}
-			if replayResult.Content != nil {
-				// Reconciliation found the effect completed and supplied the result.
-				result = replayResult
-				break
-			}
-			result = core.ToolResult{IsError: true, Status: "interrupted", Content: []provider.Content{provider.TextBlock{Text: "interrupted: the process stopped after this tool call started and before its result was recorded. Its effect is unknown and it was not repeated automatically."}}}
-			status = "interrupted"
-		default:
-			return run, fmt.Errorf("%w: unknown tool intent state", storage.ErrCorrupt)
-		}
-		if status == "" {
-			status = "completed"
-			if result.IsError {
-				status = "failed"
-			}
-		}
-		// A tool may have committed on its own behalf (owned conversations,
-		// documents). Re-read the conversation at the current snapshot so the
-		// result commit builds on committed state, not a pre-execution copy.
-		// The run itself must not have changed except for an abort request.
-		snap, err = s.r.store.Snapshot(ctx)
-		if err != nil {
-			return run, err
-		}
-		latest, ok, err := read[Run](snap, runKey(c.ID))
-		if err != nil {
-			return run, err
-		}
-		if !ok || latest.ID != run.ID {
-			return run, fmt.Errorf("%w: run replaced during tool execution", storage.ErrConflict)
-		}
-		// The committed intent must be exactly what this stepper left: a
-		// different state means a competing stepper resolved the call, and
-		// this result must not be recorded twice. Locally appended notices
-		// and an abort request from another caller are allowed to differ.
-		if i >= len(latest.Tools) || latest.Tools[i].CallID != call.ID || latest.Tools[i].State != intentStateBeforeExecute(intent, executed) || latest.Phase != "tools" {
-			return run, fmt.Errorf("%w: run changed during tool execution", ErrBusy)
-		}
-		run.AbortRequested = latest.AbortRequested
-		run.Revision = latest.Revision
-		c, err = conversation(snap, c.ID)
-		if err != nil {
-			return run, err
-		}
-		block := provider.ToolResultBlock{CallID: call.ID, Content: result.Content, IsError: result.IsError}
-		run.Tools[i].State = "done"
-		run.Tools[i].Result = &block
-		c.EntrySequence++
-		run.Tools[i].Entry = c.EntrySequence
-		entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, Revision: snap.Revision() + 1, Type: entryToolResult, Content: core.ToolResultText(result), Time: time.Now().UTC()}
-		entry.Message = marshalMessage(provider.Message{Role: provider.RoleTool, Content: []provider.Content{block}, Time: time.Now().UTC()})
-		if req, ok := handoffFromResult(call.Name, result); ok && !run.AbortRequested {
-			// The result and its control effect must be one commit. Recovery
-			// must never skip a done intent whose continuation is missing.
-			run, err = s.handoff(ctx, snap, c, run, i, call.ID, req, entry)
-			if err == nil {
-				s.opts.Sink(core.EvToolResult{ID: call.ID, Name: call.Name, Args: call.Arguments, Status: status, Executed: executed, Result: result})
-			}
-			return run, err
-		}
-		run, c, snap, err = s.commitResult(ctx, snap, c, run, i, entry)
-		if err != nil {
-			return run, err
-		}
-		s.opts.Sink(core.EvToolResult{ID: call.ID, Name: call.Name, Args: call.Arguments, Status: status, Executed: executed, Result: result})
-		snap, err = s.r.store.Snapshot(ctx)
-		if err != nil {
-			return run, err
-		}
-	}
-	// Round complete: next request includes every result entry.
-	if run.Turn >= s.opts.MaxTurns {
-		run.Phase, run.Outcome, run.Error = "done", "failed", fmt.Sprintf("max turns (%d) exceeded", s.opts.MaxTurns)
-		return s.commitRun(ctx, snap, c, run, "run.failed", s.settle(snap, run, "failed")...)
-	}
-	// Steering: inputs admitted with the steer policy while this round ran
-	// join the run here, at the safe boundary after the tool results. Their
-	// user entries move into the model context by rewriting them after the
-	// results, so the provider sees results before the new instruction.
-	steer, err := s.claimSteering(snap, &c, &run)
-	if err != nil {
-		return run, err
-	}
-	run.Phase, run.Turn, run.Attempt, run.Tools, run.Cutoff, run.Compacted = "request", run.Turn+1, 1, nil, c.EntrySequence, false
-	return s.commitRun(ctx, snap, c, run, "run.next", steer...)
+	return agent, nil
 }
 
 // claimSteering removes queued steer submissions from the queue and adds them
 // to the run. Each steered input gets a fresh user entry at the current tail
 // so ModelContext places it after the tool results; the original admission
 // entry is retained for history and marked superseded so it is not sent twice.
-func (s *Service) claimSteering(snap storage.Snapshot, c *Conversation, run *Run) ([]storage.Operation, error) {
+func claimSteeringOps(snap storage.Snapshot, c *Conversation, run *Run) ([]storage.Operation, error) {
 	queue, err := snap.Page("queue/"+c.ID+"/", "", 100)
 	if err != nil {
 		return nil, err
@@ -888,88 +317,11 @@ func (s *Service) claimSteering(snap storage.Snapshot, c *Conversation, run *Run
 	return ops, nil
 }
 
-// handoff ends the run after a handoff tool result: remaining intents of the
-// round receive aborted results so the transcript stays paired, a reset entry
-// with the note closes the context, and the continuation is admitted. All in
-// one commit, deduplicated by the call so a re-step cannot admit it twice.
-func (s *Service) handoff(ctx context.Context, snap storage.Snapshot, c Conversation, run Run, index int, callID string, req handoffRequest, result Entry) (Run, error) {
-	ops := []storage.Operation{record(entryKey(c.ID, c.EntrySequence), result)}
-	for i := index + 1; i < len(run.Tools); i++ {
-		if run.Tools[i].State == "done" {
-			continue
-		}
-		text := "skipped: the model handed off to a fresh context before this call ran."
-		block := provider.ToolResultBlock{CallID: run.Tools[i].CallID, Content: []provider.Content{provider.TextBlock{Text: text}}, IsError: true}
-		c.EntrySequence++
-		run.Tools[i].State, run.Tools[i].Entry = "done", c.EntrySequence
-		entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, Revision: snap.Revision() + 1, Type: entryToolResult, Content: text, Time: time.Now().UTC()}
-		entry.Message = marshalMessage(provider.Message{Role: provider.RoleTool, Content: []provider.Content{block}, Time: time.Now().UTC()})
-		ops = append(ops, record(entryKey(c.ID, c.EntrySequence), entry))
-	}
-	handoff, err := handoffOps(snap, &c, run, callID, req)
-	if err != nil {
-		return run, err
-	}
-	ops = append(ops, handoff...)
-	run.Phase, run.Outcome = "done", "completed"
-	run.Notices = append(run.Notices, fmt.Sprintf("handoff by tool call %s: context reset, continuation admitted", callID))
-	ops = append(ops, s.settle(snap, run, "answered")...)
-	return s.commitRun(ctx, snap, c, run, "run.handoff", ops...)
-}
-
-// abort settles an aborted run. Every unfinished intent receives an aborted
-// error result so the transcript stays paired; nothing executes. Inputs settle
-// aborted. The commit is one transaction.
-func (s *Service) abort(ctx context.Context, run Run) (Run, error) {
-	snap, err := s.r.store.Snapshot(ctx)
-	if err != nil {
-		return run, err
-	}
-	c, err := conversation(snap, run.ConversationID)
-	if err != nil {
-		return run, err
-	}
-	var ops []storage.Operation
-	for i, intent := range run.Tools {
-		if intent.State == "done" {
-			continue
-		}
-		text := "aborted: the run was aborted before this tool call started."
-		if intent.State == "running" {
-			text = "aborted: the run was aborted after this tool call started. Its effect is unknown."
-			run.Notices = append(run.Notices, fmt.Sprintf("tool %s aborted while running, effect unknown", intent.CallID))
-		}
-		block := provider.ToolResultBlock{CallID: intent.CallID, Content: []provider.Content{provider.TextBlock{Text: text}}, IsError: true}
-		c.EntrySequence++
-		run.Tools[i].State, run.Tools[i].Entry = "done", c.EntrySequence
-		entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, Revision: snap.Revision() + 1, Type: entryToolResult, Content: text, Time: time.Now().UTC()}
-		entry.Message = marshalMessage(provider.Message{Role: provider.RoleTool, Content: []provider.Content{block}, Time: time.Now().UTC()})
-		ops = append(ops, record(entryKey(c.ID, c.EntrySequence), entry))
-	}
-	// Pending approvals of this run can no longer be acted on; expire them
-	// so a later decision is refused instead of approving nothing.
-	pending, err := pendingApprovals(snap, c.ID)
-	if err != nil {
-		return run, err
-	}
-	for _, a := range pending {
-		if a.RunID == run.ID {
-			a.State = approvalExpired
-			a.Reason = "run aborted"
-			a.Revision = snap.Revision() + 1
-			ops = append(ops, record(approvalKey(a.ID), a))
-		}
-	}
-	run.Phase, run.Outcome, run.Error = "done", "aborted", "aborted by request"
-	ops = append(ops, s.settle(snap, run, "aborted")...)
-	return s.commitRun(ctx, snap, c, run, "run.abort", ops...)
-}
-
-// recoverInterrupted applies the replay contract to a running intent. It
+// recoverCall applies the replay contract to an interrupted call. It
 // returns a human-readable decision, a result when one was obtained, and
 // whether the tool executed again. An empty result with replayed false means
 // the call is reported as interrupted.
-func (s *Service) recoverInterrupted(ctx context.Context, agent *core.Agent, c Conversation, run Run, intent ToolIntent, call provider.ToolCallBlock) (string, core.ToolResult, bool) {
+func recoverCall(ctx context.Context, r *Runtime, agent *core.Agent, identity ToolCallIdentity, intent ToolIntent, call provider.ToolCallBlock, sink func(core.AgentEvent)) (string, core.ToolResult, bool) {
 	none := core.ToolResult{}
 	if intent.Replay == core.ReplayNever || intent.Replay == "" {
 		return fmt.Sprintf("tool %s interrupted, effect unknown, not replayed (policy never)", call.ID), none, false
@@ -985,7 +337,7 @@ func (s *Service) recoverInterrupted(ctx context.Context, agent *core.Agent, c C
 	// Give hooks their own copy so an in-place rewrite cannot alter the
 	// committed arguments used for comparison or reconciliation.
 	call.Arguments = append(json.RawMessage(nil), intent.Args...)
-	args, allowed, reason, _ := s.authorize(ctx, agent, run, call)
+	args, allowed, reason, _ := authorizeCall(ctx, r, agent, identity.ConversationID, call)
 	if !allowed {
 		return fmt.Sprintf("tool %s interrupted, replay denied by current authorization: %s", call.ID, reason), none, false
 	}
@@ -994,15 +346,15 @@ func (s *Service) recoverInterrupted(ctx context.Context, agent *core.Agent, c C
 	}
 	switch intent.Replay {
 	case core.ReplaySafe:
-		return fmt.Sprintf("tool %s replayed after interruption (policy safe)", call.ID), s.execute(ctx, agent, run, call), true
+		return fmt.Sprintf("tool %s replayed after interruption (policy safe)", call.ID), executeCall(ctx, agent, identity, call, sink), true
 	case core.ReplayIdempotent:
-		return fmt.Sprintf("tool %s replayed after interruption with the same operation key (policy idempotent); the receiver must enforce the key", call.ID), s.execute(ctx, agent, run, call), true
+		return fmt.Sprintf("tool %s replayed after interruption with the same operation key (policy idempotent); the receiver must enforce the key", call.ID), executeCall(ctx, agent, identity, call, sink), true
 	case core.ReplayReconcile:
 		rec, ok := tool.(core.ToolReconciler)
 		if !ok {
 			return fmt.Sprintf("tool %s interrupted, not replayed: reconcile policy without reconciler", call.ID), none, false
 		}
-		key := ToolCallIdentity{RunID: run.ID, ConversationID: c.ID, CallID: call.ID}.OperationKey()
+		key := identity.OperationKey()
 		outcome, found, err := rec.Reconcile(ctx, key, intent.Args)
 		if err != nil {
 			return fmt.Sprintf("tool %s interrupted, reconciliation failed, not replayed: %v", call.ID, err), none, false
@@ -1014,7 +366,7 @@ func (s *Service) recoverInterrupted(ctx context.Context, agent *core.Agent, c C
 			}
 			return fmt.Sprintf("tool %s reconciled as completed, result recovered without re-execution", call.ID), found, false
 		case core.ReconcileNotStarted:
-			return fmt.Sprintf("tool %s reconciled as not started, executed (policy reconcile)", call.ID), s.execute(ctx, agent, run, call), true
+			return fmt.Sprintf("tool %s reconciled as not started, executed (policy reconcile)", call.ID), executeCall(ctx, agent, identity, call, sink), true
 		default:
 			return fmt.Sprintf("tool %s interrupted, reconciliation outcome unknown, not replayed", call.ID), none, false
 		}
@@ -1031,20 +383,10 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// intentStateBeforeExecute is the committed intent state this stepper expects
-// to find after executing (or declining to execute) a call: running once an
-// intent was committed, otherwise still the state it was loaded in.
-func intentStateBeforeExecute(intent ToolIntent, executed bool) string {
-	if executed || intent.State == "running" {
-		return "running"
-	}
-	return intent.State
-}
-
 // usageRow builds the ledger row of one attempt and advances the counter on
 // the conversation copy that the same commit writes. Missing provider usage is
 // recorded as unknown so totals never understate spend silently.
-func (s *Service) usageRow(c *Conversation, run Run, agent *core.Agent, usage provider.Usage, known bool) storage.Operation {
+func usageOp(c *Conversation, runID string, turn, attempt int, agent *core.Agent, usage provider.Usage, known bool) storage.Operation {
 	c.UsageSequence++
 	status := "unknown"
 	if known {
@@ -1054,15 +396,20 @@ func (s *Service) usageRow(c *Conversation, run Run, agent *core.Agent, usage pr
 	if agent.Client != nil {
 		providerName = agent.Client.Name()
 	}
-	return record(usageKey(c.ID, c.UsageSequence), UsageRecord{ConversationID: c.ID, RunID: run.ID, Turn: run.Turn, Attempt: run.Attempt, Provider: providerName, Model: agent.Model, Usage: usage, Status: status, Source: "model", Time: time.Now().UTC()})
+	return record(usageKey(c.ID, c.UsageSequence), UsageRecord{ConversationID: c.ID, RunID: runID, Turn: turn, Attempt: attempt, Provider: providerName, Model: agent.Model, Usage: usage, Status: status, Source: "model", Time: time.Now().UTC()})
 }
 
-func (s *Service) authorize(ctx context.Context, agent *core.Agent, run Run, call provider.ToolCallBlock) (json.RawMessage, bool, string, core.ToolReplayPolicy) {
+// authorizeCall applies the conversation's tool configuration and the host's
+// guard to one call and returns the effective arguments and replay policy.
+// It fails closed: an unreadable conversation refuses the call.
+func authorizeCall(ctx context.Context, r *Runtime, agent *core.Agent, conversationID string, call provider.ToolCallBlock) (json.RawMessage, bool, string, core.ToolReplayPolicy) {
 	args := call.Arguments
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
-	if c, cerr := s.r.Conversation(ctx, run.ConversationID); cerr == nil && !c.Config.allows(call.Name) {
+	if c, cerr := r.Conversation(ctx, conversationID); cerr != nil {
+		return args, false, "tool call refused: conversation configuration unavailable", core.ReplayNever
+	} else if !c.Config.allows(call.Name) {
 		// Checked at authorization time so a configuration change between
 		// request and tool round applies to the current call.
 		return args, false, fmt.Sprintf("tool %q is not permitted by this conversation's configuration", call.Name), core.ReplayNever
@@ -1100,11 +447,10 @@ func (s *Service) authorize(ctx context.Context, agent *core.Agent, run Run, cal
 // execute runs one authorized call through the core tool path with hooks
 // disabled, because authorization already happened before the intent commit
 // and must not run twice for one effect.
-func (s *Service) execute(ctx context.Context, agent *core.Agent, run Run, call provider.ToolCallBlock) core.ToolResult {
+func executeCall(ctx context.Context, agent *core.Agent, identity ToolCallIdentity, call provider.ToolCallBlock, sink func(core.AgentEvent)) core.ToolResult {
 	before, beforeCtx := agent.BeforeToolExecute, agent.BeforeToolExecuteContext
 	agent.BeforeToolExecute, agent.BeforeToolExecuteContext = nil, nil
 	defer func() { agent.BeforeToolExecute, agent.BeforeToolExecuteContext = before, beforeCtx }()
-	identity := ToolCallIdentity{RunID: run.ID, ConversationID: run.ConversationID, CallID: call.ID}
 	ctx = context.WithValue(ctx, toolCallKey{}, identity)
 	ctx = core.WithToolOperationKey(ctx, identity.OperationKey())
 	return agent.CallTool(ctx, call.ID, call.Name, call.Arguments, func(ev core.AgentEvent) {
@@ -1114,13 +460,13 @@ func (s *Service) execute(ctx context.Context, agent *core.Agent, run Run, call 
 			// result after its commit so observers never see an uncommitted one.
 			return
 		}
-		s.opts.Sink(ev)
+		sink(ev)
 	})
 }
 
-func (s *Service) settle(snap storage.Snapshot, run Run, state string) []storage.Operation {
+func settleOps(snap storage.Snapshot, submissions []string, state string) []storage.Operation {
 	var ops []storage.Operation
-	for _, id := range run.Submissions {
+	for _, id := range submissions {
 		sub, ok, err := read[Submission](snap, "submission/"+id)
 		if err != nil || !ok {
 			continue
@@ -1129,88 +475,6 @@ func (s *Service) settle(snap storage.Snapshot, run Run, state string) []storage
 		ops = append(ops, record("submission/"+id, sub))
 	}
 	return ops
-}
-
-// commitResult commits one tool result. The only concurrent write this
-// stepper accepts is an abort request: the result is still recorded (the
-// effect happened) and the abort flag is carried forward. Any other change to
-// the run is a competing stepper and fails with ErrBusy.
-func (s *Service) commitResult(ctx context.Context, snap storage.Snapshot, c Conversation, run Run, i int, entry Entry) (Run, Conversation, storage.Snapshot, error) {
-	for {
-		committed, err := s.commitRun(ctx, snap, c, run, "tool.result", record(entryKey(c.ID, c.EntrySequence), entry))
-		if err == nil {
-			next, err := s.r.store.Snapshot(ctx)
-			return committed, c, next, err
-		}
-		if !errors.Is(err, storage.ErrConflict) {
-			return run, c, snap, err
-		}
-		latestSnap, snapErr := s.r.store.Snapshot(ctx)
-		if snapErr != nil {
-			return run, c, snap, snapErr
-		}
-		latest, ok, readErr := read[Run](latestSnap, runKey(run.ConversationID))
-		if readErr != nil {
-			return run, c, snap, readErr
-		}
-		expected := run
-		expected.Tools = append([]ToolIntent(nil), run.Tools...)
-		expected.AbortRequested = latest.AbortRequested
-		expected.Revision = latest.Revision
-		expected.Tools[i].State, expected.Tools[i].Entry = "running", 0
-		before, _ := json.Marshal(expected)
-		after, _ := json.Marshal(latest)
-		if !ok || !latest.AbortRequested || string(before) != string(after) {
-			return run, c, snap, err
-		}
-		latestC, cErr := conversation(latestSnap, c.ID)
-		if cErr != nil {
-			return run, c, snap, cErr
-		}
-		if latestC.EntrySequence != c.EntrySequence-1 {
-			return run, c, snap, err
-		}
-		latestC.EntrySequence = c.EntrySequence
-		run.AbortRequested = true
-		entry.Revision = latestSnap.Revision() + 1
-		c, snap = latestC, latestSnap
-	}
-}
-
-// commitRun commits run and conversation state. The store's optimistic check
-// is global, so commits of unrelated conversations can collide. A collision
-// is retried against a fresh snapshot as long as this conversation and its
-// run are unchanged; a change to either means a competing stepper and fails
-// with ErrBusy. Entry keys written by ops are rebased onto the fresh
-// snapshot's conversation counters, which are unchanged by construction.
-func (s *Service) commitRun(ctx context.Context, snap storage.Snapshot, c Conversation, run Run, actor string, ops ...storage.Operation) (Run, error) {
-	baseConversation, _, _ := read[Conversation](snap, "conversation/"+c.ID)
-	baseRun, _, _ := read[Run](snap, runKey(c.ID))
-	for attempt := 0; ; attempt++ {
-		c.Revision = snap.Revision() + 1
-		run.Revision = c.Revision
-		all := append(append([]storage.Operation(nil), ops...), record("conversation/"+c.ID, c), record(runKey(c.ID), run))
-		err := s.r.commit(ctx, snap, actor, all...)
-		if err == nil {
-			return run, nil
-		}
-		if !errors.Is(err, storage.ErrConflict) || attempt >= 64 {
-			if errors.Is(err, storage.ErrConflict) {
-				return run, fmt.Errorf("%w: %w", ErrBusy, err)
-			}
-			return run, err
-		}
-		fresh, snapErr := s.r.store.Snapshot(ctx)
-		if snapErr != nil {
-			return run, snapErr
-		}
-		freshConversation, _, _ := read[Conversation](fresh, "conversation/"+c.ID)
-		freshRun, _, _ := read[Run](fresh, runKey(c.ID))
-		if !sameJSON(baseConversation, freshConversation) || !sameJSON(baseRun, freshRun) {
-			return run, fmt.Errorf("%w: %w", ErrBusy, err)
-		}
-		snap = fresh
-	}
 }
 
 func sameJSON(a, b any) bool {

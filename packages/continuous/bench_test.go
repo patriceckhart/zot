@@ -39,6 +39,7 @@ func BenchmarkRunRoundTrip(b *testing.B) {
 			defer r.Close()
 			svc, _ := NewService(r, echoEngine(&echoClient{}, core.NewRegistry()), ExecutionOptions{PartialFlushInterval: -1})
 			c, _ := r.OpenRoot(ctx, "bench", AgentConfig{Model: "echo"})
+			start, _ := r.Snapshot(ctx)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -49,6 +50,10 @@ func BenchmarkRunRoundTrip(b *testing.B) {
 					b.Fatal(err)
 				}
 			}
+			b.StopTimer()
+			// Write amplification: commits per answered submission.
+			end, _ := r.Snapshot(ctx)
+			b.ReportMetric(float64(end.Revision()-start.Revision())/float64(b.N), "commits/op")
 		})
 	}
 }
@@ -98,7 +103,7 @@ func BenchmarkWaitingConversationsIdle(b *testing.B) {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		m, _ := host.Metrics(ctx)
-		if m.QueuedInputs == 0 && m.ActiveRuns == 0 && m.ActiveSteps == 0 {
+		if m.QueuedInputs == 0 && m.ActiveRuns == 0 && m.TasksInFlight == 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -115,4 +120,56 @@ func BenchmarkWaitingConversationsIdle(b *testing.B) {
 	runtime.ReadMemStats(&ms)
 	b.ReportMetric(float64(runtime.NumGoroutine()), "goroutines")
 	b.ReportMetric(float64(ms.HeapAlloc)/1024/1024, "heap_mib")
+}
+
+// BenchmarkIdleHost measures CPU used by an idle host per wall second. It
+// should be near zero: the scheduler sleeps on commits and persisted
+// deadlines, never polls.
+func BenchmarkIdleHost(b *testing.B) {
+	for _, name := range []string{"idle"} {
+		b.Run(name, func(b *testing.B) {
+			r, _ := New(newMemoryStore())
+			defer r.Close()
+			host, _ := NewHost(r, echoEngine(&echoClient{}, core.NewRegistry()), HostOptions{})
+			ctx, cancel := context.WithCancel(context.Background())
+			go host.Run(ctx)
+			time.Sleep(20 * time.Millisecond)
+			before := cpuTime()
+			start := time.Now()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				time.Sleep(time.Millisecond)
+			}
+			b.StopTimer()
+			cancel()
+			b.ReportMetric(float64(cpuTime()-before)/float64(time.Since(start)), "cpu-fraction")
+		})
+	}
+}
+
+// BenchmarkRestartTasks measures opening a store with many settled chains and running recovery preview, which a host pays at start.
+func BenchmarkRestartTasks(b *testing.B) {
+	ctx := context.Background()
+	path := filepath.Join(b.TempDir(), "store")
+	store, _ := journal.Open(ctx, path, journal.Options{Durability: storage.Process})
+	r, _ := New(store)
+	svc, _ := NewService(r, echoEngine(&echoClient{}, core.NewRegistry()), ExecutionOptions{PartialFlushInterval: -1})
+	c, _ := r.OpenRoot(ctx, "bench", AgentConfig{Model: "echo"})
+	for i := 0; i < 200; i++ {
+		r.Submit(ctx, c.ID, "bench", "", fmt.Sprintf("message %d", i))
+		svc.Step(ctx, c.ID)
+	}
+	r.Close()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		store, err := journal.Open(ctx, path, journal.Options{Durability: storage.Process})
+		if err != nil {
+			b.Fatal(err)
+		}
+		r, _ := New(store)
+		if _, err := r.RecoveryPreview(ctx); err != nil {
+			b.Fatal(err)
+		}
+		r.Close()
+	}
 }

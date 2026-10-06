@@ -104,7 +104,7 @@ func TestRetentionKeepsForkReferencedDocumentVersions(t *testing.T) {
 	docs.Register(DocumentDefinition{Kind: "note", Version: 1, Scope: "conversation", Initial: func() any { return "" }, Fork: "as_of", History: true})
 	rev := uint64(0)
 	for i := 0; i < 5; i++ {
-		r.Submit(ctx, c.ID, "a", "", "entry")
+		queueOnly(t, r, c.ID, "entry")
 		d, err := r.WriteDocument(ctx, docs, "note", c.ID, rev, i)
 		if err != nil {
 			t.Fatal(err)

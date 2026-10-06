@@ -191,3 +191,41 @@ func (scriptedToolClient) Stream(ctx context.Context, req provider.Request) (<-c
 	close(ch)
 	return ch, nil
 }
+
+// continuous run executes on durable tasks with the host's ordinary
+// configuration, and migrate-runs reports nothing left to convert.
+func TestContinuousRunTasksExecutor(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("OPENAI_API_KEY", "synthetic-key")
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "note.txt"), []byte("synthetic file contents\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := &fakeChatServer{script: []string{
+		toolChunk("call_1", "read", `{"path":"note.txt"}`),
+		textChunk("The note says: synthetic file contents"),
+	}}
+	srv := httptest.NewServer(http.HandlerFunc(server.handler))
+	defer srv.Close()
+	store := filepath.Join(t.TempDir(), "store")
+	var out bytes.Buffer
+	args := []string{"answer from the note", "--store", store, "--durability", "process", "--request-id", "req-1", "--provider", "openai", "--model", "gpt-4o-mini", "--base-url", srv.URL, "--cwd", cwd, "--tools", "read", "--no-ext", "--no-skills"}
+	if err := runContinuousRun(context.Background(), args, &out); err != nil {
+		t.Fatalf("run: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "The note says") || len(server.requests) != 2 {
+		t.Fatalf("answer: %q requests=%d", out.String(), len(server.requests))
+	}
+	second, _ := json.Marshal(server.requests[1]["messages"])
+	if !strings.Contains(string(second), `"tool_call_id":"call_1"`) {
+		t.Fatalf("tool result not sent: %s", second)
+	}
+	out.Reset()
+	if err := runContinuous(context.Background(), []string{"check-state", "--store", store, "--durability", "process"}, &out); err != nil || !strings.Contains(out.String(), `"valid":true`) {
+		t.Fatalf("check-state: %v %s", err, out.String())
+	}
+	out.Reset()
+	if err := runContinuous(context.Background(), []string{"migrate-runs", "--store", store, "--durability", "process"}, &out); err != nil || !strings.Contains(out.String(), `"migrated":0`) {
+		t.Fatalf("migrate-runs: %v %s", err, out.String())
+	}
+}

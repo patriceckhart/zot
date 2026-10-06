@@ -57,8 +57,8 @@ func TestIntegrityCorruption(t *testing.T) {
 		{"missing entry", func(_ storage.Snapshot, c Conversation, _ Submission) []storage.Operation {
 			return []storage.Operation{{Key: entryKey(c.ID, 1), Delete: true}}
 		}},
-		{"missing queue", func(_ storage.Snapshot, c Conversation, _ Submission) []storage.Operation {
-			return []storage.Operation{{Key: "queue/" + c.ID + "/00000000000000000001", Delete: true}}
+		{"running submission without chain", func(_ storage.Snapshot, c Conversation, _ Submission) []storage.Operation {
+			return []storage.Operation{{Key: chainKey(c.ID), Delete: true}}
 		}},
 		{"missing submission", func(_ storage.Snapshot, _ Conversation, s Submission) []storage.Operation {
 			return []storage.Operation{{Key: "submission/" + s.ID, Delete: true}}

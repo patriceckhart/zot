@@ -70,7 +70,7 @@ func ValidRole(r Role) bool {
 
 func (r Role) allows(method string) bool {
 	switch method {
-	case "hello", "runtime.status", "conversation.list", "conversation.snapshot", "conversation.watch", "submission.get", "submission.wait", "usage.get", "recovery.preview", "watch.cancel", "approval.get", "approval.list", "task.get", "task.list", "document.read", "budget.get", "conversation.search", "memo.get", "prompt.records", "prompt.section", "partial.get", "outbox.list":
+	case "hello", "runtime.status", "conversation.list", "conversation.snapshot", "conversation.watch", "submission.get", "submission.wait", "usage.get", "recovery.preview", "watch.cancel", "approval.get", "approval.list", "task.get", "task.list", "task.view", "document.read", "budget.get", "conversation.search", "memo.get", "prompt.records", "prompt.section", "partial.get", "outbox.list":
 		return true
 	case "conversation.create", "conversation.submit", "conversation.configure", "conversation.compact", "conversation.reset", "conversation.fork", "document.write", "memo.set":
 		return r == RoleSubmit || r == RoleApprove || r == RoleAdmin
@@ -464,6 +464,14 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 		}
 		c.server.Host.Nudge()
 		return run, nil
+	case "task.view":
+		var p struct {
+			Conversation string `json:"conversation"`
+		}
+		if err := params(&p); err != nil {
+			return nil, err
+		}
+		return r.TaskView(ctx, p.Conversation)
 	case "conversation.compact":
 		var p struct {
 			ID           string `json:"id"`

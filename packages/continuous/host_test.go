@@ -132,39 +132,15 @@ func TestHostRecoveryPolicyBlocksUnsafeRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Leave two interrupted runs: one with a pending (safe to continue)
-	// tool, one with a running unsafe tool.
-	unsafe := &effectTool{name: "unsafe", block: make(chan struct{})}
-	h := newHarness(t, store, []scriptStep{
-		{calls: []provider.ToolCallBlock{call("u1", "unsafe", `{}`)}},
-		{calls: []provider.ToolCallBlock{call("p1", "unsafe", `{}`)}},
-	}, unsafe)
+	// Leave two interrupted runs as an earlier build would: one with a
+	// pending (safe to continue) tool, one with a running unsafe tool.
+	h := newHarness(t, store, nil)
 	a := h.root(t)
 	b, _ := h.r.OpenRoot(ctx, "second", AgentConfig{Provider: "synthetic", Model: "scripted"})
-	h.r.Submit(ctx, a.ID, "actor", "", "a")
-	h.r.Submit(ctx, b.ID, "actor", "", "b")
-	stepCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() { h.svc.Step(stepCtx, a.ID); close(done) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for unsafe.calls.Load() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("tool never started")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	cancel()
-	<-done
-	// Conversation b: start the run and get its response committed but stop
-	// before the tool starts (pending intent).
-	runB, _, err := h.svc.start(ctx, b.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runB, err = h.svc.request(ctx, runB)
-	if err != nil || runB.Phase != "tools" || runB.Tools[0].State != "pending" {
-		t.Fatalf("run b: %+v %v", runB, err)
-	}
+	queueOnly(t, h.r, a.ID, "a")
+	queueOnly(t, h.r, b.ID, "b")
+	writeLegacyRun(t, h.r, a.ID, "tools", legacyIntent{call: call("u1", "unsafe", `{}`), state: "running"})
+	runB := writeLegacyRun(t, h.r, b.ID, "tools", legacyIntent{call: call("p1", "unsafe", `{}`), state: "pending"})
 	h.r.Close()
 	// Reopen under a host with the safe policy: b (pending) resumes, a
 	// (running unsafe) is blocked until a human unblocks it.
@@ -192,7 +168,7 @@ func TestHostRecoveryPolicyBlocksUnsafeRuns(t *testing.T) {
 		t.Fatalf("b not recovered: %+v %v", settled, err)
 	}
 	runA, _, _ := r2.Run(ctx, a.ID)
-	if runA.Phase == "done" {
+	if runA.Phase == "done" || client.requestCount() != 1 {
 		t.Fatal("blocked run a was stepped")
 	}
 	blocked := host.Blocked()

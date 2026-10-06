@@ -81,9 +81,11 @@ func core_text(c provider.Content) string {
 // request-ID retry returns the withdrawn record) and reordered to the front.
 func TestQueueWithdrawAndReorder(t *testing.T) {
 	ctx := context.Background()
-	h := newHarness(t, newMemoryStore(), []scriptStep{{text: "first answer"}, {text: "second answer"}})
+	h := newHarness(t, newMemoryStore(), []scriptStep{{text: "busy answer"}, {text: "first answer"}, {text: "second answer"}})
 	defer h.r.Close()
 	c := h.root(t)
+	// The first input starts the chain at admission; the next ones queue.
+	busy, _ := h.r.Submit(ctx, c.ID, "u", "", "busy")
 	a, _ := h.r.Submit(ctx, c.ID, "u", "req-a", "a")
 	b, _ := h.r.Submit(ctx, c.ID, "u", "", "b")
 	d, _ := h.r.Submit(ctx, c.ID, "u", "", "d")
@@ -104,13 +106,17 @@ func TestQueueWithdrawAndReorder(t *testing.T) {
 	if report, err := h.r.CheckIntegrity(ctx); err != nil || !report.Valid {
 		t.Fatalf("integrity after queue edits: %+v %v", report, err)
 	}
-	// One run answers d then b, in the reordered order.
+	// After the busy chain, one chain answers d then b, in the reordered
+	// order.
 	run, _, err := h.svc.Step(ctx, c.ID)
 	if err != nil || run.Outcome != "completed" || len(run.Submissions) != 2 || run.Submissions[0] != d.ID || run.Submissions[1] != b.ID {
 		t.Fatalf("run: %+v %v", run, err)
 	}
+	if s, _ := h.r.Submission(ctx, busy.ID); s.State != "answered" {
+		t.Fatalf("busy input: %+v", s)
+	}
 	// The withdrawn input's entry remains in history but was not sent.
-	if got := entryTypes(h.entries(t, c.ID)); got != "user user user assistant" {
+	if got := entryTypes(h.entries(t, c.ID)); got != "user user user user assistant assistant" {
 		t.Fatalf("entries: %s", got)
 	}
 	for _, m := range h.client.requests[0].Messages {

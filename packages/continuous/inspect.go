@@ -12,6 +12,8 @@ type Status struct {
 	WriterEpoch      uint64               `json:"writer_epoch"`
 	Capabilities     storage.Capabilities `json:"capabilities"`
 	ExecutionEnabled bool                 `json:"execution_enabled"`
+	// RuntimeFormat is the runtime record format (1 runs, 2 tasks).
+	RuntimeFormat int `json:"runtime_format"`
 }
 
 func (r *Runtime) Status(ctx context.Context) (Status, error) {
@@ -19,7 +21,13 @@ func (r *Runtime) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	return Status{Revision: snap.Revision(), WriterEpoch: r.store.Epoch(), Capabilities: r.store.Capabilities()}, nil
+	format := 1
+	if f, ok, err := read[RuntimeFormat](snap, runtimeFormatKey); err != nil {
+		return Status{}, err
+	} else if ok {
+		format = f.Version
+	}
+	return Status{Revision: snap.Revision(), WriterEpoch: r.store.Epoch(), Capabilities: r.store.Capabilities(), RuntimeFormat: format}, nil
 }
 
 // Conversations returns a page at one committed revision. after is the last

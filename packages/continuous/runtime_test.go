@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -45,12 +46,23 @@ func TestAdmission(t *testing.T) {
 	if _, err := r.Submit(ctx, c.ID, "actor", "request", "different"); !errors.Is(err, ErrRequestConflict) {
 		t.Fatalf("payload conflict: %v", err)
 	}
+	// One commit: submission, user entry, deduplication, the chain and
+	// generation task that answer it, and the conversation counters.
 	commits, err := r.Scan(ctx, before.Revision(), 10)
-	if err != nil || len(commits) != 1 || len(commits[0].Operations) != 5 {
+	if err != nil || len(commits) != 1 {
 		t.Fatalf("admission not atomic: %v, %v", commits, err)
 	}
+	keys := map[string]bool{}
+	for _, op := range commits[0].Operations {
+		keys[strings.SplitN(op.Key, "/", 2)[0]] = true
+	}
+	for _, want := range []string{"submission", "entry", "dedup", "chain", "task", "conversation"} {
+		if !keys[want] {
+			t.Fatalf("admission commit without %s: %v", want, keys)
+		}
+	}
 	after, _ := r.Snapshot(ctx)
-	for _, prefix := range []string{"queue/", "entry/", "submission/", "dedup/"} {
+	for _, prefix := range []string{"chain/", "entry/", "submission/", "dedup/"} {
 		records, err := after.Page(prefix, "", 10)
 		if err != nil || len(records) != 1 {
 			t.Fatalf("%s: %v, %v", prefix, records, err)

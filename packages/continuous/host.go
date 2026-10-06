@@ -24,24 +24,20 @@ type Host struct {
 	events *eventFanout
 
 	mu       sync.Mutex
-	stepping map[string]bool
-	settled  map[string]uint64
 	blocked  map[string]bool
 	wake     chan struct{}
-	closed   bool
 	policy   RecoveryPolicy
 	started  time.Time
-	metrics  HostMetrics
 	notifier Notifier
+	// heldConversations are conversations whose interrupted chain the
+	// recovery policy holds until Unblock.
+	heldConversations map[string]bool
 }
 
 // HostMetrics are operational counters: IDs and transitions, never content.
 type HostMetrics struct {
 	Started        time.Time `json:"started"`
 	Generation     uint64    `json:"generation"`
-	StepsStarted   uint64    `json:"steps_started"`
-	StepsFailed    uint64    `json:"steps_failed"`
-	ActiveSteps    int       `json:"active_steps"`
 	BlockedRuns    int       `json:"blocked_runs"`
 	TasksInFlight  int       `json:"tasks_in_flight"`
 	Watchers       int       `json:"watchers"`
@@ -58,7 +54,8 @@ type HostMetrics struct {
 // HostOptions configures a Host.
 type HostOptions struct {
 	Execution ExecutionOptions
-	// Tasks is the task registry for the scheduler. Nil disables tasks.
+	// Tasks are additional task definitions run by the same scheduler as
+	// the built-in generation, tool, and compaction tasks.
 	Tasks TaskRegistry
 	// Policy decides which recovery actions run automatically on start.
 	// Default: automatic actions only; blocked actions wait for a human.
@@ -86,7 +83,7 @@ const (
 
 // NewHost attaches a service to a runtime. Call Run to start work.
 func NewHost(r *Runtime, engine Engine, opts HostOptions) (*Host, error) {
-	h := &Host{r: r, stepping: map[string]bool{}, settled: map[string]uint64{}, blocked: map[string]bool{}, wake: make(chan struct{}, 1), events: newEventFanout(), started: time.Now().UTC(), notifier: opts.Notifier}
+	h := &Host{r: r, blocked: map[string]bool{}, heldConversations: map[string]bool{}, wake: make(chan struct{}, 1), events: newEventFanout(), started: time.Now().UTC(), notifier: opts.Notifier}
 	sink := opts.Execution.Sink
 	opts.Execution.Sink = func(ev core.AgentEvent) {
 		h.events.publish(ev)
@@ -99,8 +96,25 @@ func NewHost(r *Runtime, engine Engine, opts HostOptions) (*Host, error) {
 		return nil, err
 	}
 	h.svc = svc
-	if opts.Tasks != nil {
-		h.tasks = NewTaskScheduler(r, opts.Tasks)
+	x, err := NewNativeExecutor(r, svc.currentEngine, svc.opts)
+	if err != nil {
+		return nil, err
+	}
+	x.generation = svc.Generation
+	reg := TaskRegistry{}
+	for kind, def := range opts.Tasks {
+		reg[kind] = def
+	}
+	if err := x.Register(reg); err != nil {
+		return nil, err
+	}
+	h.tasks = x.Scheduler(reg)
+	// The recovery policy holds interrupted chains: every task of a held
+	// conversation waits for Unblock.
+	h.tasks.Hold = func(t Task) bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.heldConversations[t.ConversationID]
 	}
 	if opts.Policy == "" {
 		opts.Policy = RecoverSafe
@@ -109,19 +123,26 @@ func NewHost(r *Runtime, engine Engine, opts HostOptions) (*Host, error) {
 	return h, nil
 }
 
-// Service exposes the host's service for tools that step owned conversations.
+// Service exposes the host's service.
 func (h *Host) Service() *Service { return h.svc }
 
 // Runtime exposes the host's runtime.
 func (h *Host) Runtime() *Runtime { return h.r }
 
-// Run performs recovery according to the policy, then loops: step every
-// conversation with work, run tasks, and sleep until a commit or timer. It
-// returns when ctx ends. Work interrupted by cancellation stays recoverable.
+// Run migrates interrupted runs of the earlier executor, applies the
+// recovery policy, then runs the task scheduler until ctx ends, sleeping
+// until a commit or a persisted deadline. Work interrupted by cancellation
+// stays recoverable.
 func (h *Host) Run(ctx context.Context) error {
+	if _, _, err := h.r.MigrateLegacy(ctx); err != nil {
+		return err
+	}
 	if err := h.recover(ctx); err != nil {
 		return err
 	}
+	// Shutdown joins every task invocation before returning, so no handler
+	// still writes when the caller closes the store.
+	defer h.tasks.Join(context.Background())
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -130,20 +151,14 @@ func (h *Host) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		busy, err := h.dispatch(ctx, snap)
-		if err != nil {
+		busy := false
+		n, wake, err := h.tasks.Tick(ctx)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			h.events.publish(HostError{Err: err.Error()})
 			return err
 		}
-		var wake time.Time
-		if h.tasks != nil {
-			n, next, err := h.tasks.Tick(ctx)
-			if err != nil && !errors.Is(err, context.Canceled) {
-				return err
-			}
-			if n > 0 || h.tasks.InFlight() > 0 {
-				busy = true
-			}
-			wake = next
+		if n > 0 {
+			busy = true
 		}
 		if h.notifier != nil {
 			if n, err := h.r.Deliver(ctx, h.notifier); err != nil && !errors.Is(err, context.Canceled) {
@@ -158,10 +173,19 @@ func (h *Host) Run(ctx context.Context) error {
 		if busy {
 			continue
 		}
-		if err := h.sleep(ctx, snap.Revision(), wake); err != nil {
+		if err := h.sleepOrFinish(ctx, snap.Revision(), wake); err != nil {
 			return err
 		}
 	}
+}
+
+// sleepOrFinish sleeps until a commit, a deadline, a nudge, or a finished
+// task invocation.
+func (h *Host) sleepOrFinish(ctx context.Context, revision uint64, wake time.Time) error {
+	if h.tasks.InFlight() == 0 {
+		return h.sleep(ctx, revision, wake)
+	}
+	return h.tasks.waitProgress(ctx, wake)
 }
 
 func (h *Host) sleep(ctx context.Context, revision uint64, wake time.Time) error {
@@ -194,137 +218,6 @@ func (h *Host) sleep(ctx context.Context, revision uint64, wake time.Time) error
 	}
 }
 
-// dispatch starts a step for every conversation that has queued submissions
-// or an unfinished run and is not already being stepped. Steps run in their
-// own goroutines so conversations progress independently. It reports whether
-// any step was started or is in flight.
-func (h *Host) dispatch(ctx context.Context, snap storage.Snapshot) (bool, error) {
-	want := map[string]bool{}
-	after := ""
-	for {
-		page, err := snap.Page("queue/", after, 500)
-		if err != nil {
-			return false, err
-		}
-		if len(page) == 0 {
-			break
-		}
-		for _, row := range page {
-			after = row.Key
-			parts := strings.SplitN(strings.TrimPrefix(row.Key, "queue/"), "/", 2)
-			if len(parts) == 2 {
-				want[parts[0]] = true
-			}
-		}
-	}
-	after = ""
-	for {
-		page, err := snap.Page("run/", after, 500)
-		if err != nil {
-			return false, err
-		}
-		if len(page) == 0 {
-			break
-		}
-		for _, row := range page {
-			after = row.Key
-			var run Run
-			if json.Unmarshal(row.Value, &run) != nil {
-				return false, storage.ErrCorrupt
-			}
-			if run.Phase != "done" {
-				// Queue admissions cannot release a recovery hold. Step would
-				// recover this run before processing the newly queued input.
-				if !h.allowed(run) {
-					delete(want, run.ConversationID)
-					continue
-				}
-				// A run parked on a human decision is not work until the
-				// decision commits, which wakes the host through Wait.
-				pending, err := pendingApprovals(snap, run.ConversationID)
-				if err != nil {
-					return false, err
-				}
-				if len(pending) == 0 || run.AbortRequested {
-					want[run.ConversationID] = true
-				} else {
-					delete(want, run.ConversationID)
-				}
-			}
-		}
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.closed {
-		return false, nil
-	}
-	started := false
-	for id := range want {
-		if h.stepping[id] {
-			started = true
-			continue
-		}
-		// A step that finished after this snapshot was taken already covered
-		// whatever the snapshot shows. Skip it; the next pass sees fresh state.
-		if h.settled[id] > snap.Revision() {
-			continue
-		}
-		h.stepping[id] = true
-		h.metrics.StepsStarted++
-		started = true
-		go h.step(ctx, id)
-	}
-	return started || len(h.stepping) > 0, nil
-}
-
-// allowed applies the recovery policy to an interrupted run found at dispatch.
-// Runs started by this host are always allowed; the policy gates only runs
-// that were interrupted before this host started.
-func (h *Host) allowed(run Run) bool {
-	h.mu.Lock()
-	blocked := h.blocked[run.ID]
-	h.mu.Unlock()
-	return !blocked
-}
-
-func (h *Host) step(ctx context.Context, id string) {
-	defer func() {
-		// Record the revision this step observed as final so dispatch does
-		// not start another step from a stale snapshot.
-		var rev uint64
-		if snap, err := h.r.Snapshot(context.Background()); err == nil {
-			rev = snap.Revision()
-		}
-		h.mu.Lock()
-		delete(h.stepping, id)
-		h.settled[id] = rev
-		h.mu.Unlock()
-		select {
-		case h.wake <- struct{}{}:
-		default:
-		}
-	}()
-	_, _, err := h.svc.Step(ctx, id)
-	if errors.Is(err, core.ErrToolOutcomeUnknown) {
-		// Leave the run alone until a reconciliation can answer; the next
-		// dispatch would otherwise spin on the same unknown outcome. The
-		// recovery policy decides, exactly as for a crash.
-		h.mu.Lock()
-		if run, ok, _ := h.r.Run(context.Background(), id); ok {
-			h.blocked[run.ID] = true
-		}
-		h.mu.Unlock()
-		h.events.publish(HostError{ConversationID: id, Err: err.Error()})
-		return
-	}
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrBusy) && !errors.Is(err, ErrAwaitingApproval) {
-		h.mu.Lock()
-		h.metrics.StepsFailed++
-		h.mu.Unlock()
-		h.events.publish(HostError{ConversationID: id, Err: err.Error()})
-	}
-}
-
 // HostError is published when a step fails for a reason other than
 // cancellation. It names the conversation, never transcript content.
 type HostError struct {
@@ -336,6 +229,10 @@ func (HostError) Type() string { return "host_error" }
 
 // recover applies the policy to runs interrupted before this host started.
 func (h *Host) recover(ctx context.Context) error {
+	_, blockedMigrations, err := h.r.MigrateLegacy(ctx)
+	if err != nil {
+		return err
+	}
 	plan, err := h.r.RecoveryPreview(ctx)
 	if err != nil {
 		return err
@@ -343,6 +240,12 @@ func (h *Host) recover(ctx context.Context) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.blocked = map[string]bool{}
+	h.heldConversations = map[string]bool{}
+	for id, cause := range blockedMigrations {
+		// Unmigratable runs hold their conversation until aborted.
+		_ = cause
+		h.heldConversations[id] = true
+	}
 	var ops []storage.Operation
 	for _, action := range plan.Actions {
 		if action.Action == "approve" {
@@ -357,6 +260,9 @@ func (h *Host) recover(ctx context.Context) error {
 			if !action.Automatic {
 				h.blocked[action.RunID] = true
 			}
+		}
+		if h.blocked[action.RunID] {
+			h.heldConversations[action.ConversationID] = true
 		}
 		if h.blocked[action.RunID] {
 			ops = append(ops, outboxOp("recovery-blocked-"+action.RunID, "recovery.blocked", action.ConversationID, "recovery needs a decision: "+action.Action, action))
@@ -382,6 +288,17 @@ func (h *Host) Unblock(runID string) {
 	h.mu.Lock()
 	delete(h.blocked, runID)
 	h.mu.Unlock()
+	if snap, err := h.r.Snapshot(context.Background()); err == nil {
+		_ = pageAll(snap, "chain/", func(row storage.Record) error {
+			var chain Chain
+			if json.Unmarshal(row.Value, &chain) == nil && chain.RunID == runID {
+				h.mu.Lock()
+				delete(h.heldConversations, chain.ConversationID)
+				h.mu.Unlock()
+			}
+			return nil
+		})
+	}
 	select {
 	case h.wake <- struct{}{}:
 	default:
@@ -395,19 +312,16 @@ func (h *Host) Metrics(ctx context.Context) (HostMetrics, error) {
 		return HostMetrics{}, err
 	}
 	h.mu.Lock()
-	m := h.metrics
+	var m HostMetrics
 	m.Started = h.started
-	m.ActiveSteps = len(h.stepping)
 	m.BlockedRuns = len(h.blocked)
 	h.mu.Unlock()
 	m.Generation = h.svc.Generation()
-	m.Compaction = h.svc.CompactionMetrics()
+	m.Compaction = compactionMetrics(snap)
 	m.Revision = snap.Revision()
 	m.WriterEpoch = h.r.Epoch()
 	m.Watchers = h.events.subscribers()
-	if h.tasks != nil {
-		m.TasksInFlight = h.tasks.InFlight()
-	}
+	m.TasksInFlight = h.tasks.InFlight()
 	count := func(prefix string) int {
 		n, after := 0, ""
 		for {
@@ -420,21 +334,8 @@ func (h *Host) Metrics(ctx context.Context) (HostMetrics, error) {
 		}
 	}
 	m.QueuedInputs = count("queue/")
+	m.ActiveRuns = count("chain/")
 	after := ""
-	for {
-		page, err := snap.Page("run/", after, 500)
-		if err != nil || len(page) == 0 {
-			break
-		}
-		for _, row := range page {
-			after = row.Key
-			var run Run
-			if json.Unmarshal(row.Value, &run) == nil && run.Phase != "done" {
-				m.ActiveRuns++
-			}
-		}
-	}
-	after = ""
 	for {
 		page, err := snap.Page("approval/", after, 500)
 		if err != nil || len(page) == 0 {
@@ -563,6 +464,11 @@ type ConversationSnapshot struct {
 	// Partial is the streamed output of the in-flight attempt, when any.
 	Partial  *Partial        `json:"partial,omitempty"`
 	Recovery *RecoveryAction `json:"recovery,omitempty"`
+	// Chain is the active generation chain; Run is its run-shaped
+	// projection (or the last settled one). Progress is the committed
+	// progress of running tool calls.
+	Chain    *Chain         `json:"chain,omitempty"`
+	Progress []ToolProgress `json:"progress,omitempty"`
 	// More is set when Entries was truncated to the newest page. Older
 	// entries are fetched by sequence.
 	More bool `json:"more,omitempty"`
@@ -630,6 +536,18 @@ func (r *Runtime) ConversationSnapshot(ctx context.Context, id string, limit int
 			out.Recovery = &a
 		}
 	}
+	if chain, ok, err := read[Chain](snap, chainKey(id)); err != nil {
+		return ConversationSnapshot{}, err
+	} else if ok {
+		out.Chain = &chain
+		a := planChain(snap, chain)
+		out.Recovery = &a
+	}
+	if run, ok, err := runView(snap, id); err != nil {
+		return ConversationSnapshot{}, err
+	} else if ok {
+		out.Run = &run
+	}
 	if out.Usage, err = usageTotals(ctx, snap, id); err != nil {
 		return ConversationSnapshot{}, err
 	}
@@ -648,6 +566,11 @@ func (r *Runtime) ConversationSnapshot(ctx context.Context, id string, limit int
 		}
 		if t.State != "terminal" {
 			out.Tasks = append(out.Tasks, t)
+			if p, ok, err := read[ToolProgress](snap, progressKey(t.ID)); err != nil {
+				return ConversationSnapshot{}, err
+			} else if ok {
+				out.Progress = append(out.Progress, p)
+			}
 		}
 	}
 	return out, nil
@@ -659,7 +582,7 @@ func (r *Runtime) ConversationSnapshot(ctx context.Context, id string, limit int
 // history yields storage.ErrCursor so the client resnapshots.
 func (r *Runtime) Watch(ctx context.Context, conversationID string, after uint64, visit func(storage.Commit) error) error {
 	cursor := after
-	prefixes := []string{"conversation/" + conversationID, "entry/" + conversationID + "/", "queue/" + conversationID + "/", runKey(conversationID), "usage/" + conversationID + "/", "task-conversation/" + conversationID + "/", "doc/conversation/" + conversationID + "/", approvalConversationKey(conversationID, ""), partialKey(conversationID)}
+	prefixes := []string{"conversation/" + conversationID, "entry/" + conversationID + "/", "queue/" + conversationID + "/", runKey(conversationID), "usage/" + conversationID + "/", "task-conversation/" + conversationID + "/", "doc/conversation/" + conversationID + "/", approvalConversationKey(conversationID, ""), partialKey(conversationID), chainKey(conversationID)}
 	for {
 		commits, err := r.Scan(ctx, cursor, 100)
 		if err != nil {

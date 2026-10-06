@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/patriceckhart/zot/packages/continuous/storage"
 	"github.com/patriceckhart/zot/packages/provider"
 )
@@ -242,28 +241,6 @@ func approvalFor(snap storage.Snapshot, c Conversation, run Run, call provider.T
 		}
 	}
 	return nil, false, nil, nil
-}
-
-// requestApproval commits a pending approval for the call and parks the run.
-// The intent stays pending; nothing executes. Idempotent: an identical
-// pending request is returned, not duplicated.
-func (s *Service) requestApproval(ctx context.Context, snap storage.Snapshot, c Conversation, run Run, call provider.ToolCallBlock, args json.RawMessage, req ApprovalRequest) (Approval, error) {
-	a := Approval{ID: uuid.NewString(), ConversationID: c.ID, RunID: run.ID, CallID: call.ID, Tool: call.Name, Args: args, ArgsHash: argsHash(args), Summary: req.Summary, State: approvalPending, PolicyRevision: c.ConfigRevision, Created: time.Now().UTC(), Revision: snap.Revision() + 1}
-	if req.TTL > 0 {
-		exp := a.Created.Add(req.TTL)
-		a.ExpiresAt = &exp
-	}
-	run.Notices = append(run.Notices, fmt.Sprintf("tool %s is waiting for approval %s", call.ID, a.ID))
-	// The notification commits with the pending record, so no approval can
-	// exist that nobody is told about, and no one is told about an approval
-	// that does not exist.
-	notify := outboxOp(approvalNotificationID(a.ID), "approval.pending", c.ID, fmt.Sprintf("approval needed: %s", firstNonEmpty(req.Summary, call.Name)), map[string]any{"approval_id": a.ID, "tool": call.Name, "run_id": run.ID})
-	_, err := s.commitRun(ctx, snap, c, run, "approval.request", record(approvalKey(a.ID), a), record(approvalConversationKey(c.ID, a.ID), a.ID), notify)
-	if err != nil {
-		return a, err
-	}
-	s.opts.Sink(EvApproval{Approval: a})
-	return a, nil
 }
 
 // EvApproval is published when a pending approval is committed or decided.

@@ -115,12 +115,13 @@ func TestContinuousRecoverAbortUsageCommands(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	if err := runContinuous(ctx, []string{"recover", "--dry-run", "--store", path, "--durability", "process"}, &out); err != nil || !strings.Contains(out.String(), `"actions":[]`) {
+	// The admitted input is a chain whose first request has not started.
+	if err := runContinuous(ctx, []string{"recover", "--dry-run", "--store", path, "--durability", "process"}, &out); err != nil || !strings.Contains(out.String(), `"action":"continue"`) {
 		t.Fatalf("recover: %v %s", err, out.String())
 	}
 	out.Reset()
-	if err := runContinuous(ctx, []string{"abort", c.ID, "--store", path, "--durability", "process"}, &out); !errors.Is(err, continuous.ErrNoRun) {
-		t.Fatalf("abort without run: %v", err)
+	if err := runContinuous(ctx, []string{"abort", c.ID, "--store", path, "--durability", "process"}, &out); err != nil || !strings.Contains(out.String(), `"abort_requested":true`) {
+		t.Fatalf("abort: %v %s", err, out.String())
 	}
 	out.Reset()
 	if err := runContinuous(ctx, []string{"usage", c.ID, "--store", path, "--durability", "process"}, &out); err != nil || !strings.Contains(out.String(), `"known":0`) {
@@ -173,10 +174,10 @@ func TestContinuousInspectionCommands(t *testing.T) {
 	if got := run("inspect", task.ID); !strings.Contains(got, `"kind":"noop"`) {
 		t.Fatalf("inspect task: %s", got)
 	}
-	if got := run("inspect", sub.ID); !strings.Contains(got, `"state":"queued"`) {
+	if got := run("inspect", sub.ID); !strings.Contains(got, `"state":"running"`) {
 		t.Fatalf("inspect submission: %s", got)
 	}
-	if got := run("inspect", c.ID); !strings.Contains(got, `"queue":[`) {
+	if got := run("inspect", c.ID); !strings.Contains(got, `"chain":{`) {
 		t.Fatalf("inspect conversation: %s", got)
 	}
 	if got := run("approvals", c.ID); strings.TrimSpace(got) != "[]" {

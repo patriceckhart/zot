@@ -39,6 +39,7 @@ Usage:
   zot continuous abort <conversation-id|task-id> --store <directory> [--include-background]
   zot continuous usage <conversation-id> --store <directory>
   zot continuous tasks <conversation-id> --store <directory>
+  zot continuous migrate-runs --store <directory>
   zot continuous inspect <task-id|approval-id|submission-id|conversation-id> --store <directory>
   zot continuous approvals <conversation-id> --store <directory>
   zot continuous decide <approval-id> --allow|--deny [--scope call|tool] [--reason <text>] --store <directory>
@@ -80,6 +81,10 @@ abort records abort intent on a run (or a task tree); the next step settles it w
 effects. Background tasks are reached only with --include-background.
 usage sums the ledger of one conversation, reporting attempts with unknown cost separately.
 tasks, inspect, approvals list committed task, approval, submission, and conversation state.
+migrate-runs converts interrupted runs written by earlier builds into durable tasks,
+keeping their IDs, arguments, approvals, and results. run and serve do this on open;
+the command reports it. A run that cannot be converted without guessing what an
+interrupted effect did is listed and stays put until abort settles it.
 decide records a human approval decision; the parked run continues on the next step.
 budget sets or shows conservative spending limits; unknown-cost attempts count as reserved.
 search scans full history including entries before resets and inherited fork ancestry.
@@ -185,7 +190,7 @@ func parseContinuousOptions(args []string) (continuousOptions, error) {
 	}
 	opts.command = args[0]
 	switch opts.command {
-	case "import", "export", "status", "conversations", "verify", "check-state", "backup", "verify-backup", "restore", "recover", "abort", "usage", "tasks", "inspect", "approvals", "decide", "budget", "search", "retain", "prompts", "withdraw", "reorder", "outbox", "format", "migrate":
+	case "import", "export", "status", "conversations", "verify", "check-state", "backup", "verify-backup", "restore", "recover", "abort", "usage", "tasks", "inspect", "approvals", "decide", "budget", "search", "retain", "prompts", "withdraw", "reorder", "outbox", "format", "migrate", "migrate-runs":
 	default:
 		return opts, fmt.Errorf("unsupported continuous command (use continuous --help)")
 	}
@@ -523,6 +528,16 @@ func runContinuous(ctx context.Context, args []string, out io.Writer) (retErr er
 			return err
 		}
 		return enc.Encode(run)
+	case "migrate-runs":
+		migrated, blocked, err := r.MigrateLegacy(ctx)
+		if err != nil {
+			return err
+		}
+		reasons := map[string]string{}
+		for id, cause := range blocked {
+			reasons[id] = cause.Error()
+		}
+		return enc.Encode(map[string]any{"migrated": migrated, "blocked": reasons})
 	case "tasks":
 		if _, err := r.Conversation(ctx, opts.positional[0]); err != nil {
 			return err

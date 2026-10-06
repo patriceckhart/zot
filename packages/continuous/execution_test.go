@@ -206,9 +206,10 @@ func TestExecutionAnswersQueuedInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Nothing executes without a Service step.
-	if cur, _ := h.r.Submission(ctx, s.ID); cur.State != "queued" {
-		t.Fatalf("executed without step: %+v", cur)
+	// Admission claims the input for a new chain in the same commit, but
+	// nothing executes without a scheduler or Step.
+	if cur, _ := h.r.Submission(ctx, s.ID); cur.State != "running" || h.client.requestCount() != 0 {
+		t.Fatalf("admission: %+v requests=%d", cur, h.client.requestCount())
 	}
 	var events []string
 	h.svc.opts.Sink = func(ev core.AgentEvent) { events = append(events, ev.Type()) }
@@ -539,8 +540,10 @@ func TestExecutionConcurrentStepsConflict(t *testing.T) {
 		t.Fatalf("tool result entries: %d", results)
 	}
 	// The store still converges: finish whatever remains.
-	run, _, err := h.svc.Step(ctx, c.ID)
-	if err != nil || run.Outcome != "completed" {
+	if _, _, err := h.svc.Step(ctx, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if run, _, err := h.r.Run(ctx, c.ID); err != nil || run.Outcome != "completed" {
 		t.Fatalf("converge: %+v %v", run, err)
 	}
 	if report, err := h.r.CheckIntegrity(ctx); err != nil || !report.Valid {
@@ -622,6 +625,10 @@ func crashAtEveryCommit(t *testing.T, backend string) {
 		// ok is false only when the crash landed after the final commit, in
 		// which case the recovered process has nothing to do.
 		run, ok, err := h2.svc.Step(ctx, c.ID)
+		if err == nil && !ok {
+			// The crash landed after the final commit: nothing to recover.
+			run, _, err = h2.r.Run(ctx, c.ID)
+		}
 		if err != nil || run.Outcome != "completed" {
 			t.Fatalf("crash %d: recovery %+v %v %v", crashAt, run, ok, err)
 		}
