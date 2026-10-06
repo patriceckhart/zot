@@ -364,8 +364,9 @@ func (r *Runtime) ExportSession(ctx context.Context, id string, out io.Writer) e
 				Type     string             `json:"type"`
 				Messages []provider.Message `json:"messages"`
 			}{"compaction", provider.RepairOrphanedToolResults(kept)}).Value)
-		case e.Type == entryAttempt:
-			// Failed attempts are not model context and have no legacy row.
+		case e.Type == entryAttempt, e.Type == entryContext:
+			// Failed attempts and context records are not model context
+			// and have no legacy row.
 			return nil
 		case e.Type == entryReset:
 			// Legacy files model a context boundary as a compaction with the
@@ -399,7 +400,7 @@ func (r *Runtime) ExportSession(ctx context.Context, id string, out io.Writer) e
 		case e.Type == "user" && steered[e.SubmissionID]:
 			// A steered input is exported where it joined the run.
 			return nil
-		case e.Type == "user" || e.Type == entrySteer:
+		case e.Type == "user" || e.Type == entrySteer || e.Type == entryContinue:
 			msg := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: e.Content}}}
 			b, _ := json.Marshal(msg)
 			return writeSessionRow(out, record("", struct {

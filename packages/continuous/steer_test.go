@@ -136,8 +136,9 @@ func TestSubmitPoliciesIdleBusyAndLimits(t *testing.T) {
 		t.Fatalf("requests: %d", n)
 	}
 	// The queued "x" was admitted before the first response and is
-	// answered by the second chain, together with "queued".
-	if got := entryTypes(h.entries(t, c.ID)); got != "user user assistant user tool_result assistant assistant" {
+	// answered by the second chain, together with "queued", both placed
+	// after the first answer.
+	if got := entryTypes(h.entries(t, c.ID)); got != "user user assistant user tool_result assistant steer steer assistant" {
 		t.Fatalf("entries: %s", got)
 	}
 }

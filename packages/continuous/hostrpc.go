@@ -293,6 +293,8 @@ func errorCode(err error) string {
 		return "budget_exceeded"
 	case errors.Is(err, ErrNotQueued):
 		return "conflict"
+	case errors.Is(err, ErrEventLag):
+		return "event_lag"
 	case errors.Is(err, storage.ErrCursor):
 		return "cursor_expired"
 	case errors.Is(err, storage.ErrCorrupt):
@@ -396,11 +398,20 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 		var p struct {
 			ID    string `json:"id"`
 			After uint64 `json:"after"`
+			// Mode is commits (default) for raw commits, view for
+			// operation-level changes of the conversation view, or events
+			// for committed agent events after a fresh snapshot.
+			Mode string `json:"mode"`
 		}
 		if err := params(&p); err != nil {
 			return nil, err
 		}
-		return c.watch(ctx, req.ID, p.ID, p.After)
+		switch p.Mode {
+		case "", "commits", "view", "events":
+		default:
+			return nil, fmt.Errorf("unknown watch mode %q", p.Mode)
+		}
+		return c.watch(ctx, req.ID, p.ID, p.After, p.Mode)
 	case "watch.cancel":
 		var p struct {
 			WatchID string `json:"watch_id"`
@@ -423,6 +434,9 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 			RequestID string `json:"request_id"`
 			WhenBusy  string `json:"when_busy"`
 			Policy    string `json:"policy"`
+			// Kind is empty for a prompt or write for an entry without a
+			// model request.
+			Kind string `json:"kind"`
 		}
 		if err := params(&p); err != nil {
 			return nil, err
@@ -431,7 +445,7 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 		if maxQueue <= 0 {
 			maxQueue = 64
 		}
-		opts := SubmitOptions{Policy: p.Policy, RejectBusy: p.WhenBusy == "reject", MaxQueue: maxQueue}
+		opts := SubmitOptions{Policy: p.Policy, RejectBusy: p.WhenBusy == "reject", MaxQueue: maxQueue, Kind: p.Kind}
 		if p.WhenBusy == "steer" {
 			opts.Policy = PolicySteer
 		}
@@ -836,7 +850,7 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 // response to the watch request carries the watch id; events follow with
 // type commit and the same watch id. A client behind by more than the
 // retained history receives a cursor_expired error and must resnapshot.
-func (c *hostConn) watch(ctx context.Context, watchID, conversationID string, after uint64) (any, error) {
+func (c *hostConn) watch(ctx context.Context, watchID, conversationID string, after uint64, mode string) (any, error) {
 	if watchID == "" {
 		return nil, fmt.Errorf("watch requires a request id")
 	}
@@ -860,13 +874,44 @@ func (c *hostConn) watch(ctx context.Context, watchID, conversationID string, af
 	watchCtx, cancel := context.WithCancel(ctx)
 	c.watches[watchID] = cancel
 	c.mu.Unlock()
-	c.write(hostResponse{ID: watchID, Type: "response", Method: "conversation.watch", Success: true, Data: map[string]any{"watch_id": watchID, "after": after}})
-	err := c.server.Host.Runtime().Watch(watchCtx, conversationID, after, func(cm storage.Commit) error {
-		// Deliver with a bounded write deadline so a stalled client cannot
-		// hold host memory; the watch ends with an error instead.
-		c.write(map[string]any{"type": "commit", "watch_id": watchID, "commit": cm})
-		return nil
-	})
+	var err error
+	rt := c.server.Host.Runtime()
+	switch mode {
+	case "view":
+		c.write(hostResponse{ID: watchID, Type: "response", Method: "conversation.watch", Success: true, Data: map[string]any{"watch_id": watchID, "after": after, "mode": mode}})
+		err = rt.WatchView(watchCtx, conversationID, after, func(ch ViewChange) error {
+			c.write(map[string]any{"type": "view", "watch_id": watchID, "change": ch})
+			return nil
+		})
+	case "events":
+		// The stream starts from a fresh snapshot, not from after; a
+		// lagging subscriber ends with event_lag and resubscribes.
+		var stream *AgentEventStream
+		stream, err = rt.SubscribeAgentEvents(watchCtx, conversationID, 256)
+		if err == nil {
+			c.write(hostResponse{ID: watchID, Type: "response", Method: "conversation.watch", Success: true, Data: map[string]any{"watch_id": watchID, "after": stream.Snapshot.Revision, "mode": mode, "snapshot": stream.Snapshot}})
+			for ev := range stream.Events {
+				c.write(map[string]any{"type": "agent_event", "watch_id": watchID, "event": ev})
+			}
+			err = stream.Err()
+		} else {
+			c.mu.Lock()
+			if c.watches != nil {
+				delete(c.watches, watchID)
+			}
+			c.mu.Unlock()
+			cancel()
+			return nil, err
+		}
+	default:
+		c.write(hostResponse{ID: watchID, Type: "response", Method: "conversation.watch", Success: true, Data: map[string]any{"watch_id": watchID, "after": after}})
+		err = rt.Watch(watchCtx, conversationID, after, func(cm storage.Commit) error {
+			// Deliver with a bounded write deadline so a stalled client
+			// cannot hold host memory; the watch ends with an error instead.
+			c.write(map[string]any{"type": "commit", "watch_id": watchID, "commit": cm})
+			return nil
+		})
+	}
 	c.mu.Lock()
 	if c.watches != nil {
 		delete(c.watches, watchID)

@@ -116,7 +116,7 @@ func TestQueueWithdrawAndReorder(t *testing.T) {
 		t.Fatalf("busy input: %+v", s)
 	}
 	// The withdrawn input's entry remains in history but was not sent.
-	if got := entryTypes(h.entries(t, c.ID)); got != "user user user user assistant assistant" {
+	if got := entryTypes(h.entries(t, c.ID)); got != "user user user user assistant steer steer assistant" {
 		t.Fatalf("entries: %s", got)
 	}
 	for _, m := range h.client.requests[0].Messages {

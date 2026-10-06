@@ -195,11 +195,12 @@ func TestTwoClientsSteerAndObserveOneConversation(t *testing.T) {
 				}
 			}
 		}
-		if len(entries) >= 2 {
+		if len(entries) >= 3 {
 			break
 		}
 	}
-	if len(entries) != 2 {
+	// user, context, and assistant entries.
+	if len(entries) != 3 {
 		t.Fatalf("watcher saw %d entries", len(entries))
 	}
 	// Two clients configure the same revision: one conflict, no lost update.

@@ -25,24 +25,25 @@ func TestForkSharesHistoryWithoutCopying(t *testing.T) {
 	if run, _, err := h.svc.Step(ctx, parent.ID); err != nil || run.Outcome != "completed" {
 		t.Fatalf("parent run: %+v %v", run, err)
 	}
-	// Entries: user(1) assistant(2, tool call) tool_result(3) assistant(4).
+	// Entries: user(1) context(2) assistant(3, tool call) tool_result(4)
+	// assistant(5).
 	cur, _ := h.r.Conversation(ctx, parent.ID)
-	if cur.EntrySequence != 4 {
+	if cur.EntrySequence != 5 {
 		t.Fatalf("parent entries: %d", cur.EntrySequence)
 	}
-	for _, at := range []uint64{0, 5} {
+	for _, at := range []uint64{0, 6} {
 		if _, err := h.r.Fork(ctx, parent.ID, at, nil); !errors.Is(err, ErrInvalidFork) {
 			t.Fatalf("fork at %d: %v", at, err)
 		}
 	}
-	if _, err := h.r.Fork(ctx, parent.ID, 2, nil); !errors.Is(err, ErrInvalidFork) {
+	if _, err := h.r.Fork(ctx, parent.ID, 3, nil); !errors.Is(err, ErrInvalidFork) {
 		t.Fatalf("fork inside a tool round: %v", err)
 	}
-	child, err := h.r.Fork(ctx, parent.ID, 3, &AgentConfig{Provider: "synthetic", Model: "other", Instructions: "You are the fork."})
+	child, err := h.r.Fork(ctx, parent.ID, 4, &AgentConfig{Provider: "synthetic", Model: "other", Instructions: "You are the fork."})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if child.Parent == nil || child.Parent.ConversationID != parent.ID || child.Parent.At != 3 || child.Config.Model != "other" || child.EntrySequence != 0 {
+	if child.Parent == nil || child.Parent.ConversationID != parent.ID || child.Parent.At != 4 || child.Config.Model != "other" || child.EntrySequence != 0 {
 		t.Fatalf("child: %+v", child)
 	}
 	// No entries were copied.
@@ -59,12 +60,12 @@ func TestForkSharesHistoryWithoutCopying(t *testing.T) {
 	if len(req.Messages) != 4 || req.Messages[0].Role != provider.RoleUser || req.Messages[2].Role != provider.RoleTool || core.MessageText(req.Messages[3]) != "child question" {
 		t.Fatalf("child context: %+v", req.Messages)
 	}
-	if req.Model != "other" || !strings.Contains(req.System, "You are the fork.") || req.SessionID != child.ID {
+	if req.Model != "other" || !strings.Contains(req.System, "You are the fork.") || req.SessionID != child.ProviderSessionID() || child.ProviderSession == "" {
 		t.Fatalf("child configuration: %q %q %q", req.Model, req.System, req.SessionID)
 	}
 	// The parent is untouched and continues on its own history.
 	after, _ := h.r.Conversation(ctx, parent.ID)
-	if after.EntrySequence != 4 || after.Revision != cur.Revision {
+	if after.EntrySequence != 5 || after.Revision != cur.Revision {
 		t.Fatalf("parent changed by fork: before=%+v after=%+v", cur, after)
 	}
 	h.r.Submit(ctx, parent.ID, "actor", "", "second")
@@ -89,7 +90,7 @@ func TestForkSharesHistoryWithoutCopying(t *testing.T) {
 		t.Fatalf("fork export: %s", exported.String())
 	}
 	// Grandchild chains through two parents.
-	grandchild, err := h.r.Fork(ctx, child.ID, 2, nil)
+	grandchild, err := h.r.Fork(ctx, child.ID, 3, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +102,9 @@ func TestForkSharesHistoryWithoutCopying(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(seen) != 5 || !strings.HasPrefix(seen[0], parent.ID[:4]) || !strings.HasPrefix(seen[3], child.ID[:4]) {
+	// Parent: user context assistant tool_result; child: user context
+	// (its instructions differ) assistant.
+	if len(seen) != 7 || !strings.HasPrefix(seen[0], parent.ID[:4]) || !strings.HasPrefix(seen[3], parent.ID[:4]) || !strings.HasPrefix(seen[4], child.ID[:4]) {
 		t.Fatalf("grandchild history: %v", seen)
 	}
 }
@@ -131,7 +134,7 @@ func TestResetStartsNewContextAndKeepsHistory(t *testing.T) {
 		t.Fatalf("first run: %+v %v", run, err)
 	}
 	reset, err := h.r.Reset(ctx, c.ID, "We were discussing 42. Continue.")
-	if err != nil || reset.EntrySequence != 3 {
+	if err != nil || reset.EntrySequence != 4 {
 		t.Fatalf("reset: %+v %v", reset, err)
 	}
 	h.r.Submit(ctx, c.ID, "actor", "", "what number")

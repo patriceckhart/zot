@@ -374,7 +374,7 @@ func (r *Runtime) SearchIndexed(ctx context.Context, idx *SearchIndex, q SearchQ
 	}
 	needle := strings.ToLower(q.Text)
 	matches := func(e Entry) bool {
-		if len(types) > 0 && !types[e.Type] {
+		if len(types) > 0 && !types[e.Type] || len(types) == 0 && e.Type == entryContext {
 			return false
 		}
 		if !q.After.IsZero() || !q.Before.IsZero() {

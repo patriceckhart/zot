@@ -138,6 +138,9 @@ type toolOutcome struct {
 	Status string `json:"status"`
 	// Handoff is set when the result ended the chain with a handoff.
 	Handoff bool `json:"handoff,omitempty"`
+	// Terminate is set when the result asked to end the run without
+	// another model request.
+	Terminate bool `json:"terminate,omitempty"`
 }
 
 type compactionInput struct {
@@ -342,9 +345,15 @@ func migrateRunOps(snap storage.Snapshot, run Run) ([]storage.Operation, error) 
 	return ops, nil
 }
 
-// startChainOps claims every queued submission of c into a new chain with a
-// new generation task. It returns nil when the queue is empty.
-func startChainOps(snap storage.Snapshot, c Conversation) ([]storage.Operation, error) {
+// startChainOps places the queue of c in order: writes are written, and
+// queued prompts are claimed into a new chain with a new generation task,
+// one per chain or all at once (AgentConfig.FollowUpMode). A held queue
+// starts nothing. It advances c and writes its record when anything was
+// placed, and returns nil when nothing was.
+func startChainOps(snap storage.Snapshot, c *Conversation) ([]storage.Operation, error) {
+	if c.QueueHeld {
+		return nil, nil
+	}
 	queue, err := snap.Page("queue/"+c.ID+"/", "", 100)
 	if err != nil {
 		return nil, err
@@ -364,16 +373,82 @@ func startChainOps(snap storage.Snapshot, c Conversation) ([]storage.Operation, 
 		if err != nil || !ok {
 			return nil, fmt.Errorf("%w: queued submission missing", storage.ErrCorrupt)
 		}
-		sub.State = "running"
-		chain.Submissions = append(chain.Submissions, id)
+		if sub.Kind != SubmissionWrite && len(chain.Submissions) > 0 && c.Config.FollowUpMode == PlacementOne {
+			break
+		}
+		place, err := placementOps(pendingSnapshot(snap, ops), c, sub, false)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, place...)
+		if sub.Kind == SubmissionWrite {
+			sub.State = submissionWritten
+		} else {
+			sub.State = "running"
+			chain.Submissions = append(chain.Submissions, id)
+		}
 		ops = append(ops, record("submission/"+id, sub), storage.Operation{Key: row.Key, Delete: true})
+	}
+	c.Revision = revision
+	if len(chain.Submissions) == 0 {
+		return append(ops, record("conversation/"+c.ID, *c)), nil
 	}
 	task := Task{ID: uuid.NewString(), ConversationID: c.ID, Kind: TaskKindGeneration, Version: generationVersion, State: "pending", Phase: "request", Created: time.Now().UTC(), Revision: revision}
 	task.Input, _ = json.Marshal(generationInput{RunID: chain.RunID})
 	task.Checkpoint, _ = json.Marshal(generationCheckpoint{Turn: 1, Attempt: 1, Cutoff: c.EntrySequence})
 	chain.Task = task.ID
 	ops = append(ops, formatOps(snap, 2)...)
-	return append(ops, record(taskKey(task.ID), task), record(taskConversationKey(c.ID, task.ID), task.ID), record(chainKey(c.ID), chain)), nil
+	return append(ops, record(taskKey(task.ID), task), record(taskConversationKey(c.ID, task.ID), task.ID), record(chainKey(c.ID), chain), record("conversation/"+c.ID, *c)), nil
+}
+
+// placementOps places a queued submission at the current end of the
+// transcript. Its admission entry stays where it was admitted and is hidden
+// from model context while queued. When other entries were appended after
+// it, or force is set, a steer entry at the tail carries the input where it
+// joined; otherwise the admission entry already is the tail.
+func placementOps(view storage.Snapshot, c *Conversation, sub Submission, force bool) ([]storage.Operation, error) {
+	if !force {
+		for seq := c.EntrySequence; seq > 0; seq-- {
+			e, ok, err := read[Entry](view, entryKey(c.ID, seq))
+			if err != nil {
+				return nil, err
+			}
+			if !ok || e.Type != "user" {
+				break
+			}
+			if e.SubmissionID == sub.ID {
+				return nil, nil
+			}
+		}
+	}
+	c.EntrySequence++
+	entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, SubmissionID: sub.ID, Revision: view.Revision() + 1, Type: entrySteer, Content: sub.Content, Time: time.Now().UTC()}
+	return []storage.Operation{record(entryKey(c.ID, c.EntrySequence), entry)}, nil
+}
+
+// withdrawQueuedOps withdraws the queued prompts of a conversation, keeping
+// queued writes, which need no model request.
+func withdrawQueuedOps(snap storage.Snapshot, conversationID string) ([]storage.Operation, int, error) {
+	var ops []storage.Operation
+	n := 0
+	err := pageAll(snap, "queue/"+conversationID+"/", func(row storage.Record) error {
+		var id string
+		if json.Unmarshal(row.Value, &id) != nil {
+			return storage.ErrCorrupt
+		}
+		sub, ok, err := read[Submission](snap, "submission/"+id)
+		if err != nil || !ok {
+			return fmt.Errorf("%w: queued submission missing", storage.ErrCorrupt)
+		}
+		if sub.Kind == SubmissionWrite {
+			return nil
+		}
+		sub.State = "withdrawn"
+		ops = append(ops, record("submission/"+id, sub), storage.Operation{Key: row.Key, Delete: true})
+		n++
+		return nil
+	})
+	return ops, n, err
 }
 
 // AdmitQueued starts a chain for every conversation that has queued inputs
@@ -421,7 +496,7 @@ func (r *Runtime) AdmitQueued(ctx context.Context) (int, error) {
 			if err != nil {
 				return started, err
 			}
-			ops, err := startChainOps(snap, c)
+			ops, err := startChainOps(snap, &c)
 			if err != nil || len(ops) == 0 {
 				if err != nil {
 					return started, err
@@ -470,6 +545,9 @@ func NewNativeExecutor(r *Runtime, engine func() Engine, opts ExecutionOptions) 
 // inputs at every tick.
 func (x *NativeExecutor) Scheduler(reg TaskRegistry) *TaskScheduler {
 	s := NewTaskScheduler(x.r, reg)
+	if x.opts.Extensions != nil {
+		s.Resolve = x.opts.Extensions.task
+	}
 	var once sync.Once
 	s.Prepare = func(ctx context.Context) (int, error) {
 		var migrated int
@@ -485,6 +563,11 @@ func (x *NativeExecutor) Scheduler(reg TaskRegistry) *TaskScheduler {
 	return s
 }
 
+// extensions resolves the conversation's selected extensions at this use.
+func (x *NativeExecutor) extensions(c Conversation) (resolvedExtensions, error) {
+	return x.opts.Extensions.resolve(c.Config.Extensions)
+}
+
 // Register adds the generation, tool, and compaction task definitions.
 func (x *NativeExecutor) Register(reg TaskRegistry) error {
 	x.reg = reg
@@ -494,9 +577,9 @@ func (x *NativeExecutor) Register(reg TaskRegistry) error {
 			return Next{}, fmt.Errorf("generation tasks are created by admission only")
 		},
 		Phases: map[string]func(context.Context, TaskContext) (Next, error){
-			"request":   x.request,
-			"collect":   x.collect,
-			"compacted": x.compacted,
+			"request":   x.settleOnError(x.request),
+			"collect":   x.settleOnError(x.collect),
+			"compacted": x.settleOnError(x.compacted),
 		},
 		Abort: x.abortGeneration,
 	}); err != nil {
@@ -543,6 +626,24 @@ func (x *NativeExecutor) Register(reg TaskRegistry) error {
 		},
 		Retry: RetryPolicy{MaxAttempts: x.opts.MaxAttempts, Backoff: x.opts.RetryDelay, Retryable: core.RetryableProviderError},
 	})
+}
+
+// settleOnError turns a generation handler error into a failed chain, so a
+// failure that is not the model's (a missing extension, an engine that
+// cannot be built) settles the submissions and the chain together instead
+// of leaving a chain without its task. Cancellation, aborts, stale
+// invocations, and storage errors keep their meaning.
+func (x *NativeExecutor) settleOnError(phase func(context.Context, TaskContext) (Next, error)) func(context.Context, TaskContext) (Next, error) {
+	return func(ctx context.Context, tc TaskContext) (Next, error) {
+		next, err := phase(ctx, tc)
+		if err == nil || ctx.Err() != nil || errors.Is(err, ErrTaskAborting) || errors.Is(err, ErrStaleInvocation) || errors.Is(err, storage.ErrConflict) || errors.Is(err, storage.ErrCorrupt) {
+			return next, err
+		}
+		reason := err.Error()
+		return Next{Commit: func(tx *TaskTx) (Next, error) {
+			return x.finish(tx, nil, "failed", reason, "")
+		}}, nil
+	}
 }
 
 func decodeGeneration(t Task) (generationInput, generationCheckpoint, error) {
@@ -615,7 +716,11 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 			}}, nil
 		}
 	}
-	agent, err := prepareAgent(ctx, x.engine(), tc.Snapshot, c, cp.Cutoff)
+	exts, err := x.extensions(c)
+	if err != nil {
+		return Next{}, err
+	}
+	agent, err := prepareAgent(ctx, x.engine(), tc.Snapshot, c, cp.Cutoff, exts)
 	if err != nil {
 		return Next{}, err
 	}
@@ -631,6 +736,16 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 			next.Compaction = id
 			return Next{Phase: "compacted", Checkpoint: next, WaitOn: []string{id}}, nil
 		}}, nil
+	}
+	// Extensions may shape the request after compaction and placement
+	// decided what it contains.
+	if len(exts) > 0 {
+		req := &HookRequest{Conversation: c, System: agent.System, Messages: agent.Messages()}
+		if err := exts.beforeRequest(ctx, req); err != nil {
+			return Next{}, err
+		}
+		agent.System = req.System
+		agent.SetMessages(req.Messages)
 	}
 	_, backgroundRunning := tc.Snapshot.Get(backgroundKey(c.ID))
 	startBackground := !tc.Interrupted && !backgroundRunning && policy.BackgroundTokens > 0 && estimateTokens(agent.Messages())+len(agent.System)/4 > policy.BackgroundTokens
@@ -657,9 +772,14 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 	}
 	var usage provider.Usage
 	usageKnown := false
+	// Every event of the attempt is held until a commit covers it: deltas
+	// with the partial flush that records their text, the rest with the
+	// response commit. Nothing reaches an observer that a crash could
+	// still take back.
+	gate := newEventGate(x.opts.Sink)
 	var partial *taskPartial
 	if x.opts.PartialFlushInterval >= 0 {
-		partial = newTaskPartial(tc, x.opts.PartialFlushInterval, Partial{ConversationID: c.ID, RunID: in.RunID, Turn: cp.Turn, Attempt: cp.Attempt})
+		partial = newTaskPartial(tc, x.opts.PartialFlushInterval, Partial{ConversationID: c.ID, RunID: in.RunID, Turn: cp.Turn, Attempt: cp.Attempt}, gate)
 	}
 	stop, msg, turnErr := agent.Turn(ctx, func(ev core.AgentEvent) {
 		switch e := ev.(type) {
@@ -669,10 +789,11 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 			}
 		case core.EvTextDelta:
 			if partial != nil {
-				partial.add(e.Delta)
+				partial.add(e.Delta, ev)
+				return
 			}
 		}
-		x.opts.Sink(ev)
+		gate.hold(ev)
 	})
 	if partial != nil {
 		partial.stop()
@@ -694,18 +815,39 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 	if partial != nil {
 		partialText, partialTruncated = partial.text()
 	}
-	return Next{Commit: func(tx *TaskTx) (Next, error) {
+	// Response hooks run before the commit, once per attempt, so what they
+	// decide commits with the response. An extension error fails the
+	// attempt like a provider error would not: it is permanent.
+	continuation := ""
+	if !failed {
+		if err := exts.afterResponse(ctx, c, msg); err != nil {
+			return Next{}, err
+		}
+		if stop != provider.StopToolUse || !hasLocalCalls(msg) {
+			if continuation, err = exts.onYield(ctx, c, msg); err != nil {
+				return Next{}, err
+			}
+		}
+	}
+	return Next{AfterCommit: func() { gate.releaseAll() }, Commit: func(tx *TaskTx) (Next, error) {
 		fresh, err := conversation(tx.Snapshot, c.ID)
 		if err != nil {
 			return Next{}, err
 		}
 		tx.Ops(usageOp(&fresh, in.RunID, cp.Turn, cp.Attempt, agent, usage, usageKnown))
-		tx.Ops(promptOps(tx.Snapshot, fresh, Run{ID: in.RunID, Turn: cp.Turn, Attempt: cp.Attempt}, agent.Model, system, toolJSON, names)...)
+		// The request's system prompt and tools are part of the transcript:
+		// a context entry records only what changed since the last one,
+		// at the position the change took effect.
+		ctxOps, err := contextChangeOps(ctx, tx.View(), &fresh, system, toolJSON, names, agent.Model)
+		if err != nil {
+			return Next{}, err
+		}
+		tx.Ops(ctxOps...)
 		if startBackground {
 			// The summary is a conversation-level background task: it
 			// outlives this chain and is published at the conversation's
 			// next request boundary.
-			bg, ops, err := buildTask(x.reg, c.ID, "", TaskSpec{Kind: TaskKindCompaction, Input: compactionInput{Reason: "background", KeepTokens: policy.KeepRecentTokens}, Background: true}, tx.Snapshot.Revision()+1)
+			bg, ops, err := buildTask(x.reg.lookup, c.ID, "", TaskSpec{Kind: TaskKindCompaction, Input: compactionInput{Reason: "background", KeepTokens: policy.KeepRecentTokens}, Background: true}, tx.Snapshot.Revision()+1)
 			if err != nil {
 				return Next{}, err
 			}
@@ -772,6 +914,16 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 			if aborting {
 				return x.finish(tx, &fresh, "aborted", "aborted by request", "")
 			}
+			if continuation != "" && cp.Turn < x.opts.MaxTurns {
+				// An extension continues the run instead of answering: its
+				// prompt is the next user message of the same chain.
+				fresh.EntrySequence++
+				tx.Put(entryKey(fresh.ID, fresh.EntrySequence), Entry{ID: uuid.NewString(), ConversationID: fresh.ID, Revision: tx.Snapshot.Revision() + 1, Type: entryContinue, Content: continuation, Time: time.Now().UTC()})
+				fresh.Revision = tx.Snapshot.Revision() + 1
+				tx.Put("conversation/"+fresh.ID, fresh)
+				x.noticeOps(tx, fmt.Sprintf("run continued by an extension at turn %d", cp.Turn))
+				return Next{Phase: "request", Checkpoint: generationCheckpoint{Turn: cp.Turn + 1, Attempt: 1, Cutoff: fresh.EntrySequence}}, nil
+			}
 			return x.finish(tx, &fresh, "answered", "", "")
 		}
 		// The response and its owned tool tasks commit together. Under a
@@ -780,6 +932,7 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 		next := generationCheckpoint{Turn: cp.Turn, Attempt: cp.Attempt, Cutoff: fresh.EntrySequence}
 		var wait []string
 		prev := ""
+		parallel := parallelRound(fresh.Config, calls)
 		for _, call := range calls {
 			id, err := tx.CreateChild(TaskSpec{Kind: TaskKindTool, Input: toolInput{RunID: in.RunID, CallID: call.ID, Name: call.Name, Args: call.Arguments, After: prev, Turn: cp.Turn}})
 			if err != nil {
@@ -787,12 +940,38 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 			}
 			next.Calls = append(next.Calls, toolRef{Task: id, CallID: call.ID})
 			wait = append(wait, id)
-			prev = id
+			if !parallel {
+				prev = id
+			}
 		}
 		fresh.Revision = tx.Snapshot.Revision() + 1
 		tx.Put("conversation/"+fresh.ID, fresh)
 		return Next{Phase: "collect", Checkpoint: next, WaitOn: wait}, nil
 	}}, nil
+}
+
+func hasLocalCalls(msg provider.Message) bool {
+	for _, block := range msg.Content {
+		if call, ok := block.(provider.ToolCallBlock); ok && !call.Server {
+			return true
+		}
+	}
+	return false
+}
+
+// parallelRound reports whether the calls of a round run concurrently. A
+// round with a handoff call stays sequential, because the handoff skips the
+// calls after it, which must therefore not have started.
+func parallelRound(cfg AgentConfig, calls []provider.ToolCallBlock) bool {
+	if !cfg.ParallelTools || len(calls) < 2 {
+		return false
+	}
+	for _, call := range calls {
+		if call.Name == (HandoffTool{}).Name() {
+			return false
+		}
+	}
+	return true
 }
 
 // compacted runs after a blocking compaction task settled: publish its
@@ -911,6 +1090,36 @@ func (x *NativeExecutor) collect(ctx context.Context, tc TaskContext) (Next, err
 		return Next{}, err
 	}
 	waited := tc.Waited
+	c, err := conversation(tc.Snapshot, tc.Task.ConversationID)
+	if err != nil {
+		return Next{}, err
+	}
+	exts, err := x.extensions(c)
+	if err != nil {
+		return Next{}, err
+	}
+	// The round's results are committed; hooks decide before the commit
+	// that continues or ends the run, never inside its builder.
+	stop := allTerminate(waited)
+	if !stop && len(exts) > 0 {
+		results := make([]ToolRoundResult, 0, len(waited))
+		for i, t := range waited {
+			var out toolOutcome
+			_ = json.Unmarshal(t.Result, &out)
+			r := ToolRoundResult{Status: out.Status}
+			if i < len(cp.Calls) {
+				r.CallID = cp.Calls[i].CallID
+			}
+			var tin toolInput
+			if json.Unmarshal(t.Input, &tin) == nil {
+				r.Name = tin.Name
+			}
+			results = append(results, r)
+		}
+		if stop, err = exts.afterTools(ctx, c, results); err != nil {
+			return Next{}, err
+		}
+	}
 	return Next{Commit: func(tx *TaskTx) (Next, error) {
 		fresh, err := conversation(tx.Snapshot, tx.Task().ConversationID)
 		if err != nil {
@@ -927,6 +1136,13 @@ func (x *NativeExecutor) collect(ctx context.Context, tc TaskContext) (Next, err
 		}
 		if tx.Task().AbortRequested {
 			return x.finish(tx, &fresh, "aborted", "aborted by request", "")
+		}
+		if stop {
+			// Every result of the round asked to end the run: the round's
+			// results are the answer, without another model request.
+			fresh.Revision = tx.Snapshot.Revision() + 1
+			tx.Put("conversation/"+fresh.ID, fresh)
+			return x.finish(tx, &fresh, "answered", "", "terminated by tool results")
 		}
 		if cp.Turn >= x.opts.MaxTurns {
 			return x.finish(tx, &fresh, "failed", fmt.Sprintf("max turns (%d) exceeded", x.opts.MaxTurns), "")
@@ -948,6 +1164,21 @@ func (x *NativeExecutor) collect(ctx context.Context, tc TaskContext) (Next, err
 		tx.Put("conversation/"+fresh.ID, fresh)
 		return Next{Phase: "request", Checkpoint: generationCheckpoint{Turn: cp.Turn + 1, Attempt: 1, Cutoff: fresh.EntrySequence}}, nil
 	}}, nil
+}
+
+// allTerminate reports whether every tool task of a round produced a result
+// that asks to end the run.
+func allTerminate(waited []Task) bool {
+	if len(waited) == 0 {
+		return false
+	}
+	for _, t := range waited {
+		var out toolOutcome
+		if t.Outcome != "completed" || json.Unmarshal(t.Result, &out) != nil || !out.Terminate {
+			return false
+		}
+	}
+	return true
 }
 
 // abortGeneration settles the chain aborted. It runs after every owned tool
@@ -1000,9 +1231,13 @@ func repairToolResults(tx *TaskTx, c *Conversation, calls []toolRef, waited []Ta
 }
 
 // finish settles the chain's submissions with state and ends the generation
-// task. Inputs queued meanwhile start the next chain in the same commit, so
-// queue ordering survives a crash between the two. Pending approvals of the
-// chain are expired.
+// task. Pending approvals of the chain are expired. What happens to inputs
+// queued meanwhile depends on the outcome, decided in the same commit so it
+// survives a crash between the two:
+//
+//	answered  the next chain starts
+//	failed    the queue is held until the next prompt submission places it
+//	aborted   queued prompts are withdrawn; queued writes are written
 func (x *NativeExecutor) finish(tx *TaskTx, c *Conversation, state, reason, notice string) (Next, error) {
 	view := tx.View()
 	if c == nil {
@@ -1033,15 +1268,38 @@ func (x *NativeExecutor) finish(tx *TaskTx, c *Conversation, state, reason, noti
 		p.Final, p.Updated = true, time.Now().UTC()
 		tx.Put(partialKey(c.ID), p)
 	}
+	switch state {
+	case "aborted":
+		ops, n, err := withdrawQueuedOps(view, c.ID)
+		if err != nil {
+			return Next{}, err
+		}
+		tx.Ops(ops...)
+		if n > 0 {
+			chain.Notices = append(chain.Notices, fmt.Sprintf("%d queued input(s) withdrawn by the abort", n))
+		}
+	case "failed":
+		if queued, err := view.Page("queue/"+c.ID+"/", "", 1); err != nil {
+			return Next{}, err
+		} else if len(queued) > 0 {
+			c.QueueHeld = true
+			chain.Notices = append(chain.Notices, "queued inputs held until the next submission")
+		}
+	}
 	c.Revision = tx.Snapshot.Revision() + 1
 	tx.Put("conversation/"+c.ID, *c)
 	// Settlement is applied to the view, so queue rows of the settled
-	// chain are already gone and only new inputs are claimed.
-	next, err := startChainOps(tx.View(), *c)
+	// chain are already gone and only new inputs are claimed. A held queue,
+	// writes included, keeps its order and starts nothing.
+	next, err := startChainOps(tx.View(), c)
 	if err != nil {
 		return Next{}, err
 	}
-	if next == nil {
+	started := false
+	for _, op := range next {
+		started = started || op.Key == chainKey(c.ID)
+	}
+	if !started {
 		tx.Delete(chainKey(c.ID))
 	}
 	tx.Ops(next...)
@@ -1093,12 +1351,18 @@ func (x *NativeExecutor) runTool(ctx context.Context, tc TaskContext) (Next, err
 	if err != nil {
 		return Next{}, err
 	}
-	agent, err := prepareAgent(ctx, x.engine(), tc.Snapshot, c, 0)
+	exts, err := x.extensions(c)
+	if err != nil {
+		return Next{}, err
+	}
+	agent, err := prepareAgent(ctx, x.engine(), tc.Snapshot, c, 0, exts)
 	if err != nil {
 		return Next{}, err
 	}
 	identity := ToolCallIdentity{RunID: in.RunID, ConversationID: c.ID, CallID: in.CallID}
 	call := provider.ToolCallBlock{ID: in.CallID, Name: in.Name, Arguments: in.Args}
+	// Events of the call are held until the commit that records them.
+	gate := newEventGate(x.opts.Sink)
 	var result core.ToolResult
 	status, notice := "", ""
 	executed := false
@@ -1108,7 +1372,7 @@ func (x *NativeExecutor) runTool(ctx context.Context, tc TaskContext) (Next, err
 		// conversation and its submission are found again by key.
 		return x.startSubagent(ctx, tc, in, cp, c)
 	case tc.Interrupted:
-		decision, replayResult, replayed := recoverCall(ctx, x.r, agent, identity, ToolIntent{CallID: in.CallID, Name: in.Name, Args: cp.Args, Replay: cp.Replay}, call, x.opts.Sink)
+		decision, replayResult, replayed := recoverCall(ctx, x.r, agent, identity, ToolIntent{CallID: in.CallID, Name: in.Name, Args: cp.Args, Replay: cp.Replay}, call, gate.hold, exts)
 		if ctx.Err() != nil {
 			return Next{}, ctx.Err()
 		}
@@ -1130,7 +1394,7 @@ func (x *NativeExecutor) runTool(ctx context.Context, tc TaskContext) (Next, err
 		}
 		call.Arguments = cp.Args
 	default:
-		args, allowed, reason, policy := authorizeCall(ctx, x.r, agent, c.ID, call)
+		args, allowed, reason, policy := authorizeCall(ctx, x.r, agent, c.ID, call, exts)
 		if !allowed {
 			result = core.ToolResult{IsError: true, Content: []provider.Content{provider.TextBlock{Text: reason}}}
 			status = "blocked"
@@ -1169,17 +1433,25 @@ func (x *NativeExecutor) runTool(ctx context.Context, tc TaskContext) (Next, err
 			return Next{}, err
 		}
 		call.Arguments = args
-		progress := newToolProgress(tc, in.CallID)
+		progress := newToolProgress(tc, in.CallID, gate)
 		result = executeCall(ctx, agent, identity, call, func(ev core.AgentEvent) {
 			if p, ok := ev.(core.EvToolProgress); ok {
-				progress.add(p.Text)
+				progress.add(p.Text, ev)
+				return
 			}
-			x.opts.Sink(ev)
+			gate.hold(ev)
 		})
 		progress.flush()
 		executed = true
 		if ctx.Err() != nil {
 			return Next{}, ctx.Err()
+		}
+		// The effect happened: a failing hook cannot undo it, so the
+		// original result stands and the failure is recorded.
+		if replaced, err := exts.afterTool(ctx, c, call, result); err != nil {
+			notice = err.Error()
+		} else {
+			result = replaced
 		}
 	}
 	if result.Status == "unknown" && cp.Replay == core.ReplayReconcile && cp.Unresolved < maxUnresolved {
@@ -1206,9 +1478,13 @@ func (x *NativeExecutor) runTool(ctx context.Context, tc TaskContext) (Next, err
 			if handoff && !tx.Task().AbortRequested {
 				return commitHandoff(tx, in, call.ID, result, req)
 			}
-			return commitToolResult(tx, call.ID, result, status, notice, "completed")
+			next, err := commitToolResult(tx, call.ID, result, status, notice, "completed")
+			if err == nil && result.Terminate && executed {
+				next.Result = toolOutcome{Entry: next.Result.(toolOutcome).Entry, Status: status, Terminate: true}
+			}
+			return next, err
 		},
-		AfterCommit: func() { x.opts.Sink(ev) },
+		AfterCommit: func() { gate.releaseAll(ev) },
 	}, nil
 }
 
@@ -1437,7 +1713,7 @@ func (x *NativeExecutor) startSubagent(ctx context.Context, tc TaskContext, in t
 			tx.Ops(ops...)
 			tx.Put("conversation/"+child.ID, child)
 			if _, active := view.Get(chainKey(child.ID)); !active {
-				start, err := startChainOps(tx.View(), child)
+				start, err := startChainOps(tx.View(), &child)
 				if err != nil {
 					return Next{}, err
 				}
@@ -1516,6 +1792,7 @@ func (x *NativeExecutor) subagentResult(ctx context.Context, tc TaskContext) (Ne
 type taskPartial struct {
 	tc       TaskContext
 	base     Partial
+	gate     *eventGate
 	interval time.Duration
 	mu       sync.Mutex
 	buf      strings.Builder
@@ -1525,18 +1802,21 @@ type taskPartial struct {
 	done     chan struct{}
 }
 
-func newTaskPartial(tc TaskContext, interval time.Duration, base Partial) *taskPartial {
+func newTaskPartial(tc TaskContext, interval time.Duration, base Partial, gate *eventGate) *taskPartial {
 	if interval <= 0 {
 		interval = PartialFlushInterval
 	}
-	p := &taskPartial{tc: tc, base: base, interval: interval, quit: make(chan struct{}), done: make(chan struct{})}
+	p := &taskPartial{tc: tc, base: base, gate: gate, interval: interval, quit: make(chan struct{}), done: make(chan struct{})}
 	go p.loop()
 	return p
 }
 
-func (p *taskPartial) add(delta string) {
+// add records a streamed delta and holds its event; both are released
+// together by the flush that commits them.
+func (p *taskPartial) add(delta string, ev core.AgentEvent) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.gate.hold(ev)
 	if room := MaxPartialBytes - p.buf.Len(); room <= 0 {
 		p.trunc = true
 		return
@@ -1576,11 +1856,16 @@ func (p *taskPartial) flush() {
 	rec := p.base
 	rec.Text, rec.Truncated, rec.Updated = p.buf.String(), p.trunc, time.Now().UTC()
 	p.dirty = false
+	// Text and held events are captured under one lock, so the events
+	// released below are exactly those whose text this commit records.
+	upto := p.gate.cover()
 	p.mu.Unlock()
-	_ = p.tc.Commit(context.Background(), func(tx *TaskTx) error {
+	if p.tc.Commit(context.Background(), func(tx *TaskTx) error {
 		tx.Put(partialKey(rec.ConversationID), rec)
 		return nil
-	})
+	}) == nil {
+		p.gate.release(upto)
+	}
 }
 
 func (p *taskPartial) stop() {
@@ -1607,6 +1892,7 @@ const MaxToolProgressBytes = 16 << 10
 // and the result commit removes it atomically.
 type toolProgress struct {
 	tc    TaskContext
+	gate  *eventGate
 	call  string
 	mu    sync.Mutex
 	text  string
@@ -1614,12 +1900,13 @@ type toolProgress struct {
 	last  time.Time
 }
 
-func newToolProgress(tc TaskContext, callID string) *toolProgress {
-	return &toolProgress{tc: tc, call: callID}
+func newToolProgress(tc TaskContext, callID string, gate *eventGate) *toolProgress {
+	return &toolProgress{tc: tc, call: callID, gate: gate}
 }
 
-func (p *toolProgress) add(text string) {
+func (p *toolProgress) add(text string, ev core.AgentEvent) {
 	p.mu.Lock()
+	p.gate.hold(ev)
 	p.text += text
 	if len(p.text) > MaxToolProgressBytes {
 		p.text, p.trunc = p.text[len(p.text)-MaxToolProgressBytes:], true
@@ -1635,14 +1922,17 @@ func (p *toolProgress) flush() {
 	p.mu.Lock()
 	rec := ToolProgress{TaskID: p.tc.Task.ID, CallID: p.call, Text: p.text, Truncated: p.trunc, Updated: time.Now().UTC()}
 	p.last = rec.Updated
+	upto := p.gate.cover()
 	p.mu.Unlock()
 	if rec.Text == "" {
 		return
 	}
-	_ = p.tc.Commit(context.Background(), func(tx *TaskTx) error {
+	if p.tc.Commit(context.Background(), func(tx *TaskTx) error {
 		tx.Put(progressKey(rec.TaskID), rec)
 		return nil
-	})
+	}) == nil {
+		p.gate.release(upto)
+	}
 }
 
 // TaskView is the committed view of execution of one

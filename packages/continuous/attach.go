@@ -47,7 +47,7 @@ func MessagesFromEntries(entries []Entry) []provider.Message {
 	}
 	for _, e := range entries {
 		switch e.Type {
-		case "user", entrySteer:
+		case "user", entrySteer, entryContinue:
 			flushTool()
 			messages = append(messages, provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: e.Content}}, Time: e.Time})
 		case entryAssistant:
@@ -73,7 +73,7 @@ func MessagesFromEntries(entries []Entry) []provider.Message {
 		}
 	}
 	flushTool()
-	return provider.RepairOrphanedToolResults(messages)
+	return provider.RepairOrphanedToolResults(orderToolResults(messages))
 }
 
 // Prompt is the PromptDriver: submit, then watch commits until the run that

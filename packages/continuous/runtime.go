@@ -37,6 +37,38 @@ type AgentConfig struct {
 	// configuration change never grants a capability the host does not have.
 	Tools     []string `json:"tools,omitempty"`
 	DenyTools []string `json:"deny_tools,omitempty"`
+	// Extensions name registered extensions (ExtensionRegistry) that
+	// contribute tools, prompt sections, and hooks. They are resolved by
+	// name at each model request and tool call, so a reload applies to the
+	// next use. A name the host does not register is an error at use.
+	Extensions []string `json:"extensions,omitempty"`
+	// ParallelTools runs the tool calls of one round concurrently instead
+	// of in call order. Each call keeps its own task, intent, and recovery.
+	ParallelTools bool `json:"parallel_tools,omitempty"`
+	// SteerMode and FollowUpMode place queued inputs. "all" (the default)
+	// places every waiting steered input at a request boundary and claims
+	// every queued prompt into the next chain; "one" places one steered
+	// input per boundary and answers one queued prompt per chain.
+	SteerMode    string `json:"steer_mode,omitempty"`
+	FollowUpMode string `json:"follow_up_mode,omitempty"`
+}
+
+// Placement modes of AgentConfig.SteerMode and FollowUpMode.
+const (
+	PlacementOne = "one"
+	PlacementAll = "all"
+)
+
+func validPlacement(mode string) bool {
+	return mode == "" || mode == PlacementOne || mode == PlacementAll
+}
+
+// validate rejects configuration values the runtime does not understand.
+func (c AgentConfig) validate() error {
+	if !validPlacement(c.SteerMode) || !validPlacement(c.FollowUpMode) {
+		return fmt.Errorf("placement mode must be one or all")
+	}
+	return nil
 }
 
 // allows reports whether the configuration permits a tool name.
@@ -68,11 +100,29 @@ type Conversation struct {
 	// ConfigRevision counts configuration changes. Decisions bound to a
 	// policy (tool-scoped approvals) are valid for one value only.
 	ConfigRevision uint64 `json:"config_revision,omitempty"`
+	// QueueHeld is set when a chain failed or was aborted with inputs still
+	// queued. Held inputs start nothing until the next prompt submission
+	// places them, oldest first.
+	QueueHeld bool `json:"queue_held,omitempty"`
 	// Parent is set for forks. The child's visible history starts with the
 	// parent's entries through Parent.At.
 	Parent *Parent `json:"parent,omitempty"`
 	// Owner is set for conversations a task created, such as subagents.
 	Owner *Owner `json:"owner,omitempty"`
+	// ProviderSession is the identity sent to providers for prompt caching
+	// and sticky routing. It is created with the conversation and survives
+	// reopen, retries, reset, compaction, and model changes; forks and owned
+	// conversations get their own. Conversations created before it existed
+	// use their ID (ProviderSessionID).
+	ProviderSession string `json:"provider_session,omitempty"`
+}
+
+// ProviderSessionID is the provider-facing session identity.
+func (c Conversation) ProviderSessionID() string {
+	if c.ProviderSession != "" {
+		return c.ProviderSession
+	}
+	return c.ID
 }
 
 type Submission struct {
@@ -83,12 +133,22 @@ type Submission struct {
 	Content        string `json:"content"`
 	Sequence       uint64 `json:"sequence"`
 	Revision       uint64 `json:"revision"`
-	// State is queued, running, answered, failed, or aborted.
+	// State is queued, running, answered, failed, aborted, withdrawn, or
+	// (for writes) written.
 	State string `json:"state"`
 	// Policy is queue (default, answered by the next run) or steer (claimed
 	// by the active run at its next request boundary).
 	Policy string `json:"policy,omitempty"`
+	// Kind is empty for a prompt, which is answered by a model request, or
+	// write, which only appends its entry. A write admitted while no chain
+	// is active is written at admission; otherwise it is queued without an
+	// entry and written at the next request boundary or chain start.
+	Kind string `json:"kind,omitempty"`
 }
+
+// SubmissionWrite is the kind of a submission that appends an entry
+// without a model request.
+const SubmissionWrite = "write"
 
 // SubmitOptions refine admission. The zero value queues behind current work.
 type SubmitOptions struct {
@@ -101,6 +161,8 @@ type SubmitOptions struct {
 	// MaxQueue, when positive, rejects admission with ErrQueueFull once the
 	// conversation already has that many unclaimed submissions.
 	MaxQueue int
+	// Kind is empty for a prompt or SubmissionWrite.
+	Kind string
 }
 
 const (
@@ -238,6 +300,9 @@ func (r *Runtime) OpenRoot(ctx context.Context, workspace string, config AgentCo
 	if strings.TrimSpace(workspace) == "" {
 		return Conversation{}, fmt.Errorf("workspace identity required")
 	}
+	if err := config.validate(); err != nil {
+		return Conversation{}, err
+	}
 	key := hashedKey("root/", workspace)
 	for {
 		snap, err := r.store.Snapshot(ctx)
@@ -251,7 +316,7 @@ func (r *Runtime) OpenRoot(ctx context.Context, workspace string, config AgentCo
 		if ok {
 			return conversation(snap, id)
 		}
-		c := Conversation{ID: uuid.NewString(), Created: time.Now().UTC(), Revision: snap.Revision() + 1, Config: config}
+		c := Conversation{ID: uuid.NewString(), Created: time.Now().UTC(), Revision: snap.Revision() + 1, Config: config, ProviderSession: uuid.NewString()}
 		err = r.commit(ctx, snap, "root.open", record(key, c.ID), record("conversation/"+c.ID, c))
 		if errors.Is(err, storage.ErrConflict) {
 			continue
@@ -280,6 +345,9 @@ func (r *Runtime) Conversation(ctx context.Context, id string) (Conversation, er
 // Configure compares the conversation revision, not the global store revision,
 // so unrelated conversations do not cause false client conflicts.
 func (r *Runtime) Configure(ctx context.Context, id string, expected uint64, config AgentConfig) (Conversation, error) {
+	if err := config.validate(); err != nil {
+		return Conversation{}, err
+	}
 	for {
 		snap, err := r.store.Snapshot(ctx)
 		if err != nil {
@@ -324,6 +392,15 @@ func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content 
 	default:
 		return Submission{}, fmt.Errorf("unknown submission policy %q", opts.Policy)
 	}
+	switch opts.Kind {
+	case "":
+	case SubmissionWrite:
+		if policy != "" {
+			return Submission{}, fmt.Errorf("a write submission has no scheduling policy")
+		}
+	default:
+		return Submission{}, fmt.Errorf("unknown submission kind %q", opts.Kind)
+	}
 	key := hashedKey("dedup/submit/", id, actor, requestID)
 	for {
 		snap, err := r.store.Snapshot(ctx)
@@ -340,7 +417,7 @@ func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content 
 				return Submission{}, err
 			}
 			if ok {
-				if original.Content != content || original.Policy != policy {
+				if original.Content != content || original.Policy != policy || original.Kind != opts.Kind {
 					return Submission{}, ErrRequestConflict
 				}
 				// The deduplication record is the admission. Return the live
@@ -356,6 +433,27 @@ func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content 
 		held, err := legacyBlocked(snap, id)
 		if err != nil {
 			return Submission{}, err
+		}
+		_, active := snap.Get(chainKey(id))
+		if opts.Kind == SubmissionWrite {
+			// A write never starts a model request. It is written now when
+			// nothing is in flight or waiting, else queued and placed in
+			// order at the next boundary.
+			backlog, err := snap.Page("queue/"+id+"/", "", 1)
+			if err != nil {
+				return Submission{}, err
+			}
+			s, ops, err := admissionOps(snap, &c, actor, requestID, content, "")
+			if err != nil {
+				return Submission{}, err
+			}
+			ops = writeOps(ops, &s, held || active || len(backlog) > 0)
+			ops = append(ops, record("conversation/"+id, c))
+			err = r.commit(ctx, snap, actor, ops...)
+			if errors.Is(err, storage.ErrConflict) {
+				continue
+			}
+			return s, err
 		}
 		if opts.RejectBusy {
 			if run, ok, err := read[Run](snap, runKey(id)); err != nil {
@@ -380,21 +478,23 @@ func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content 
 		if err != nil {
 			return Submission{}, err
 		}
-		if _, active := snap.Get(chainKey(id)); !held && !active {
+		if !held && !active {
 			// Admission and the generation task that answers it commit
 			// together, so an admitted input is never left without its
 			// executor after a crash. A conversation still holding an
-			// unfinished run of the earlier executor queues instead.
-			start, err := startChainOps(pendingSnapshot(snap, ops), c)
+			// unfinished run of the earlier executor queues instead. Held
+			// inputs are placed first, oldest first.
+			c.QueueHeld = false
+			start, err := startChainOps(pendingSnapshot(snap, ops), &c)
 			if err != nil {
 				return Submission{}, err
 			}
 			ops = mergeOps(append(ops, start...))
-			if len(start) > 0 {
-				s.State = "running"
+			if placed, ok, _ := read[Submission](pendingSnapshot(snap, ops), "submission/"+s.ID); ok {
+				s.State = placed.State
 			}
 		}
-		ops = append(ops, record("conversation/"+id, c))
+		ops = mergeOps(append(ops, record("conversation/"+id, c)))
 		err = r.commit(ctx, snap, actor, ops...)
 		if errors.Is(err, storage.ErrConflict) {
 			continue
@@ -429,3 +529,30 @@ func admissionOps(snap storage.Snapshot, c *Conversation, actor, requestID, cont
 	}
 	return s, ops, nil
 }
+
+// writeOps turns admission operations into a write submission's. A queued
+// write keeps its slot; an immediate one is written and has none.
+func writeOps(ops []storage.Operation, s *Submission, queue bool) []storage.Operation {
+	s.Kind = SubmissionWrite
+	if !queue {
+		s.State = submissionWritten
+	}
+	out := ops[:0]
+	for _, op := range ops {
+		switch {
+		case op.Key == "submission/"+s.ID:
+			op = record(op.Key, *s)
+		case strings.HasPrefix(op.Key, "dedup/submit/"):
+			admitted := *s
+			admitted.State = "queued"
+			op = record(op.Key, admitted)
+		case strings.HasPrefix(op.Key, "queue/") && !queue:
+			continue
+		}
+		out = append(out, op)
+	}
+	return out
+}
+
+// submissionWritten is the settled state of a write submission.
+const submissionWritten = "written"

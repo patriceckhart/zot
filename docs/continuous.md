@@ -81,7 +81,22 @@ Execution and recovery:
 - Steering: `SubmitWith(..., Policy: steer)` joins the active run at its next
   request boundary after the current tool calls settle; `RejectBusy` returns
   a conflict instead; `MaxQueue` bounds unclaimed submissions. Order is by
-  commit revision.
+  commit revision. A queued input is not model context until it is placed:
+  it joins at a boundary or starts the next chain, with a `steer` entry at
+  the tail when other entries were written after its admission.
+- Placement modes: `AgentConfig.SteerMode` and `FollowUpMode` are `all`
+  (default: every waiting steered input joins at the next boundary, every
+  queued prompt is answered by the next chain) or `one` (one steered input
+  per boundary, one queued prompt per chain).
+- Write submissions: `SubmitWith(..., Kind: SubmissionWrite)` appends a user
+  entry without a model request. When nothing is active or queued it is
+  written at admission (state `written`); otherwise it queues and is written
+  in order at the next boundary or chain start.
+- Queue after failure and abort: a failed chain holds inputs queued behind
+  it (`Conversation.QueueHeld`); nothing starts until the next prompt
+  submission, which places the held inputs first, oldest first. An abort
+  withdraws queued prompts (state `withdrawn`, history kept) and writes
+  queued writes; it never starts the next chain.
 - Partial stream persistence: streamed text is committed as a `partial`
   record every `PartialFlushInterval` (default 100 ms) so attached clients
   render live output; the final assistant commit removes it, and an attempt
@@ -93,9 +108,20 @@ Execution and recovery:
   connection is an unknown outcome (`core.ErrToolOutcomeUnknown`), never a
   failure that invites a retry: the run is held and recovery reconciles
   through `tool.lookup`. Stale epochs are refused by the worker.
-- Hook memos (`Memoize`, first write wins, scoped to a run or task) and
-  prompt records (system prompt and tool schemas by content hash per
-  attempt, `PromptRecords`, `PromptSection`).
+- Hook memos (`Memoize`, first write wins, scoped to a run or task).
+- Context entries: the system prompt and tool definitions a request used
+  are part of the transcript. A `context` entry is written directly before
+  a response when either changed since the last context entry of the
+  current context (a reset or compaction starts a new one), and carries only
+  the changed part (`ContextChange`). Context entries are not model context,
+  not exported as session rows, and not searched unless asked for by type.
+  `PromptRecords` and `PromptSection` derive from them; stored `prompt/`
+  records of older stores are still listed.
+- Provider session identity: `Conversation.ProviderSession` is created with
+  the conversation and sent as the provider session ID. It survives reopen,
+  retries, reset, compaction, and model changes; forks and owned
+  conversations get their own. Conversations written before it existed use
+  their ID.
 - Engine generations: `Service.Reload` validates a replacement engine with
   a probe build and publishes it atomically. In-flight requests keep their
   generation; a failed reload leaves the old one active. `zot continuous
@@ -376,10 +402,11 @@ effect. Recovery resumes each task from its last commit:
   failed.
 
 Identities: the chain's run ID is used for operation keys, approvals, usage
-rows, prompt records, and subagent ownership. It survives retries, turns,
-migration, and restarts; task IDs do not. The provider-facing session ID is
-the conversation ID. Inputs admitted while a chain is active queue and start
-the next chain in the commit that settles the current one.
+rows, and subagent ownership. It survives retries, turns, migration, and
+restarts; task IDs do not. The provider-facing session ID is the
+conversation's provider session. Inputs admitted while a chain is active
+queue; an answered chain starts the next one in the commit that settles it,
+a failed one holds them, and an aborted one withdraws them.
 
 Cancelling the context (`Ctrl+C` for the CLI) or shutting a host down is
 treated like a crash: committed intent stays and the next start resumes it.
@@ -419,9 +446,84 @@ Declare it only for tools whose repeated execution has no external effect.
 Tools without it default to `ReplayNever`. Extension tools default to
 `ReplayNever`; the extension protocol has no replay field yet.
 
+### Observation
+
+Nothing reaches an observer before its commit. The engine events of a model
+attempt or tool call are held by the invocation: streamed text and tool
+progress are released after the `partial` or progress commit that records
+them, everything else after the commit that settles the phase. An invocation
+that crashes, is fenced out, or is aborted before its commit publishes
+nothing, which matches what a client reads after a restart. With partials
+disabled (`PartialFlushInterval < 0`) streamed text arrives with the
+response commit.
+
+A conversation view is the live state of a conversation as typed documents:
+`execution` (chain and live tasks), `queue`, `usage`, `agent` (the
+configuration), `provider` (provider, model, provider session), `entries`,
+`partial`, `progress`, and `approvals`. They are projections of the records
+the runtime writes in the same commits, so they cannot disagree with
+execution. `Runtime.WatchView` delivers, per commit, the operations it
+applied to these documents (`ViewChange{Revision, Ops: [{Doc, Op, Key,
+Value}]}`) instead of raw store operations.
+
+`Runtime.SubscribeAgentEvents` returns a fresh `ConversationSnapshot` and
+the agent events derived from commits after it: `message_start`,
+`message_update` (committed partials), `message_end` (committed entries),
+`tool_execution_start` (intent committed), `tool_execution_update`
+(committed progress), `tool_execution_end` (result committed),
+`compaction_start`, and `compaction_end`. The buffer bounds the lag; a
+subscriber that falls behind ends with `ErrEventLag` and resubscribes for a
+fresh snapshot.
+
+### Extensions and hooks
+
+`ExecutionOptions.Extensions` is an `ExtensionRegistry` of named
+`Extension`s: tools, a system prompt section, hooks, a tool wrapper, and
+task definitions. A conversation selects extensions by name in
+`AgentConfig.Extensions`; the store keeps only the names. Every request and
+tool call resolves them at that moment, so `Register` with an existing name
+replaces the extension for the next use without touching work in flight. A
+conversation selecting a name the registry does not have fails its chain
+(`ErrExtensionMissing`); it never runs without it. Extension tools are
+subject to the conversation's allow and deny lists and may not shadow a
+host tool. Extension task kinds run on the same scheduler; the `zot.`
+prefix is reserved.
+
+Hooks run inside the phase they belong to, before its commit, so what they
+decide commits with the phase. A crash can run a phase and its hooks again;
+hooks must be deterministic with respect to committed state.
+
+| Hook | Runs | May |
+|---|---|---|
+| `BeforeRequest` | before each model attempt, after compaction and placement | change system prompt and messages |
+| `AfterResponse` | after an accepted response, before its commit | observe |
+| `OnYield` | when a response has no tool calls | return a prompt that continues the run (a `continue` entry) |
+| `BeforeTool` | before authorization of each call | block with a reason, or rewrite the arguments |
+| `AfterTool` | after an executed call, before its result commits | replace the result |
+| `AfterTools` | after every result of a round committed | end the run without another request |
+
+A hook error refuses the call (`BeforeTool`) or fails the chain. An
+`AfterTool` error cannot undo the executed effect: the original result
+stands and the error is recorded as a notice.
+
+### Tools
+
+`AgentConfig.ParallelTools` runs the calls of one round concurrently. Each
+call keeps its own tool task, committed intent, replay policy, and recovery;
+a crash with several calls running recovers each by its own policy. Results
+commit in completion order and reach the model in call order. A round that
+contains a `handoff` call stays sequential, because the handoff skips the
+calls after it.
+
+A tool result with `core.ToolResult.Terminate` asks to end the run. When
+every executed result of a round asks for it, the run ends answered after
+the round without another model request. A round with any other result
+continues.
+
 ### Limits of the current execution
 
-- Tools within one round execute sequentially, in call order.
+- Tools within one round execute sequentially, in call order, unless
+  `ParallelTools` is set.
 - Streamed text is committed as a bounded `partial` record (at most
   `MaxPartialBytes`, 256 KiB) at the flush interval; a crash loses at most
   that window. Tool progress keeps the last 16 KiB per running call.
@@ -433,9 +535,9 @@ Tools without it default to `ReplayNever`. Extension tools default to
   `run`/`serve` do not open confirmation prompts; approvals are decided
   through the CLI (`zot continuous decide`) or the protocol
   (`approval.decide`).
-- Provider sticky-session IDs are set to the conversation ID. Reasoning blocks
-  and tool images round-trip through the stored message JSON like session
-  files do.
+- Provider sticky-session IDs are the conversation's provider session.
+  Reasoning blocks and tool images round-trip through the stored message
+  JSON like session files do.
 - One writer process at a time. The writer lock prevents a second `run` or
   `serve` on the same store; it does not coordinate two hosts.
 - Reconciliation over the extension protocol depends on the extension
@@ -470,7 +572,12 @@ abort can settle a run waiting on approval without authorizing the tool.
 JSON frames. Requests are `{"id","method","params"}`. Responses are
 `{"type":"response","id","method","success","data"|"error","code"}`. Watches
 additionally stream `{"type":"commit","id","commit"}` frames until
-`watch.cancel`, the connection closes, or the cursor expires. The first frame
+`watch.cancel`, the connection closes, or the cursor expires.
+`conversation.watch` takes `mode`: `commits` (default, raw commits), `view`
+(`{"type":"view","watch_id","change"}` frames with operation-level changes
+of the conversation view), or `events` (the response carries a fresh
+`snapshot`, followed by `{"type":"agent_event","watch_id","event"}` frames;
+a lagging subscriber ends with `event_lag`). The first frame
 must be `hello` with a token when `Tokens` is set. Without a `Tokens` map,
 every connection is admin, which is only acceptable on a private local socket.
 
@@ -485,14 +592,15 @@ every connection is admin, which is only acceptable on a private local socket.
 `owner` (`{conversation_id, id}`) and `key` it creates an owned child of that
 conversation once per `(owner.id, key)` and returns the existing child on a
 retry; `config` overrides the inherited parent configuration.
-`conversation.submit` accepts `request_id`, `policy` (`queue` or `steer`), and
-`when_busy` (`reject` or `steer`). `document.read` and `document.write` need
+`conversation.submit` accepts `request_id`, `policy` (`queue` or `steer`),
+`when_busy` (`reject` or `steer`), and `kind` (`write` for an entry without
+a model request). `document.read` and `document.write` need
 a `Documents` registry on the server, otherwise they return `unsupported`.
 
 Error codes: `bad_request`, `unauthorized`, `forbidden`, `not_found`,
 `conflict`, `duplicate_key`, `busy`, `queue_full`, `budget_exceeded`,
-`blocked`, `unsupported`, `cursor_expired`, `storage`, `cancelled`, `limit`,
-`error`. A watch cursor older than the store's retained history returns
+`blocked`, `unsupported`, `cursor_expired`, `event_lag`, `storage`,
+`cancelled`, `limit`, `error`. A watch cursor older than the store's retained history returns
 `cursor_expired`, the client must take a new snapshot. `MaxWatches` bounds
 watches per connection, `MaxQueue` unclaimed submissions per conversation,
 `MaxConnections` concurrent clients; excess connections receive `limit` and

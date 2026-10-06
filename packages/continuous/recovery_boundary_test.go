@@ -196,6 +196,7 @@ func TestQueuedInputCannotBypassRecoveryHold(t *testing.T) {
 	}
 }
 
+// An abort withdraws inputs queued behind the aborted chain.
 func TestQueuedInputWaitsForApprovalButAbortCanSettle(t *testing.T) {
 	ctx := context.Background()
 	tool := &effectTool{name: "effect"}
@@ -239,7 +240,7 @@ func TestQueuedInputWaitsForApprovalButAbortCanSettle(t *testing.T) {
 	for _, want := range []struct {
 		id    string
 		state string
-	}{{first.ID, "aborted"}, {second.ID, "answered"}} {
+	}{{first.ID, "aborted"}, {second.ID, "withdrawn"}} {
 		got, err := h.r.WaitSubmission(waitCtx, want.id)
 		if err != nil || got.State != want.state {
 			t.Fatalf("submission: %+v %v, want %s", got, err, want.state)

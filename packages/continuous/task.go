@@ -260,7 +260,7 @@ func (r *Runtime) CreateTask(ctx context.Context, registry TaskRegistry, convers
 		if _, err := conversation(snap, conversationID); err != nil {
 			return Task{}, err
 		}
-		task, ops, err := buildTask(registry, conversationID, "", spec, snap.Revision()+1)
+		task, ops, err := buildTask(registry.lookup, conversationID, "", spec, snap.Revision()+1)
 		if err != nil {
 			return Task{}, err
 		}
@@ -272,8 +272,13 @@ func (r *Runtime) CreateTask(ctx context.Context, registry TaskRegistry, convers
 	}
 }
 
-func buildTask(registry TaskRegistry, conversationID, owner string, spec TaskSpec, revision uint64) (Task, []storage.Operation, error) {
-	def, ok := registry[spec.Kind]
+func (reg TaskRegistry) lookup(kind string) (TaskDefinition, bool) {
+	def, ok := reg[kind]
+	return def, ok
+}
+
+func buildTask(lookup func(string) (TaskDefinition, bool), conversationID, owner string, spec TaskSpec, revision uint64) (Task, []storage.Operation, error) {
+	def, ok := lookup(spec.Kind)
 	if !ok {
 		return Task{}, nil, fmt.Errorf("%w: unknown kind", ErrTaskBlocked)
 	}
@@ -484,6 +489,10 @@ type TaskScheduler struct {
 	// task the recovery policy holds for a human. Abort marks are still
 	// committed; the task runs once Hold releases it.
 	Hold func(Task) bool
+	// Resolve, when set, supplies definitions of kinds missing from the
+	// registry, read at every use, for example task kinds of registered
+	// extensions. A kind neither knows blocks its tasks; none is dropped.
+	Resolve func(kind string) (TaskDefinition, bool)
 
 	mu     sync.Mutex
 	active map[string]context.CancelFunc
@@ -492,6 +501,19 @@ type TaskScheduler struct {
 	aborting map[string]bool
 	done     chan taskResult
 	running  sync.WaitGroup
+}
+
+// lookup resolves a task kind through the registry, then Resolve.
+func (s *TaskScheduler) lookup(kind string) (TaskDefinition, bool) {
+	if def, ok := s.registry[kind]; ok {
+		return def, true
+	}
+	if s.Resolve != nil {
+		if def, ok := s.Resolve(kind); ok {
+			return withReservedPhases(def), true
+		}
+	}
+	return TaskDefinition{}, false
 }
 
 func NewTaskScheduler(r *Runtime, registry TaskRegistry) *TaskScheduler {
@@ -920,7 +942,7 @@ func dependenciesReady(snap storage.Snapshot, t Task) (ready, failed bool, err e
 }
 
 func (s *TaskScheduler) definition(t Task) (TaskDefinition, error) {
-	def, ok := s.registry[t.Kind]
+	def, ok := s.lookup(t.Kind)
 	if !ok {
 		return TaskDefinition{}, fmt.Errorf("%w: kind %q not registered", ErrTaskBlocked, t.Kind)
 	}
@@ -1216,7 +1238,8 @@ func (s *TaskScheduler) commitNext(ctx context.Context, t Task, next Next) error
 				if errors.Is(err, ErrTaskAborting) {
 					return storage.ErrConflict
 				}
-				return s.retryOrBlock(ctx, current, s.registry[current.Kind], err, false)
+				def, _ := s.lookup(current.Kind)
+				return s.retryOrBlock(ctx, current, def, err, false)
 			}
 			if built.Commit != nil {
 				return s.fault(ctx, snap, current, "commit builder returned another builder")
@@ -1244,7 +1267,7 @@ func (s *TaskScheduler) commitNext(ctx context.Context, t Task, next Next) error
 // tasks created in this same commit, which may be waited on.
 func (s *TaskScheduler) applyNext(ctx context.Context, snap storage.Snapshot, t Task, next Next, created map[string]bool) error {
 	var err error
-	def := s.registry[t.Kind]
+	def, _ := s.lookup(t.Kind)
 	// Every applied Next settles the invocation's effect intent, unless it
 	// explicitly keeps an unresolved effect for reconciliation.
 	if !next.KeepEffect || next.Outcome != "" {
@@ -1261,7 +1284,7 @@ func (s *TaskScheduler) applyNext(ctx context.Context, snap storage.Snapshot, t 
 	}
 	ops := append([]storage.Operation(nil), next.Ops...)
 	for _, spec := range next.Children {
-		child, childOps, err := buildTask(s.registry, t.ConversationID, t.ID, spec, snap.Revision()+1)
+		child, childOps, err := buildTask(s.lookup, t.ConversationID, t.ID, spec, snap.Revision()+1)
 		if err != nil {
 			next = Next{Outcome: "failed", Error: "create child: " + err.Error()}
 			ops = nil
@@ -1523,15 +1546,32 @@ func (reg TaskRegistry) Register(def TaskDefinition) error {
 	if strings.TrimSpace(def.Kind) == "" || def.Version < 1 || def.Initial == nil || len(def.Phases) == 0 {
 		return fmt.Errorf("task definition requires kind, version, initial, and phases")
 	}
-	phases := make(map[string]func(context.Context, TaskContext) (Next, error), len(def.Phases)+1)
-	for name, fn := range def.Phases {
+	if err := def.check(); err != nil {
+		return err
+	}
+	reg[def.Kind] = withReservedPhases(def)
+	return nil
+}
+
+func (def TaskDefinition) check() error {
+	if strings.TrimSpace(def.Kind) == "" || def.Version < 1 || def.Initial == nil || len(def.Phases) == 0 {
+		return fmt.Errorf("task definition requires kind, version, initial, and phases")
+	}
+	for name := range def.Phases {
 		if strings.HasPrefix(name, "__") {
 			return fmt.Errorf("phase names starting with __ are reserved")
 		}
+	}
+	return nil
+}
+
+// withReservedPhases adds the internal completion phase.
+func withReservedPhases(def TaskDefinition) TaskDefinition {
+	phases := make(map[string]func(context.Context, TaskContext) (Next, error), len(def.Phases)+1)
+	for name, fn := range def.Phases {
 		phases[name] = fn
 	}
 	phases["__complete__"] = completeHeld
 	def.Phases = phases
-	reg[def.Kind] = def
-	return nil
+	return def
 }

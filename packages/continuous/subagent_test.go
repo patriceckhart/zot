@@ -54,7 +54,7 @@ func TestSubagentOwnedConversationAnswersParent(t *testing.T) {
 	if result.IsError || core.MessageText(provider.Message{Content: result.Content}) != "there are 3 files" {
 		t.Fatalf("tool result: %+v", result)
 	}
-	if childReq := h.client.requests[1]; childReq.SessionID != child.ID || len(childReq.Messages) != 1 {
+	if childReq := h.client.requests[1]; childReq.SessionID != child.ProviderSessionID() || child.ProviderSession == "" || len(childReq.Messages) != 1 {
 		t.Fatalf("child request: %+v", childReq)
 	}
 	if report, err := h.r.CheckIntegrity(ctx); err != nil || !report.Valid || report.Conversations != 2 {

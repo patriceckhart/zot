@@ -76,7 +76,7 @@ func TestManualCompactionKeepsTailAndHistory(t *testing.T) {
 		t.Fatalf("keep everything: %v", err)
 	}
 	after, err := h.r.Compact(ctx, engine, c.ID, "focus on numbers", 300)
-	if err != nil || after.EntrySequence != 5 || sc.summaries != 1 {
+	if err != nil || after.EntrySequence != 6 || sc.summaries != 1 {
 		t.Fatalf("compact: %+v %v summaries=%d", after, err, sc.summaries)
 	}
 	if got := entryTypes(h.entries(t, c.ID)); got != "user assistant user assistant compaction" {

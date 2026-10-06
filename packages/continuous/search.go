@@ -88,7 +88,9 @@ func (r *Runtime) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 		if !q.Ancestry && owner != q.ConversationID {
 			return nil
 		}
-		if len(types) > 0 && !types[e.Type] {
+		if len(types) > 0 && !types[e.Type] || len(types) == 0 && e.Type == entryContext {
+			// Context entries are request shape, not conversation
+			// content; they are searched only when asked for by type.
 			return nil
 		}
 		if !q.After.IsZero() || !q.Before.IsZero() {

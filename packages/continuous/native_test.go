@@ -22,6 +22,8 @@ type nativeHarness struct {
 	native *NativeExecutor
 	reg    TaskRegistry
 	sched  *TaskScheduler
+	// nativeRootID is set by tests whose sink inspects the root.
+	nativeRootID string
 }
 
 func newNativeHarness(t *testing.T, store storage.Store, steps []scriptStep, tools ...core.Tool) *nativeHarness {
@@ -107,7 +109,7 @@ func TestNativeVerticalSlice(t *testing.T) {
 				t.Fatalf("entries: %s", got)
 			}
 			second := h.client.requests[1]
-			if len(second.Messages) != 3 || second.Messages[2].Role != provider.RoleTool || len(second.Messages[2].Content) != 2 || second.SessionID != c.ID {
+			if len(second.Messages) != 3 || second.Messages[2].Role != provider.RoleTool || len(second.Messages[2].Content) != 2 || second.SessionID != c.ProviderSessionID() {
 				t.Fatalf("second request: %+v", second.Messages)
 			}
 			if !strings.Contains(strings.Join(events, ","), "tool_result") {
@@ -179,11 +181,15 @@ func TestNativeQueuedInputsStartNextChain(t *testing.T) {
 			t.Fatalf("submission %s: %+v", id, s)
 		}
 	}
-	if got := entryTypes(h.entries(t, c.ID)); got != "user user assistant assistant" {
+	// The queued input is placed after the first answer, where it joined.
+	if got := entryTypes(h.entries(t, c.ID)); got != "user user assistant steer assistant" {
 		t.Fatalf("entries: %s", got)
 	}
-	if n := len(h.client.requests[1].Messages); n != 3 {
-		t.Fatalf("second chain context: %d", n)
+	if msgs := h.client.requests[1].Messages; len(msgs) != 3 || core.MessageText(msgs[1]) != "one" || core.MessageText(msgs[2]) != "second" {
+		t.Fatalf("second chain context: %+v", msgs)
+	}
+	if n := len(h.client.requests[0].Messages); n != 1 {
+		t.Fatalf("queued input leaked into the active chain: %d", n)
 	}
 	checkValid(t, h.r)
 }

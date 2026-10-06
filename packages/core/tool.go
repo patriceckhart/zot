@@ -154,6 +154,10 @@ type ToolResult struct {
 	Usage *provider.Usage
 	// Details is arbitrary data for UIs and logs; not sent to the LLM.
 	Details any
+	// Terminate asks the runner to end the run after this round without
+	// another model request. Runners that support it honor it only when
+	// every result of the round asks for it; others ignore it.
+	Terminate bool
 }
 
 // Registry is a name->Tool map.

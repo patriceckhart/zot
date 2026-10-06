@@ -165,7 +165,22 @@ func (h *harness) root(t *testing.T) Conversation {
 	return c
 }
 
+// entries lists a conversation's transcript entries without context
+// entries, which record request shape rather than conversation content and
+// are checked by their own tests. allEntries keeps them.
 func (h *harness) entries(t *testing.T, id string) []Entry {
+	t.Helper()
+	all := h.allEntries(t, id)
+	out := all[:0:0]
+	for _, e := range all {
+		if e.Type != entryContext {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func (h *harness) allEntries(t *testing.T, id string) []Entry {
 	t.Helper()
 	snap, err := h.r.Snapshot(context.Background())
 	if err != nil {
@@ -231,7 +246,7 @@ func TestExecutionAnswersQueuedInput(t *testing.T) {
 	if len(second.Messages) != 3 || second.Messages[0].Role != provider.RoleUser || second.Messages[2].Role != provider.RoleTool || len(second.Messages[2].Content) != 2 {
 		t.Fatalf("second request context: %+v", second.Messages)
 	}
-	if !strings.Contains(second.System, "Answer briefly.") || second.SessionID != c.ID {
+	if !strings.Contains(second.System, "Answer briefly.") || second.SessionID != c.ProviderSessionID() || c.ProviderSession == "" || c.ProviderSession == c.ID {
 		t.Fatalf("configuration not applied: %q %q", second.System, second.SessionID)
 	}
 	if !strings.Contains(strings.Join(events, ","), "tool_progress") || !strings.Contains(strings.Join(events, ","), "tool_result") {

@@ -75,7 +75,7 @@ func (r *Runtime) Fork(ctx context.Context, parentID string, at uint64, config *
 		if config != nil {
 			cfg = *config
 		}
-		c := Conversation{ID: uuid.NewString(), Created: time.Now().UTC(), Revision: snap.Revision() + 1, Config: cfg, Parent: &Parent{ConversationID: parentID, At: at}}
+		c := Conversation{ID: uuid.NewString(), Created: time.Now().UTC(), Revision: snap.Revision() + 1, Config: cfg, Parent: &Parent{ConversationID: parentID, At: at}, ProviderSession: uuid.NewString()}
 		err = r.commit(ctx, snap, "conversation.fork", record("conversation/"+c.ID, c))
 		if errors.Is(err, storage.ErrConflict) {
 			continue

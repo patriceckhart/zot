@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/patriceckhart/zot/packages/continuous/storage"
 )
 
@@ -78,21 +79,22 @@ func MemoScope(ctx context.Context) (string, bool) {
 	return "", false
 }
 
-// PromptRecord captures the effective model request shape of one attempt:
-// the system prompt and tool schemas as content hashes, with the full text
-// stored once per distinct hash. It lets a transcript explain which
-// instructions and tools a response was generated against, without storing
-// the prompt on every entry.
+// PromptRecord explains which system prompt and tools a response was
+// generated against, as content hashes. Records of current stores are
+// derived from context entries (ContextChange); stores written before them
+// keep their stored prompt/ records, which are listed first.
 type PromptRecord struct {
 	ConversationID string    `json:"conversation_id"`
-	RunID          string    `json:"run_id"`
-	Turn           int       `json:"turn"`
-	Attempt        int       `json:"attempt"`
+	RunID          string    `json:"run_id,omitempty"`
+	Turn           int       `json:"turn,omitempty"`
+	Attempt        int       `json:"attempt,omitempty"`
 	SystemHash     string    `json:"system_hash"`
 	ToolsHash      string    `json:"tools_hash"`
 	ToolNames      []string  `json:"tool_names"`
 	Model          string    `json:"model"`
 	Time           time.Time `json:"time"`
+	// Entry is the sequence of the context entry, for derived records.
+	Entry uint64 `json:"entry,omitempty"`
 }
 
 // PromptSection is one distinct system prompt or tool schema text by hash.
@@ -112,21 +114,75 @@ func contentHash(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// promptOps records the request shape of an attempt. Sections are written
-// only when their hash is new, so repeated requests cost one small record.
-func promptOps(snap storage.Snapshot, c Conversation, run Run, model, system string, tools []byte, toolNames []string) []storage.Operation {
-	systemHash, toolsHash := contentHash([]byte(system)), contentHash(tools)
-	ops := []storage.Operation{record(promptRecordKey(c.ID, run.ID, run.Turn, run.Attempt), PromptRecord{ConversationID: c.ID, RunID: run.ID, Turn: run.Turn, Attempt: run.Attempt, SystemHash: systemHash, ToolsHash: toolsHash, ToolNames: toolNames, Model: model, Time: time.Now().UTC()})}
-	if _, ok := snap.Get(promptSectionKey(systemHash)); !ok {
-		ops = append(ops, record(promptSectionKey(systemHash), PromptSection{Hash: systemHash, Kind: "system", Text: system}))
-	}
-	if _, ok := snap.Get(promptSectionKey(toolsHash)); !ok {
-		ops = append(ops, record(promptSectionKey(toolsHash), PromptSection{Hash: toolsHash, Kind: "tools", Text: string(tools)}))
-	}
-	return ops
+// ContextChange is the data of a context entry: the parts of the request
+// context that changed since the previous context entry of the current
+// context, at the position they took effect. A nil part did not change.
+// The first entry after a reset or compaction records both parts.
+type ContextChange struct {
+	System    *string         `json:"system,omitempty"`
+	Tools     json.RawMessage `json:"tools,omitempty"`
+	ToolNames []string        `json:"tool_names,omitempty"`
+	Model     string          `json:"model,omitempty"`
 }
 
-// PromptRecords lists the request shapes of a conversation's attempts.
+// currentContext folds the context entries of the conversation's current
+// context (since its newest reset or compaction) into the effective system
+// prompt and tool definitions, through cutoff.
+func currentContext(ctx context.Context, snap storage.Snapshot, conversationID string) (system *string, tools json.RawMessage, err error) {
+	err = History(ctx, snap, conversationID, 0, func(owner string, seq uint64, e Entry) error {
+		switch e.Type {
+		case entryReset, entryCompaction:
+			system, tools = nil, nil
+		case entryContext:
+			var cc ContextChange
+			if json.Unmarshal(e.Data, &cc) != nil {
+				return fmt.Errorf("%w: context entry", storage.ErrCorrupt)
+			}
+			if cc.System != nil {
+				system = cc.System
+			}
+			if cc.Tools != nil {
+				tools = cc.Tools
+			}
+		}
+		return nil
+	})
+	return system, tools, err
+}
+
+// contextChangeOps appends a context entry when the request's system prompt
+// or tools differ from the current context, so the transcript carries each
+// instruction or tool change once, where it took effect. The entry goes
+// directly before the response, which the caller appends next. It advances c.
+func contextChangeOps(ctx context.Context, view storage.Snapshot, c *Conversation, system string, tools json.RawMessage, names []string, model string) ([]storage.Operation, error) {
+	curSystem, curTools, err := currentContext(ctx, view, c.ID)
+	if err != nil {
+		return nil, err
+	}
+	var cc ContextChange
+	if curSystem == nil || *curSystem != system {
+		cc.System = &system
+	}
+	if curTools == nil || !sameJSON(curTools, tools) {
+		cc.Tools = append(json.RawMessage(nil), tools...)
+		cc.ToolNames = names
+		if cc.ToolNames == nil {
+			cc.ToolNames = []string{}
+		}
+	}
+	if cc.System == nil && cc.Tools == nil {
+		return nil, nil
+	}
+	cc.Model = model
+	data, _ := json.Marshal(cc)
+	c.EntrySequence++
+	entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, Revision: view.Revision() + 1, Type: entryContext, Data: data, Time: time.Now().UTC()}
+	return []storage.Operation{record(entryKey(c.ID, c.EntrySequence), entry)}, nil
+}
+
+// PromptRecords lists the request shapes of a conversation: stored records
+// of older stores, then one record per context entry, carrying the full
+// effective context at that position.
 func (r *Runtime) PromptRecords(ctx context.Context, conversationID string, limit int) ([]PromptRecord, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
@@ -147,14 +203,62 @@ func (r *Runtime) PromptRecords(ctx context.Context, conversationID string, limi
 		}
 		out = append(out, p)
 	}
-	return out, nil
+	var system string
+	var tools json.RawMessage
+	var names []string
+	err = History(ctx, snap, conversationID, 0, func(owner string, seq uint64, e Entry) error {
+		if e.Type != entryContext || len(out) >= limit {
+			return nil
+		}
+		var cc ContextChange
+		if json.Unmarshal(e.Data, &cc) != nil {
+			return fmt.Errorf("%w: context entry", storage.ErrCorrupt)
+		}
+		if cc.System != nil {
+			system = *cc.System
+		}
+		if cc.Tools != nil {
+			tools, names = cc.Tools, cc.ToolNames
+		}
+		out = append(out, PromptRecord{ConversationID: conversationID, SystemHash: contentHash([]byte(system)), ToolsHash: contentHash(tools), ToolNames: names, Model: cc.Model, Time: e.Time, Entry: seq})
+		return nil
+	})
+	return out, err
 }
 
-// PromptSection reads the text behind a hash.
+// PromptSection reads the text behind a hash: a stored section of an older
+// store, else the matching text of any context entry.
 func (r *Runtime) PromptSection(ctx context.Context, hash string) (PromptSection, bool, error) {
 	snap, err := r.store.Snapshot(ctx)
 	if err != nil {
 		return PromptSection{}, false, err
 	}
-	return read[PromptSection](snap, promptSectionKey(hash))
+	if sec, ok, err := read[PromptSection](snap, promptSectionKey(hash)); ok || err != nil {
+		return sec, ok, err
+	}
+	var found PromptSection
+	errFound := errors.New("found")
+	err = pageAll(snap, "entry/", func(row storage.Record) error {
+		var e Entry
+		if json.Unmarshal(row.Value, &e) != nil || e.Type != entryContext {
+			return nil
+		}
+		var cc ContextChange
+		if json.Unmarshal(e.Data, &cc) != nil {
+			return nil
+		}
+		if cc.System != nil && contentHash([]byte(*cc.System)) == hash {
+			found = PromptSection{Hash: hash, Kind: "system", Text: *cc.System}
+			return errFound
+		}
+		if cc.Tools != nil && contentHash(cc.Tools) == hash {
+			found = PromptSection{Hash: hash, Kind: "tools", Text: string(cc.Tools)}
+			return errFound
+		}
+		return nil
+	})
+	if errors.Is(err, errFound) {
+		return found, true, nil
+	}
+	return PromptSection{}, false, err
 }

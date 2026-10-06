@@ -60,7 +60,7 @@ func (tx *TaskTx) CreateChild(spec TaskSpec) (string, error) {
 	if spec.ID == "" {
 		spec.ID = uuid.NewString()
 	}
-	child, ops, err := buildTask(tx.s.registry, tx.task.ConversationID, tx.task.ID, spec, tx.Snapshot.Revision()+1)
+	child, ops, err := buildTask(tx.s.lookup, tx.task.ConversationID, tx.task.ID, spec, tx.Snapshot.Revision()+1)
 	if err != nil {
 		return "", fmt.Errorf("create child: %w", err)
 	}

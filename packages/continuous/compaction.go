@@ -89,7 +89,7 @@ func selectCut(ctx context.Context, snap storage.Snapshot, conversationID string
 		case entryReset, entryCompaction:
 			items = items[:0]
 			return nil
-		case entryAttempt:
+		case entryAttempt, entryContext:
 			return nil
 		}
 		msg := provider.Message{}
@@ -99,11 +99,11 @@ func selectCut(ctx context.Context, snap storage.Snapshot, conversationID string
 			if err != nil {
 				return fmt.Errorf("%w: %v", storage.ErrCorrupt, err)
 			}
-		} else if e.Type == "user" {
+		} else if e.Type == "user" || e.Type == entrySteer || e.Type == entryContinue {
 			msg = provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: e.Content}}}
 		}
 		// Safe boundaries: a user entry, or an assistant entry without tool calls.
-		safe := e.Type == "user"
+		safe := e.Type == "user" || e.Type == entrySteer || e.Type == entryContinue
 		if e.Type == entryAssistant {
 			safe = true
 			for _, c := range msg.Content {
@@ -238,7 +238,7 @@ func (r *Runtime) summarize(ctx context.Context, engine Engine, conversationID, 
 	if c.Config.Model != "" {
 		agent.Model = c.Config.Model
 	}
-	agent.SessionID = c.ID
+	agent.SessionID = c.ProviderSessionID()
 	pending := &pendingCompaction{conversationID: conversationID, head: head, contextRevision: c.EntrySequence, reason: reason, provider: c.Config.Provider, model: agent.Model}
 	baseline := agent.Cost()
 	agent.OnUsage = func(cum provider.Usage) {

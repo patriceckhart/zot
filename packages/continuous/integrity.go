@@ -296,6 +296,15 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 				if e.SubmissionID != "" || len(e.Message) != 0 || len(e.LegacyRow) != 0 || len(e.SessionProjection) != 0 {
 					return bad("reset entry with foreign fields")
 				}
+			case e.Type == entryContinue:
+				if e.SubmissionID != "" || len(e.Message) != 0 || len(e.LegacyRow) != 0 || len(e.SessionProjection) != 0 || strings.TrimSpace(e.Content) == "" {
+					return bad("continue entry with foreign fields")
+				}
+			case e.Type == entryContext:
+				var cc ContextChange
+				if e.SubmissionID != "" || len(e.Message) != 0 || len(e.LegacyRow) != 0 || len(e.SessionProjection) != 0 || json.Unmarshal(e.Data, &cc) != nil || (cc.System == nil && cc.Tools == nil) {
+					return bad("invalid context entry")
+				}
 			case e.Type == entryCompaction:
 				var info CompactionInfo
 				if e.SubmissionID != "" || len(e.LegacyRow) != 0 || len(e.SessionProjection) != 0 || json.Unmarshal(e.Data, &info) != nil || info.Head == 0 || info.Head > entries || (info.Reason != "manual" && info.Reason != "threshold" && info.Reason != "overflow" && info.Reason != "background") {
@@ -340,7 +349,7 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 				if err != nil {
 					return err
 				}
-				if s.ConversationID != c.ID || s.Content != e.Content || s.Policy != PolicySteer || s.State == "queued" || !userEntries[s.ID] || steerEntries[s.ID] || len(e.Message) != 0 {
+				if s.ConversationID != c.ID || s.Content != e.Content || s.State == "queued" || s.State == "withdrawn" || !userEntries[s.ID] || steerEntries[s.ID] || len(e.Message) != 0 {
 					return bad("steer entry submission mismatch")
 				}
 				steerEntries[s.ID] = true
@@ -742,13 +751,16 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 				if s.Policy != "" && s.Policy != PolicySteer {
 					return bad("unknown submission policy")
 				}
+				if s.Kind != "" && s.Kind != SubmissionWrite {
+					return bad("unknown submission kind")
+				}
 			case "running":
 				// Only the current run of a conversation is retained, so a running
 				// submission must belong to it.
 				if ok || runSubmissions[s.ID] == "" {
 					return bad("running submission without active run or still queued")
 				}
-			case "answered", "failed", "aborted", "withdrawn":
+			case "answered", "failed", "aborted", "withdrawn", submissionWritten:
 				if ok {
 					return bad("settled submission still queued")
 				}

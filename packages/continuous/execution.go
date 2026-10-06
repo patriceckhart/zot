@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/patriceckhart/zot/packages/continuous/storage"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
@@ -48,8 +48,12 @@ type ExecutionOptions struct {
 	Approver Approver
 	// PartialFlushInterval batches streamed text into partial records for
 	// attached clients. Zero means PartialFlushInterval. Negative disables
-	// partial persistence.
+	// partial persistence; streamed events are then published with the
+	// response commit.
 	PartialFlushInterval time.Duration
+	// Extensions resolves the names in AgentConfig.Extensions. Nil means
+	// no extensions are registered; a conversation selecting one fails.
+	Extensions *ExtensionRegistry
 }
 
 func (o ExecutionOptions) normalized() ExecutionOptions {
@@ -129,6 +133,13 @@ const (
 	// The submission's original user entry stays where it was admitted and
 	// is excluded from model context in favour of this one.
 	entrySteer = "steer"
+	// entryContinue is a user message an extension added to continue a
+	// run (Hooks.OnYield). It has no submission.
+	entryContinue = "continue"
+	// entryContext records the system prompt and tool definitions a model
+	// request used, at the position they took effect. Data holds a
+	// ContextChange with only the parts that changed. It is not a message.
+	entryContext = "context"
 )
 
 func runKey(conversationID string) string { return "run/" + conversationID }
@@ -246,13 +257,16 @@ func (s *Service) Step(ctx context.Context, conversationID string) (Run, bool, e
 // prepareAgent builds a fresh agent through the host's Engine, replaces its
 // transcript with the committed model context through cutoff, and applies the
 // conversation's configuration.
-func prepareAgent(ctx context.Context, engine Engine, snap storage.Snapshot, c Conversation, cutoff uint64) (*core.Agent, error) {
+func prepareAgent(ctx context.Context, engine Engine, snap storage.Snapshot, c Conversation, cutoff uint64, exts resolvedExtensions) (*core.Agent, error) {
 	agent, err := engine.Build(ctx, c)
 	if err != nil {
 		return nil, fmt.Errorf("build engine: %w", err)
 	}
 	if agent == nil {
 		return nil, fmt.Errorf("engine returned no agent")
+	}
+	if err := exts.apply(agent); err != nil {
+		return nil, err
 	}
 	messages, err := ModelContext(ctx, snap, c.ID, cutoff)
 	if err != nil {
@@ -279,20 +293,24 @@ func prepareAgent(ctx context.Context, engine Engine, snap storage.Snapshot, c C
 	if c.Config.Instructions != "" {
 		agent.System = strings.TrimSpace(agent.System + "\n\n" + c.Config.Instructions)
 	}
-	agent.SessionID = c.ID
+	agent.SessionID = c.ProviderSessionID()
 	return agent, nil
 }
 
-// claimSteering removes queued steer submissions from the queue and adds them
-// to the run. Each steered input gets a fresh user entry at the current tail
-// so ModelContext places it after the tool results; the original admission
-// entry is retained for history and marked superseded so it is not sent twice.
+// claimSteeringOps places the head of the queue at a request boundary of the
+// active chain: queued writes are written, and steer submissions join the
+// run, one per boundary or all at once (AgentConfig.SteerMode). It stops at
+// the first queue-policy prompt, which waits for the next chain, so queue
+// order is preserved. Each placed input gets an entry at the current tail so
+// ModelContext places it after the tool results; the admission entry stays
+// for history and is not sent twice.
 func claimSteeringOps(snap storage.Snapshot, c *Conversation, run *Run) ([]storage.Operation, error) {
 	queue, err := snap.Page("queue/"+c.ID+"/", "", 100)
 	if err != nil {
 		return nil, err
 	}
 	var ops []storage.Operation
+	steered := 0
 	for _, row := range queue {
 		var id string
 		if err := json.Unmarshal(row.Value, &id); err != nil {
@@ -302,17 +320,23 @@ func claimSteeringOps(snap storage.Snapshot, c *Conversation, run *Run) ([]stora
 		if err != nil || !ok {
 			return nil, fmt.Errorf("%w: queued submission missing", storage.ErrCorrupt)
 		}
-		if sub.Policy != PolicySteer {
-			// Queue policy waits for the next run; order is preserved because
-			// start claims the queue prefix in sequence order.
-			break
+		switch {
+		case sub.Kind == SubmissionWrite:
+			sub.State = submissionWritten
+		case sub.Policy != PolicySteer, steered > 0 && c.Config.SteerMode == PlacementOne:
+			return ops, nil
+		default:
+			steered++
+			sub.State = "running"
+			run.Submissions = append(run.Submissions, id)
+			run.Notices = append(run.Notices, fmt.Sprintf("steered input %s joined at turn %d", id, run.Turn+1))
 		}
-		sub.State = "running"
-		run.Submissions = append(run.Submissions, id)
-		run.Notices = append(run.Notices, fmt.Sprintf("steered input %s joined at turn %d", id, run.Turn+1))
-		c.EntrySequence++
-		entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, SubmissionID: id, Revision: snap.Revision() + 1, Type: entrySteer, Content: sub.Content, Time: time.Now().UTC()}
-		ops = append(ops, record("submission/"+id, sub), storage.Operation{Key: row.Key, Delete: true}, record(entryKey(c.ID, c.EntrySequence), entry))
+		place, err := placementOps(pendingSnapshot(snap, ops), c, sub, true)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, place...)
+		ops = append(ops, record("submission/"+id, sub), storage.Operation{Key: row.Key, Delete: true})
 	}
 	return ops, nil
 }
@@ -321,7 +345,7 @@ func claimSteeringOps(snap storage.Snapshot, c *Conversation, run *Run) ([]stora
 // returns a human-readable decision, a result when one was obtained, and
 // whether the tool executed again. An empty result with replayed false means
 // the call is reported as interrupted.
-func recoverCall(ctx context.Context, r *Runtime, agent *core.Agent, identity ToolCallIdentity, intent ToolIntent, call provider.ToolCallBlock, sink func(core.AgentEvent)) (string, core.ToolResult, bool) {
+func recoverCall(ctx context.Context, r *Runtime, agent *core.Agent, identity ToolCallIdentity, intent ToolIntent, call provider.ToolCallBlock, sink func(core.AgentEvent), exts resolvedExtensions) (string, core.ToolResult, bool) {
 	none := core.ToolResult{}
 	if intent.Replay == core.ReplayNever || intent.Replay == "" {
 		return fmt.Sprintf("tool %s interrupted, effect unknown, not replayed (policy never)", call.ID), none, false
@@ -337,7 +361,7 @@ func recoverCall(ctx context.Context, r *Runtime, agent *core.Agent, identity To
 	// Give hooks their own copy so an in-place rewrite cannot alter the
 	// committed arguments used for comparison or reconciliation.
 	call.Arguments = append(json.RawMessage(nil), intent.Args...)
-	args, allowed, reason, _ := authorizeCall(ctx, r, agent, identity.ConversationID, call)
+	args, allowed, reason, _ := authorizeCall(ctx, r, agent, identity.ConversationID, call, exts)
 	if !allowed {
 		return fmt.Sprintf("tool %s interrupted, replay denied by current authorization: %s", call.ID, reason), none, false
 	}
@@ -402,18 +426,30 @@ func usageOp(c *Conversation, runID string, turn, attempt int, agent *core.Agent
 // authorizeCall applies the conversation's tool configuration and the host's
 // guard to one call and returns the effective arguments and replay policy.
 // It fails closed: an unreadable conversation refuses the call.
-func authorizeCall(ctx context.Context, r *Runtime, agent *core.Agent, conversationID string, call provider.ToolCallBlock) (json.RawMessage, bool, string, core.ToolReplayPolicy) {
+func authorizeCall(ctx context.Context, r *Runtime, agent *core.Agent, conversationID string, call provider.ToolCallBlock, exts resolvedExtensions) (json.RawMessage, bool, string, core.ToolReplayPolicy) {
 	args := call.Arguments
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
-	if c, cerr := r.Conversation(ctx, conversationID); cerr != nil {
+	c, cerr := r.Conversation(ctx, conversationID)
+	if cerr != nil {
 		return args, false, "tool call refused: conversation configuration unavailable", core.ReplayNever
 	} else if !c.Config.allows(call.Name) {
 		// Checked at authorization time so a configuration change between
 		// request and tool round applies to the current call.
 		return args, false, fmt.Sprintf("tool %q is not permitted by this conversation's configuration", call.Name), core.ReplayNever
 	}
+	// Extension hooks run first and fail closed: a hook error refuses the
+	// call. A rewrite becomes the arguments the host guard sees.
+	call.Arguments = args
+	rewritten, decision, err := exts.beforeTool(ctx, c, call)
+	if err != nil {
+		return args, false, "tool call refused: " + err.Error(), core.ReplayNever
+	}
+	if decision.Block {
+		return rewritten.Arguments, false, decision.Reason, core.ReplayNever
+	}
+	call, args = rewritten, rewritten.Arguments
 	tool, err := agent.Tools.Get(call.Name)
 	if err != nil {
 		return args, false, err.Error(), core.ReplayNever
@@ -540,7 +576,9 @@ func ModelContext(ctx context.Context, snap storage.Snapshot, conversationID str
 			keptAfter[seq] = len(messages)
 		}
 		switch {
-		case e.Type == entryAttempt:
+		case e.Type == entryAttempt, e.Type == entryContext:
+		case e.Type == entryContinue:
+			messages = append(messages, provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: e.Content}}})
 		case e.Type == entrySteer:
 			if at, ok := userAt[e.SubmissionID]; ok && at < len(messages) {
 				messages = append(messages[:at], messages[at+1:]...)
@@ -598,10 +636,11 @@ func ModelContext(ctx context.Context, snap storage.Snapshot, conversationID str
 		case e.Type == "user":
 			if e.SubmissionID != "" {
 				// A withdrawn submission keeps its history entry but is not
-				// model context.
+				// model context; a queued one is not context until a chain
+				// or a request boundary places it.
 				if sub, ok, err := read[Submission](snap, "submission/"+e.SubmissionID); err != nil {
 					return err
-				} else if ok && sub.State == "withdrawn" {
+				} else if ok && (sub.State == "withdrawn" || sub.State == "queued") {
 					return nil
 				}
 				userAt[e.SubmissionID] = len(messages)
@@ -646,7 +685,36 @@ func ModelContext(ctx context.Context, snap storage.Snapshot, conversationID str
 	if err != nil {
 		return nil, err
 	}
-	return provider.RepairOrphanedToolResults(messages), nil
+	return provider.RepairOrphanedToolResults(orderToolResults(messages)), nil
+}
+
+// orderToolResults sorts the results of each round into the call order of
+// the assistant message before them. Parallel calls commit their results in
+// completion order; the provider sees them in call order.
+func orderToolResults(messages []provider.Message) []provider.Message {
+	for i := 1; i < len(messages); i++ {
+		if messages[i].Role != provider.RoleTool || messages[i-1].Role != provider.RoleAssistant {
+			continue
+		}
+		order := map[string]int{}
+		for _, block := range messages[i-1].Content {
+			if call, ok := block.(provider.ToolCallBlock); ok {
+				order[call.ID] = len(order)
+			}
+		}
+		content := append([]provider.Content(nil), messages[i].Content...)
+		rank := func(c provider.Content) int {
+			if r, ok := c.(provider.ToolResultBlock); ok {
+				if n, ok := order[r.CallID]; ok {
+					return n
+				}
+			}
+			return len(order)
+		}
+		sort.SliceStable(content, func(a, b int) bool { return rank(content[a]) < rank(content[b]) })
+		messages[i].Content = content
+	}
+	return messages
 }
 
 // ToolCallIdentity names the durable tool call a tool is executing for. Tools

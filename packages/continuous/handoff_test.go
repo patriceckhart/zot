@@ -84,7 +84,7 @@ func TestSearchHistoryAcrossResetsAndForks(t *testing.T) {
 	}
 	h.r.Submit(ctx, c.ID, "a", "", "beta question")
 	h.svc.Step(ctx, c.ID)
-	fork, err := h.r.Fork(ctx, c.ID, 5, nil)
+	fork, err := h.r.Fork(ctx, c.ID, 7, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,11 +104,11 @@ func TestSearchHistoryAcrossResetsAndForks(t *testing.T) {
 	}
 	// Pagination by cursor.
 	page1, _ := h.r.Search(ctx, SearchQuery{ConversationID: c.ID, Limit: 2})
-	if len(page1.Hits) != 2 || !page1.More || page1.Next.Sequence != 2 {
+	if len(page1.Hits) != 2 || !page1.More || page1.Next.Sequence != 3 {
 		t.Fatalf("page1: %+v", page1)
 	}
 	page2, _ := h.r.Search(ctx, SearchQuery{ConversationID: c.ID, Limit: 2, Cursor: page1.Next})
-	if len(page2.Hits) != 2 || page2.Hits[0].Sequence != 3 || !page2.More {
+	if len(page2.Hits) != 2 || page2.Hits[0].Sequence != 4 || !page2.More {
 		t.Fatalf("page2: %+v", page2)
 	}
 	page3, _ := h.r.Search(ctx, SearchQuery{ConversationID: c.ID, Limit: 2, Cursor: page2.Next})

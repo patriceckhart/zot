@@ -2,6 +2,7 @@ package continuous
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -47,31 +48,53 @@ func TestMemoFirstWriteWinsAcrossReexecution(t *testing.T) {
 	}
 }
 
-// Every attempt records the request shape; identical prompts share one
-// section record, and a changed system prompt produces a new hash.
-func TestPromptRecordsExplainAttempts(t *testing.T) {
+// The request context is part of the transcript: a context entry is written
+// where the system prompt or tools change, carrying only the changed part,
+// and none when a request reuses the current context. Prompt records are
+// derived from those entries.
+func TestContextEntriesRecordOnlyChanges(t *testing.T) {
 	ctx := context.Background()
-	h := newHarness(t, newMemoryStore(), []scriptStep{{text: "one"}, {text: "two"}})
+	h := newHarness(t, newMemoryStore(), []scriptStep{{text: "one"}, {text: "two"}, {text: "three"}})
 	defer h.r.Close()
 	c := h.root(t)
 	h.r.Submit(ctx, c.ID, "a", "", "first")
 	h.svc.Step(ctx, c.ID)
 	records, err := h.r.PromptRecords(ctx, c.ID, 10)
-	if err != nil || len(records) != 1 || records[0].Turn != 1 || records[0].Attempt != 1 || len(records[0].ToolNames) != 0 {
+	if err != nil || len(records) != 1 || records[0].Entry != 2 || len(records[0].ToolNames) != 0 {
 		t.Fatalf("records: %+v %v", records, err)
 	}
 	section, ok, _ := h.r.PromptSection(ctx, records[0].SystemHash)
 	if !ok || !strings.Contains(section.Text, "You are synthetic.") || !strings.Contains(section.Text, "Answer briefly.") {
 		t.Fatalf("system section: %+v %v", section, ok)
 	}
-	// Changing the instructions changes the hash; the old section stays.
-	cur, _ := h.r.Conversation(ctx, c.ID)
-	h.r.Configure(ctx, c.ID, cur.Revision, AgentConfig{Provider: "synthetic", Model: "scripted", Instructions: "Be verbose."})
+	// The same context again: no new entry.
 	h.r.Submit(ctx, c.ID, "a", "", "second")
 	h.svc.Step(ctx, c.ID)
+	if got := entryTypes(h.allEntries(t, c.ID)); got != "user context assistant user assistant" {
+		t.Fatalf("unchanged context wrote an entry: %s", got)
+	}
+	// Changed instructions: an entry with the system prompt only.
+	cur, _ := h.r.Conversation(ctx, c.ID)
+	h.r.Configure(ctx, c.ID, cur.Revision, AgentConfig{Provider: "synthetic", Model: "scripted", Instructions: "Be verbose."})
+	h.r.Submit(ctx, c.ID, "a", "", "third")
+	h.svc.Step(ctx, c.ID)
+	all := h.allEntries(t, c.ID)
+	if got := entryTypes(all); got != "user context assistant user assistant user context assistant" {
+		t.Fatalf("entries: %s", got)
+	}
+	var change ContextChange
+	if err := json.Unmarshal(all[6].Data, &change); err != nil || change.System == nil || !strings.Contains(*change.System, "Be verbose.") || change.Tools != nil {
+		t.Fatalf("change: %+v %v", change, err)
+	}
 	records, _ = h.r.PromptRecords(ctx, c.ID, 10)
-	if len(records) != 2 || records[0].SystemHash == records[1].SystemHash {
+	if len(records) != 2 || records[0].SystemHash == records[1].SystemHash || records[0].ToolsHash != records[1].ToolsHash {
 		t.Fatalf("records after change: %+v", records)
+	}
+	// Context entries are not model context and not exported as rows.
+	snap, _ := h.r.Snapshot(ctx)
+	msgs, _ := ModelContext(ctx, snap, c.ID, 0)
+	if len(msgs) != 6 {
+		t.Fatalf("model context: %d", len(msgs))
 	}
 	if report, err := h.r.CheckIntegrity(ctx); err != nil || !report.Valid {
 		t.Fatalf("integrity: %+v %v", report, err)

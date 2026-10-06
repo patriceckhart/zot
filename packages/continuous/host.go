@@ -613,9 +613,9 @@ func commitTouches(c storage.Commit, prefixes []string) bool {
 				return true
 			}
 		}
-		if strings.HasPrefix(op.Key, "submission/") || strings.HasPrefix(op.Key, "task/") {
-			// Submissions and tasks carry their conversation inside; a cheap
-			// substring check avoids decoding every value.
+		if strings.HasPrefix(op.Key, "submission/") || strings.HasPrefix(op.Key, "task/") || strings.HasPrefix(op.Key, "approval/") {
+			// Submissions, tasks, and approvals carry their conversation
+			// inside; a cheap substring check avoids decoding every value.
 			if strings.Contains(string(op.Value), prefixes[0][len("conversation/"):]) {
 				return true
 			}

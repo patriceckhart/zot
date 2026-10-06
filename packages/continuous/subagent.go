@@ -69,7 +69,7 @@ func ownedConversationOps(snap storage.Snapshot, parentID, ownerID, key string, 
 	if config != nil {
 		cfg = *config
 	}
-	c := Conversation{ID: uuid.NewString(), Created: time.Now().UTC(), Revision: snap.Revision() + 1, Config: cfg, Owner: &Owner{ConversationID: parentID, ID: ownerID}}
+	c := Conversation{ID: uuid.NewString(), Created: time.Now().UTC(), Revision: snap.Revision() + 1, Config: cfg, Owner: &Owner{ConversationID: parentID, ID: ownerID}, ProviderSession: uuid.NewString()}
 	ops := []storage.Operation{record("conversation/"+c.ID, c), record(ownedConversationKey(ownerID, c.ID), c.ID), record(hashedKey("owned-key/", ownerID, key), c.ID)}
 	return c, ops, nil
 }

@@ -378,15 +378,21 @@ func TestNativePartialIsFencedAndReplaced(t *testing.T) {
 	}
 	checkValid(t, h.r)
 	// A stale invocation cannot write a partial.
-	p := &taskPartial{tc: TaskContext{inv: &taskInvocation{s: h.sched, task: Task{ID: "missing", Invocation: "x"}}}, base: Partial{ConversationID: c.ID, RunID: "r", Turn: 1, Attempt: 1}, dirty: true}
-	p.buf.WriteString("stale")
+	// Its held events are not released either.
+	var leaked []core.AgentEvent
+	gate := newEventGate(func(ev core.AgentEvent) { leaked = append(leaked, ev) })
+	p := &taskPartial{tc: TaskContext{inv: &taskInvocation{s: h.sched, task: Task{ID: "missing", Invocation: "x"}}}, base: Partial{ConversationID: c.ID, RunID: "r", Turn: 1, Attempt: 1}, gate: gate}
+	p.add("stale", core.EvTextDelta{Delta: "stale"})
 	p.flush()
 	if _, ok, _ := h.r.Partial(ctx, c.ID); ok {
 		t.Fatal("stale partial committed")
 	}
+	if len(leaked) != 0 {
+		t.Fatalf("stale partial published events: %v", leaked)
+	}
 	// Truncation is bounded.
-	big := &taskPartial{}
-	big.add(strings.Repeat("x", MaxPartialBytes+10))
+	big := &taskPartial{gate: newEventGate(func(core.AgentEvent) {})}
+	big.add(strings.Repeat("x", MaxPartialBytes+10), core.EvTextDelta{})
 	if text, trunc := big.text(); len(text) != MaxPartialBytes || !trunc {
 		t.Fatalf("truncation: %d %v", len(text), trunc)
 	}
@@ -553,92 +559,100 @@ func TestMigrationInterruptedAndRepeated(t *testing.T) {
 	checkValid(t, h.r)
 }
 
-// Crash at every commit of a task-native round, on both durable backends:
-// recovery never repeats an unsafe effect, never duplicates results or
-// settlements, and keeps tool calls paired.
+// Crash at every commit of a task-native round, on both durable backends,
+// with sequential and parallel tool execution: recovery never repeats an
+// unsafe effect, never duplicates results or settlements, and keeps tool
+// calls paired.
 func TestNativeCrashAtEveryCommit(t *testing.T) {
-	for _, backend := range []string{"journal", "sqlite"} {
-		t.Run(backend, func(t *testing.T) {
-			ctx := context.Background()
-			for crashAt := 1; ; crashAt++ {
-				path := t.TempDir() + "/store"
-				store, err := openCrashStore(ctx, backend, path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				tool := &effectTool{name: "effect"}
-				h := newNativeHarness(t, store, []scriptStep{
-					{calls: []provider.ToolCallBlock{call("c1", "effect", `{"n":1}`), call("c2", "effect", `{"n":2}`)}},
-					{text: "done"},
-				}, tool)
-				c := h.nativeRoot(t)
-				h.r.Submit(ctx, c.ID, "actor", "req", "hello")
-				crashed := errors.New("synthetic crash")
-				h.r.store = &crashStore{Store: store, at: crashAt, err: crashed}
-				runErr := h.sched.Run(ctx)
-				h.sched.Join(ctx)
-				storeCrashed := runErr != nil && errors.Is(runErr, crashed)
-				cs := h.r.store.(*crashStore)
-				cs.mu.Lock()
-				if cs.dead {
-					storeCrashed = true
-				}
-				cs.mu.Unlock()
-				h.r.store = store
-				h.r.Close()
-				if !storeCrashed {
-					if crashAt == 1 {
-						t.Fatal("matrix never crashed")
-					}
-					return
-				}
-				store, err = openCrashStore(ctx, backend, path)
-				if err != nil {
-					t.Fatalf("crash %d: reopen %v", crashAt, err)
-				}
-				recovered := &effectTool{name: "effect"}
-				h2 := newNativeHarness(t, store, []scriptStep{{text: "done"}, {text: "done"}, {text: "done"}}, recovered)
-				if report, err := h2.r.CheckIntegrity(ctx); err != nil || !report.Valid {
-					t.Fatalf("crash %d: integrity before recovery %+v %v", crashAt, report, err)
-				}
-				h2.run(t)
-				if total := tool.calls.Load() + recovered.calls.Load(); total > 2 {
-					t.Fatalf("crash %d: tool executed %d times", crashAt, total)
-				}
-				for _, req := range h2.client.requests {
-					if msgs := provider.RepairOrphanedToolResults(req.Messages); len(msgs) != len(req.Messages) {
-						t.Fatalf("crash %d: dangling pairing sent", crashAt)
-					}
-				}
-				sub, err := h2.r.Submit(ctx, c.ID, "actor", "req", "hello")
-				if err != nil || sub.State != "answered" {
-					t.Fatalf("crash %d: submission %+v %v", crashAt, sub, err)
-				}
-				// Exactly one result per committed call: no duplicates, none
-				// missing, whatever the crash point.
-				calls, results := 0, 0
-				for _, e := range h2.entries(t, c.ID) {
-					switch e.Type {
-					case entryToolResult:
-						results++
-					case entryAssistant:
-						msg, _ := core.DecodeMessage(e.Message)
-						for _, b := range msg.Content {
-							if _, ok := b.(provider.ToolCallBlock); ok {
-								calls++
-							}
-						}
-					}
-				}
-				if results != calls {
-					t.Fatalf("crash %d: %d calls, %d results", crashAt, calls, results)
-				}
-				if report, err := h2.r.CheckIntegrity(ctx); err != nil || !report.Valid || report.ActiveRuns != 0 {
-					t.Fatalf("crash %d: integrity after %+v %v", crashAt, report, err)
-				}
-				h2.r.Close()
+	for _, mode := range []string{"sequential", "parallel"} {
+		for _, backend := range []string{"journal", "sqlite"} {
+			t.Run(mode+"/"+backend, func(t *testing.T) { nativeCrashMatrix(t, backend, mode == "parallel") })
+		}
+	}
+}
+
+func nativeCrashMatrix(t *testing.T, backend string, parallel bool) {
+	ctx := context.Background()
+	for crashAt := 1; ; crashAt++ {
+		path := t.TempDir() + "/store"
+		store, err := openCrashStore(ctx, backend, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tool := &effectTool{name: "effect"}
+		h := newNativeHarness(t, store, []scriptStep{
+			{calls: []provider.ToolCallBlock{call("c1", "effect", `{"n":1}`), call("c2", "effect", `{"n":2}`)}},
+			{text: "done"},
+		}, tool)
+		c := h.nativeRoot(t)
+		if parallel {
+			c = h.configure(t, c.ID, func(cfg *AgentConfig) { cfg.ParallelTools = true })
+		}
+		h.r.Submit(ctx, c.ID, "actor", "req", "hello")
+		crashed := errors.New("synthetic crash")
+		h.r.store = &crashStore{Store: store, at: crashAt, err: crashed}
+		runErr := h.sched.Run(ctx)
+		h.sched.Join(ctx)
+		storeCrashed := runErr != nil && errors.Is(runErr, crashed)
+		cs := h.r.store.(*crashStore)
+		cs.mu.Lock()
+		if cs.dead {
+			storeCrashed = true
+		}
+		cs.mu.Unlock()
+		h.r.store = store
+		h.r.Close()
+		if !storeCrashed {
+			if crashAt == 1 {
+				t.Fatal("matrix never crashed")
 			}
-		})
+			return
+		}
+		store, err = openCrashStore(ctx, backend, path)
+		if err != nil {
+			t.Fatalf("crash %d: reopen %v", crashAt, err)
+		}
+		recovered := &effectTool{name: "effect"}
+		h2 := newNativeHarness(t, store, []scriptStep{{text: "done"}, {text: "done"}, {text: "done"}}, recovered)
+		if report, err := h2.r.CheckIntegrity(ctx); err != nil || !report.Valid {
+			t.Fatalf("crash %d: integrity before recovery %+v %v", crashAt, report, err)
+		}
+		h2.run(t)
+		if total := tool.calls.Load() + recovered.calls.Load(); total > 2 {
+			t.Fatalf("crash %d: tool executed %d times", crashAt, total)
+		}
+		for _, req := range h2.client.requests {
+			if msgs := provider.RepairOrphanedToolResults(req.Messages); len(msgs) != len(req.Messages) {
+				t.Fatalf("crash %d: dangling pairing sent", crashAt)
+			}
+		}
+		sub, err := h2.r.Submit(ctx, c.ID, "actor", "req", "hello")
+		if err != nil || sub.State != "answered" {
+			t.Fatalf("crash %d: submission %+v %v", crashAt, sub, err)
+		}
+		// Exactly one result per committed call: no duplicates, none
+		// missing, whatever the crash point.
+		calls, results := 0, 0
+		for _, e := range h2.entries(t, c.ID) {
+			switch e.Type {
+			case entryToolResult:
+				results++
+			case entryAssistant:
+				msg, _ := core.DecodeMessage(e.Message)
+				for _, b := range msg.Content {
+					if _, ok := b.(provider.ToolCallBlock); ok {
+						calls++
+					}
+				}
+			}
+		}
+		if results != calls {
+			t.Fatalf("crash %d: %d calls, %d results", crashAt, calls, results)
+		}
+		if report, err := h2.r.CheckIntegrity(ctx); err != nil || !report.Valid || report.ActiveRuns != 0 {
+			t.Fatalf("crash %d: integrity after %+v %v", crashAt, report, err)
+		}
+		h2.r.Close()
 	}
 }
 
