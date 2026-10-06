@@ -503,6 +503,12 @@ Example:
  }}
 ```
 
+Panel body lines and footer text wrap to the terminal width. Unselected body
+lines preserve CSI SGR styling across wrapped rows. Selected lines use the
+theme's selection styling on every wrapped row instead of extension-provided
+ANSI. Panels do not currently impose a height limit or provide host-side
+scrolling, so long panels can extend beyond the visible terminal area.
+
 If `error` is non-empty, zot renders it as a red status line
 regardless of `action`.
 
