@@ -122,11 +122,37 @@ func TestExtPanelDialogWrapsStyledLinePreservingANSI(t *testing.T) {
 
 	rows := d.Render(tui.Theme{}, width)
 	assertRowsFitWidth(t, rows, width)
+	for i, row := range rows[1 : len(rows)-1] {
+		if !strings.HasPrefix(row, "\x1b[31m") {
+			t.Errorf("body row %d lost red styling: %q", i, row)
+		}
+		if !strings.HasSuffix(row, "\x1b[0m") {
+			t.Errorf("body row %d does not reset styling: %q", i, row)
+		}
+	}
 
 	plain := stripANSIBytes(strings.Join(rows, "\n"))
 	for _, word := range []string{"red", "indeed"} {
 		if !strings.Contains(plain, word) {
 			t.Fatalf("wrapped styled line lost %q:\n%s", word, plain)
 		}
+	}
+}
+
+func TestExtPanelDialogKeepsSelectionLikeContent(t *testing.T) {
+	for _, marker := range []string{"▸ ", "● ", "\u200b"} {
+		t.Run(marker, func(t *testing.T) {
+			d := newExtPanelDialog()
+			d.Open("demo", "main", "Demo", []string{"▸ alpha " + marker + "beta"}, "")
+			rows := d.Render(tui.Theme{}, 8)
+			assertRowsFitWidth(t, rows, 8)
+			body := rows[1 : len(rows)-1]
+			if len(body) < 2 {
+				t.Fatal("expected wrapped body")
+			}
+			if got := stripANSIBytes(body[1]); !strings.HasPrefix(got, marker+"beta") {
+				t.Fatalf("continuation lost content: %q, want prefix %q", got, marker+"beta")
+			}
+		})
 	}
 }

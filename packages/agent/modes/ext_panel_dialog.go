@@ -92,26 +92,18 @@ func renderExtPanelLine(th tui.Theme, raw string, width int) []string {
 	case selected:
 		// Selection styling replaces any extension ANSI (matching the
 		// historical single-row behavior), so wrap the stripped text and
-		// highlight every resulting row. The arrow marker belongs only
-		// on the first row so continuation rows read as body text.
+		// highlight every resulting row. Wrapping emits the original marker
+		// only once, so leave continuation content intact.
 		rows := tui.WrapANSILine(plain, width)
 		out := make([]string, 0, len(rows))
-		for i, row := range rows {
-			if i > 0 {
-				row = stripExtPanelSelectionMarker(row)
-			}
+		for _, row := range rows {
 			out = append(out, styleExtPanelSelectedRow(th, row, width))
 		}
 		return out
 	case raw != plain:
-		// Extension-provided ANSI: wrap while preserving the escapes and
-		// leave the styling to the extension.
-		rows := tui.WrapANSILine(raw, width)
-		out := make([]string, 0, len(rows))
-		for _, row := range rows {
-			out = append(out, row+"\x1b[0m")
-		}
-		return out
+		// Extension-provided ANSI: carry active styles into continuation
+		// rows and reset each row so extension styling cannot leak.
+		return tui.WrapStyledANSILine(raw, width)
 	default:
 		rows := tui.WrapANSILine(plain, width)
 		out := make([]string, 0, len(rows))
@@ -122,19 +114,6 @@ func renderExtPanelLine(th tui.Theme, raw string, width int) []string {
 		}
 		return out
 	}
-}
-
-// stripExtPanelSelectionMarker removes a leading selection glyph from a
-// wrapped continuation row. Wrapping happens on spaces so the marker normally
-// lands on the first row; this only matters when the first row is narrower
-// than the marker itself.
-func stripExtPanelSelectionMarker(row string) string {
-	for _, m := range []string{"▸ ", "● "} {
-		if strings.HasPrefix(row, m) {
-			return row[len(m):]
-		}
-	}
-	return strings.TrimPrefix(row, "\u200b")
 }
 
 // styleExtPanelSelectedRow paints one row of a selected panel line with the
