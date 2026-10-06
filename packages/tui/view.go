@@ -254,6 +254,10 @@ type ToolCallView struct {
 	// out of RawJSONBuf. Shown next to the tool name in the header
 	// so the user can see which file is being written to.
 	LivePath string
+
+	// Progress is streamed output of a running call, shown until a
+	// result or confirmation preview arrives.
+	Progress string
 }
 
 // MessageAnchor records where a rendered message starts in the chat
@@ -882,6 +886,9 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 		if bodyText == "" {
 			bodyText = tc.Preview
 		}
+		if bodyText == "" {
+			bodyText = tc.Progress
+		}
 		var body []string
 		if bodyText != "" {
 			color := v.Theme.ToolOut
@@ -912,7 +919,7 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	// tool_use JSON before zot has executed the tool, so keying this on
 	// tc.Streaming makes write/edit boxes collapse for a moment between
 	// EvToolUseEnd and confirmation or EvToolResult.
-	if tc.Preview == "" && tc.Result == "" {
+	if tc.Preview == "" && tc.Result == "" && tc.Progress == "" {
 		if body := v.renderLiveToolBody(tc, width); len(body) > 0 {
 			// Pad the live preview up to the call's high-water height so
 			// it never shrinks mid-stream (e.g. between edit 1 and the
@@ -956,6 +963,9 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	bodyText := tc.Result
 	if bodyText == "" {
 		bodyText = tc.Preview
+	}
+	if bodyText == "" {
+		bodyText = tc.Progress
 	}
 
 	// Finished tool call with no body: just the labelled top edge

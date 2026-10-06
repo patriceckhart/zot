@@ -1798,15 +1798,33 @@ type taskPartial struct {
 	buf      strings.Builder
 	dirty    bool
 	trunc    bool
-	quit     chan struct{}
-	done     chan struct{}
+	// wake signals the loop that new text arrived; it holds at most one
+	// pending signal.
+	wake chan struct{}
+	quit chan struct{}
+	done chan struct{}
+}
+
+// partialBytesPerSecond paces partial commits by size: each commit rewrites
+// the whole accumulated text, so a long answer waits longer between
+// commits and the write volume stays bounded instead of growing with the
+// square of the answer length. Records up to about 51 KiB keep the plain
+// interval; the largest record (MaxPartialBytes) waits 0.5 s.
+const partialBytesPerSecond = 512 << 10
+
+// partialDelay is the pause after a commit of n bytes before the next one.
+func partialDelay(interval time.Duration, n int) time.Duration {
+	if d := time.Duration(n) * time.Second / partialBytesPerSecond; d > interval {
+		return d
+	}
+	return interval
 }
 
 func newTaskPartial(tc TaskContext, interval time.Duration, base Partial, gate *eventGate) *taskPartial {
 	if interval <= 0 {
 		interval = PartialFlushInterval
 	}
-	p := &taskPartial{tc: tc, base: base, gate: gate, interval: interval, quit: make(chan struct{}), done: make(chan struct{})}
+	p := &taskPartial{tc: tc, base: base, gate: gate, interval: interval, wake: make(chan struct{}, 1), quit: make(chan struct{}), done: make(chan struct{})}
 	go p.loop()
 	return p
 }
@@ -1825,6 +1843,12 @@ func (p *taskPartial) add(delta string, ev core.AgentEvent) {
 	}
 	p.buf.WriteString(delta)
 	p.dirty = true
+	if p.wake != nil {
+		select {
+		case p.wake <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (p *taskPartial) text() (string, bool) {
@@ -1833,25 +1857,50 @@ func (p *taskPartial) text() (string, bool) {
 	return p.buf.String(), p.trunc
 }
 
+// loop sleeps until text arrives, so an idle or paused stream costs no
+// wakeups. The first text after a pause waits one interval to batch the
+// deltas behind it; after each commit the next waits at least the interval
+// and at least the commit's size at partialBytesPerSecond.
 func (p *taskPartial) loop() {
 	defer close(p.done)
-	t := time.NewTicker(p.interval)
-	defer t.Stop()
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	defer timer.Stop()
 	for {
 		select {
 		case <-p.quit:
 			return
-		case <-t.C:
-			p.flush()
+		case <-p.wake:
+		}
+		timer.Reset(p.interval)
+		select {
+		case <-p.quit:
+			return
+		case <-timer.C:
+		}
+		n := p.flush()
+		if n == 0 {
+			continue
+		}
+		// Pace by size; the wait already spent on the interval counts.
+		if extra := partialDelay(p.interval, n) - p.interval; extra > 0 {
+			timer.Reset(extra)
+			select {
+			case <-p.quit:
+				return
+			case <-timer.C:
+			}
 		}
 	}
 }
 
-func (p *taskPartial) flush() {
+// flush commits the accumulated text and returns its size, or 0 when
+// nothing changed since the last commit.
+func (p *taskPartial) flush() int {
 	p.mu.Lock()
 	if !p.dirty {
 		p.mu.Unlock()
-		return
+		return 0
 	}
 	rec := p.base
 	rec.Text, rec.Truncated, rec.Updated = p.buf.String(), p.trunc, time.Now().UTC()
@@ -1866,6 +1915,7 @@ func (p *taskPartial) flush() {
 	}) == nil {
 		p.gate.release(upto)
 	}
+	return len(rec.Text)
 }
 
 func (p *taskPartial) stop() {

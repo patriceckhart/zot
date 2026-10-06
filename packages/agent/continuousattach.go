@@ -16,30 +16,36 @@ import (
 // shown in the status bar, and close detaches without cancelling host work.
 // The agent's transcript is replaced with the host's committed context; a nil
 // agent (no credential) is allowed because the host holds the credentials.
-func attachContinuous(ctx context.Context, args Args, r Resolved, ag *core.Agent) (func(context.Context, *core.Agent, string, func(core.AgentEvent)) error, string, func(), error) {
+// onStatus receives waiting-state descriptions of followed submissions; it
+// may be nil. The returned notice is non-empty when the loaded transcript
+// is only the newest page of the conversation.
+func attachContinuous(ctx context.Context, args Args, r Resolved, ag *core.Agent, onStatus func(string)) (func(context.Context, *core.Agent, string, func(core.AgentEvent)) error, string, string, func(), error) {
 	dial, err := continuousDialer(args)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", "", nil, err
 	}
 	client, err := dial(ctx)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", "", nil, err
 	}
 	workspace := continuousWorkspace(args, r)
 	var conv continuous.Conversation
 	if err := client.CallInto(ctx, "conversation.create", map[string]any{"workspace": workspace, "config": continuous.AgentConfig{Provider: r.Provider, Model: r.Model, Reasoning: r.Reasoning}}, &conv); err != nil {
 		client.Close()
-		return nil, "", nil, fmt.Errorf("open workspace conversation on host: %w", err)
+		return nil, "", "", nil, fmt.Errorf("open workspace conversation on host: %w", err)
 	}
-	driver := &continuous.AttachedDriver{Client: client, ConversationID: conv.ID}
+	driver := &continuous.AttachedDriver{Client: client, ConversationID: conv.ID, OnStatus: onStatus}
+	notice := ""
 	if ag != nil {
-		if _, err := driver.Load(ctx, ag); err != nil {
+		snap, err := driver.Load(ctx, ag)
+		if err != nil {
 			client.Close()
-			return nil, "", nil, err
+			return nil, "", "", nil, err
 		}
+		notice = continuous.HistoryNotice(snap, conv.ID)
 	}
 	label := "attached: " + shortAddress(args.Continuous)
-	return driver.Prompt, label, func() { client.Close() }, nil
+	return driver.Prompt, label, notice, func() { client.Close() }, nil
 }
 
 // continuousWorkspace is the workspace identity of the root conversation an

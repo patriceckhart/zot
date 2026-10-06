@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/patriceckhart/zot/packages/continuous/storage"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 )
@@ -19,6 +20,17 @@ import (
 type AttachedDriver struct {
 	Client         *Client
 	ConversationID string
+	// OnStatus, when set, receives a short description of why the
+	// followed submission is not producing output ("queued", "awaiting
+	// approval: bash", "recovery blocked: ..."), and "" when it is
+	// running normally or has settled.
+	OnStatus func(string)
+}
+
+func (d *AttachedDriver) status(s string) {
+	if d.OnStatus != nil {
+		d.OnStatus(s)
+	}
 }
 
 // Load replaces the agent's transcript with the host's committed context and
@@ -106,8 +118,17 @@ func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt s
 	user := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: prompt}}}
 	agent.AppendUserContext(prompt, nil)
 	sink(core.EvUserMessage{Message: user})
+	ws := newWaitState(sub, snap)
+	d.status(ws.describe())
+	defer d.status("")
 	seen := map[string]bool{}
 	streamed := ""
+	// progress is the last committed tool output per call, so only the
+	// new tail is rendered.
+	progress := map[string]string{}
+	// last is the newest revision applied to the view; a dropped watch
+	// resumes after it so no commit is shown twice or skipped.
+	last := snap.Revision
 	for {
 		select {
 		case <-ctx.Done():
@@ -117,17 +138,52 @@ func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt s
 				if ctx.Err() != nil {
 					return ErrDetached
 				}
-				// Watch dropped: resnapshot and report the settled state.
+				// Watch dropped (slow consumer or host limit). The
+				// submission is never resent: follow it again.
 				var s Submission
-				if err := d.Client.CallInto(context.Background(), "submission.get", map[string]any{"id": sub.ID}, &s); err != nil {
+				if err := d.Client.CallInto(ctx, "submission.get", map[string]any{"id": sub.ID}, &s); err != nil {
+					if ctx.Err() != nil {
+						return ErrDetached
+					}
 					return err
 				}
 				if s.State == "queued" || s.State == "running" {
-					return fmt.Errorf("watch ended while the submission is %s; reattach to continue following", s.State)
+					if watch, err = d.rewatch(ctx, agent, &last, seen); err != nil {
+						if ctx.Err() != nil {
+							return ErrDetached
+						}
+						return fmt.Errorf("resume watch while the submission is %s: %w", s.State, err)
+					}
+					// The run may have settled before the new watch opened;
+					// anything later arrives on the watch.
+					if err := d.Client.CallInto(ctx, "submission.get", map[string]any{"id": sub.ID}, &s); err != nil {
+						if ctx.Err() != nil {
+							return ErrDetached
+						}
+						return err
+					}
+					if s.State == "queued" || s.State == "running" {
+						continue
+					}
 				}
 				d.Load(context.Background(), agent)
 				sink(core.EvDone{})
 				return nil
+			}
+			last = cm.Revision
+			if ws.apply(cm, d.ConversationID) {
+				d.status(ws.describe())
+			}
+			for _, p := range ToolProgressFromCommit(cm, d.ConversationID) {
+				prev := progress[p.CallID]
+				progress[p.CallID] = p.Text
+				delta := p.Text
+				if strings.HasPrefix(p.Text, prev) {
+					delta = p.Text[len(prev):]
+				}
+				if delta != "" {
+					sink(core.EvToolProgress{ID: p.CallID, Text: delta})
+				}
 			}
 			// Streamed text arrives as partial records; render the delta since
 			// the last one. A completed attempt clears the record and the
@@ -196,4 +252,24 @@ func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt s
 			}
 		}
 	}
+}
+
+// rewatch reopens a dropped watch after the last applied revision. When the
+// host no longer retains that history, the view is reloaded from a fresh
+// snapshot and watched from there; entries already in it are marked seen.
+func (d *AttachedDriver) rewatch(ctx context.Context, agent *core.Agent, last *uint64, seen map[string]bool) (<-chan storage.Commit, error) {
+	if w, err := d.Client.Watch(ctx, d.ConversationID, *last); err == nil {
+		return w, nil
+	} else if ctx.Err() != nil {
+		return nil, err
+	}
+	snap, err := d.Load(ctx, agent)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range snap.Entries {
+		seen[e.ID] = true
+	}
+	*last = snap.Revision
+	return d.Client.Watch(ctx, d.ConversationID, snap.Revision)
 }

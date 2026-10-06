@@ -55,6 +55,15 @@ land, the status bar shows `attached: host.sock`, and closing the TUI detaches
 without cancelling the run. Session files are disabled: the store is the
 authority.
 
+While a prompt waits, the status bar says why, from committed state only:
+`queued on host`, `awaiting approval: <tool>` (decide with
+`zot continuous decide` or `approval.decide`), or `recovery blocked
+(<action>)`. Committed tool progress (for example bash output) is shown in
+the running tool's panel until its result arrives. When the conversation
+has more entries than the 1000 the view loads, a note says that only the
+newest entries are shown; older history remains on the host and is
+reachable through `conversation.search`.
+
 ## Implemented
 
 Execution and recovery:
@@ -98,10 +107,15 @@ Execution and recovery:
   withdraws queued prompts (state `withdrawn`, history kept) and writes
   queued writes; it never starts the next chain.
 - Partial stream persistence: streamed text is committed as a `partial`
-  record every `PartialFlushInterval` (default 100 ms) so attached clients
-  render live output; the final assistant commit removes it, and an attempt
-  that fails or is interrupted retains its text as a final partial for
-  inspection. Partial output is never model context.
+  record so attached clients render live output. The flusher sleeps until
+  text arrives, waits `PartialFlushInterval` (default 100 ms) to batch
+  deltas, and after each commit waits at least that interval and at least
+  the record's size at 512 KiB/s. Each commit rewrites the whole record,
+  so this bounds write volume for long answers (the largest record waits
+  0.5 s) while answers under about 51 KiB keep the 100 ms cadence. The
+  final assistant commit removes the record, and an attempt that fails or
+  is interrupted retains its text as a final partial for inspection.
+  Partial output is never model context.
 - Remote execution: `WorkerServer` runs tools in another process behind a
   token with an operation ledger; `RemoteTool` calls it with the stable
   operation key, run identity, writer epoch, and environment. A lost
@@ -221,7 +235,12 @@ Host and protocol:
   unblock.
 - `continuous.Client` and `AttachedDriver` implement the client side: calls,
   watches that drop slow consumers instead of growing memory, and a prompt
-  driver that renders committed entries in the interactive TUI.
+  driver that renders committed entries in the interactive TUI. When a
+  watch drops while the submission is still queued or running, the driver
+  reopens it after the last applied revision (or reloads from a fresh
+  snapshot when that history is no longer retained) and keeps following;
+  the prompt is never resubmitted. Cancelled calls and watches release
+  their client-side registrations immediately.
 - `zot continuous serve`, `zot continuous attach`, and `zot --continuous`
   wrap them for local use.
 - `/swarm` on an attached TUI runs each agent as an owned conversation on the
@@ -544,7 +563,8 @@ continues.
   keeping its own operation ledger; without a `Reconciler` every answer is
   unknown.
 - The attached TUI renders streamed text from partial records at the flush
-  interval, not per provider token.
+  cadence (slower for very long answers), not per provider token. Tool
+  progress is committed at most every 100 ms plus once before the result.
 
 ## Host and protocol
 

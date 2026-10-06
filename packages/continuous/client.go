@@ -179,6 +179,15 @@ func (c *Client) send(method string, params any) (string, chan hostResponse, err
 	return c.sendWatch(method, params, nil)
 }
 
+// notify sends a request whose response nobody awaits, without registering
+// it, so fire-and-forget requests leave nothing behind.
+func (c *Client) notify(method string, params any) {
+	id, _, err := c.send(method, params)
+	if err == nil {
+		c.forget(id)
+	}
+}
+
 // sendWatch sends a request, registering frames as the commit channel for
 // the request's ID before the request leaves the client. Commit frames can
 // arrive immediately after the acknowledgement; registering afterwards would
@@ -226,7 +235,7 @@ func mustJSON(v any) json.RawMessage {
 
 // Call performs one request and returns its data.
 func (c *Client) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	_, ch, err := c.send(method, params)
+	id, ch, err := c.send(method, params)
 	if err != nil {
 		return nil, err
 	}
@@ -240,8 +249,26 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 		}
 		return mustJSON(resp.Data), nil
 	case <-ctx.Done():
+		// Forget the call so an abandoned request does not stay registered
+		// until the connection closes. A late response is then ignored.
+		c.forget(id)
 		return nil, ctx.Err()
 	}
+}
+
+// forget drops the local registrations of a request.
+func (c *Client) forget(id string) {
+	c.mu.Lock()
+	delete(c.calls, id)
+	delete(c.watches, id)
+	c.mu.Unlock()
+}
+
+// pending reports registered calls and watches, for tests.
+func (c *Client) pending() (calls, watches int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.calls), len(c.watches)
 }
 
 // CallInto decodes the result into out.
@@ -271,12 +298,14 @@ func (c *Client) Watch(ctx context.Context, conversationID string, after uint64)
 			return nil, io.ErrUnexpectedEOF
 		}
 		if !resp.Success {
-			c.mu.Lock()
-			delete(c.watches, id)
-			c.mu.Unlock()
+			c.forget(id)
 			return nil, &ClientError{Method: "conversation.watch", Code: resp.Code, Msg: resp.Error}
 		}
 	case <-ctx.Done():
+		// The host may still open the watch: forget it locally and ask the
+		// host to end it, best effort.
+		c.forget(id)
+		c.notify("watch.cancel", map[string]any{"watch_id": id})
 		return nil, ctx.Err()
 	}
 	out := make(chan storage.Commit, 64)
@@ -289,7 +318,7 @@ func (c *Client) Watch(ctx context.Context, conversationID string, after uint64)
 			if live {
 				// Cancelling the watch is best effort; closing the client
 				// ends it as well.
-				c.send("watch.cancel", map[string]any{"watch_id": id})
+				c.notify("watch.cancel", map[string]any{"watch_id": id})
 			}
 		}()
 		for {

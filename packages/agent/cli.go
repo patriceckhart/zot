@@ -1384,14 +1384,20 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// renders committed state. The agent object only mirrors the host's
 	// transcript; its client is never used for requests.
 	var promptDriver func(context.Context, *core.Agent, string, func(core.AgentEvent)) error
-	executionLabel := ""
+	executionLabel, historyNotice := "", ""
 	if args.Continuous != "" {
-		attached, label, closeAttached, err := attachContinuous(ctx, args, r, ag)
+		// iv is assigned below, before any prompt can run.
+		onStatus := func(s string) {
+			if iv != nil {
+				iv.SetExecutionStatus(s)
+			}
+		}
+		attached, label, notice, closeAttached, err := attachContinuous(ctx, args, r, ag, onStatus)
 		if err != nil {
 			return err
 		}
 		defer closeAttached()
-		promptDriver, executionLabel = attached, label
+		promptDriver, executionLabel, historyNotice = attached, label, notice
 	}
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
@@ -1601,6 +1607,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		os.Exit(0)
 	}()
 
+	if historyNotice != "" {
+		iv.Notify("continuous", "info", historyNotice)
+	}
 	runErr := iv.Run(ctx)
 
 	// Flush final transcript to session (only if we had / ended up with an agent).

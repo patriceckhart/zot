@@ -607,6 +607,10 @@ type Interactive struct {
 	// after this point and reverts to plain text after.
 	welcomeStart time.Time
 
+	// executionStatus explains why attached host work is waiting; shown
+	// next to ExecutionLabel. Guarded by mu.
+	executionStatus string
+
 	// extNotes are one-shot styled lines pushed by extensions via
 	// Notify / Display. They live above the editor (just below the
 	// transcript) until cleared by /clear or another reset.
@@ -1568,7 +1572,7 @@ func (i *Interactive) redraw() {
 		ContextMax:     ctxMax,
 		AutoCompacting: i.autoCompacting,
 		Telegram:       i.telegramBridge != nil && i.telegramBridge.Active(),
-		Execution:      i.cfg.ExecutionLabel,
+		Execution:      i.executionTag(),
 		Cols:           cols,
 	})
 	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
@@ -6667,9 +6671,20 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			i.toolOrder = append(i.toolOrder, e.ID)
 			i.gateToolLocked(e.ID)
 		}
+	case core.EvToolProgress:
+		// Only attached execution renders progress: the host commits it,
+		// otherwise a remote tool would look idle until it finished.
+		// Embedded runs keep their established rendering.
+		if i.cfg.PromptDriver == nil {
+			return
+		}
+		if tc, ok := i.toolCalls[e.ID]; ok && !tc.Done {
+			tc.Progress = tailBytes(tc.Progress+e.Text, maxToolProgressView)
+		}
 	case core.EvToolResult:
 		if tc, ok := i.toolCalls[e.ID]; ok {
 			tc.Done = true
+			tc.Progress = ""
 			tc.Error = e.Result.IsError
 			tc.Preview = ""
 			tc.ResultContent = nil
