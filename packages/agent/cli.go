@@ -326,19 +326,25 @@ func (nonInteractiveExtHooks) ClosePanel(string, string)                        
 // wire tools into the resolved registry, and a cleanup closure to
 // defer. Mirrors the interactive-mode setup minus the TUI hooks.
 func setupNonInteractiveExtensions(ctx context.Context, args Args, r *Resolved, version string) (*extensions.Manager, func()) {
+	mgr, stop, errs := loadNonInteractiveExtensions(ctx, args, r, version)
+	for _, err := range errs {
+		fmt.Fprintln(os.Stderr, "extension load:", err)
+	}
+	return mgr, stop
+}
+
+// loadNonInteractiveExtensions returns load failures separately so a continuous
+// host can reject a replacement generation without disturbing the active one.
+func loadNonInteractiveExtensions(ctx context.Context, args Args, r *Resolved, version string) (*extensions.Manager, func(), []error) {
 	reportSkillDiagnostics(os.Stderr, r.SkillDiagnostics)
 	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, nonInteractiveExtHooks{})
-	for _, e := range extMgr.LoadExplicit(ctx, args.Exts) {
-		fmt.Fprintln(os.Stderr, "extension load:", e)
-	}
+	errs := extMgr.LoadExplicit(ctx, args.Exts)
 	if !args.NoExt {
-		for _, e := range extMgr.Discover(ctx) {
-			fmt.Fprintln(os.Stderr, "extension load:", e)
-		}
+		errs = append(errs, extMgr.Discover(ctx)...)
 	}
 	extMgr.WaitForReady(3 * time.Second)
 	r.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
-	return extMgr, func() { extMgr.Stop(2 * time.Second) }
+	return extMgr, func() { extMgr.Stop(2 * time.Second) }, errs
 }
 
 func reportSkillDiagnostics(w io.Writer, diagnostics []string) {

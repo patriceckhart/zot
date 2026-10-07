@@ -53,7 +53,16 @@ zot --continuous ./continuous-store/host.sock --continuous-workspace main
 Prompts are submitted to the host, committed entries are rendered as they
 land, the status bar shows `attached: host.sock`, and closing the TUI detaches
 without cancelling the run. Session files are disabled: the store is the
-authority.
+authority. Ctrl+C also detaches an idle CLI `attach --follow` or an attach
+waiting for a submission, without cancelling the host's work.
+
+New workspace roots use the host's provider, model, and reasoning defaults.
+The attached TUI forwards only explicitly supplied `--provider`, `--model`,
+and `--reasoning` selections, not its local configuration defaults. Opening
+an existing root does not replace its configuration. The CLI host supports
+one provider at a time and refuses a conversation configured for a different
+provider before making a request. Same-provider model overrides remain
+supported. SDK hosts can implement their own provider routing in `Engine.Build`.
 
 While a prompt waits, the status bar says why, from committed state only:
 `queued on host`, `awaiting approval: <tool>` (decide with
@@ -139,7 +148,12 @@ Execution and recovery:
 - Engine generations: `Service.Reload` validates a replacement engine with
   a probe build and publishes it atomically. In-flight requests keep their
   generation; a failed reload leaves the old one active. `zot continuous
-  serve` reloads extensions on SIGHUP or `runtime.reload`.
+  serve` reloads extensions on SIGHUP or `runtime.reload`, loading and
+  validating a separate extension manager before publication. A failed load
+  does not stop the active extension processes. Old extension generations
+  are retained until host shutdown so existing agents can still use them.
+  Repeated reloads therefore retain additional subprocesses until the host
+  is restarted.
 - Retention (`Retain`, `zot continuous retain`): age-based collection of
   deduplication records, decided approvals, retained partials, settled
   memos, and old document versions (keeping what fork points reference).
@@ -608,7 +622,9 @@ every connection is admin, which is only acceptable on a private local socket.
 | approve | submit plus `approval.decide` |
 | admin | approve plus `conversation.abort`, `recovery.unblock`, `task.abort`, `task.retry-cleanup`, `budget.set`, `runtime.reload`, `runtime.retain`, `outbox.ack`, `submission.withdraw`, `submission.reorder` |
 
-`conversation.create` with `workspace` opens or finds the workspace root. With
+`conversation.create` with `workspace` opens or finds the workspace root.
+`HostServer.DefaultConfig` supplies provider, model, and reasoning fields
+omitted when creating a new root. It does not change existing roots. With
 `owner` (`{conversation_id, id}`) and `key` it creates an owned child of that
 conversation once per `(owner.id, key)` and returns the existing child on a
 retry; `config` overrides the inherited parent configuration.

@@ -29,8 +29,17 @@ func attachContinuous(ctx context.Context, args Args, r Resolved, ag *core.Agent
 		return nil, "", "", nil, err
 	}
 	workspace := continuousWorkspace(args, r)
+	// Local defaults and credentials are unrelated to the host. Only explicit
+	// CLI selections override its defaults when creating a new root.
+	config := continuous.AgentConfig{Reasoning: args.Reasoning}
+	if args.Provider != "" {
+		config.Provider = canonicalProvider(args.Provider)
+	}
+	if args.Model != "" {
+		config.Model = r.Model
+	}
 	var conv continuous.Conversation
-	if err := client.CallInto(ctx, "conversation.create", map[string]any{"workspace": workspace, "config": continuous.AgentConfig{Provider: r.Provider, Model: r.Model, Reasoning: r.Reasoning}}, &conv); err != nil {
+	if err := client.CallInto(ctx, "conversation.create", map[string]any{"workspace": workspace, "config": config}, &conv); err != nil {
 		client.Close()
 		return nil, "", "", nil, fmt.Errorf("open workspace conversation on host: %w", err)
 	}

@@ -90,6 +90,9 @@ type HostServer struct {
 	Engine  Engine
 	Tokens  map[string]Role
 	Version string
+	// DefaultConfig supplies provider, model, and reasoning defaults for new
+	// workspace roots. Owned conversations still inherit their parent config.
+	DefaultConfig AgentConfig
 	// MaxWatches bounds concurrent watches per connection. Zero means 16.
 	MaxWatches int
 	// MaxQueue bounds unclaimed submissions per conversation admitted through
@@ -360,6 +363,15 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 		var config AgentConfig
 		if p.Config != nil {
 			config = *p.Config
+		}
+		if config.Provider == "" {
+			config.Provider = c.server.DefaultConfig.Provider
+		}
+		if config.Model == "" {
+			config.Model = c.server.DefaultConfig.Model
+		}
+		if config.Reasoning == "" {
+			config.Reasoning = c.server.DefaultConfig.Reasoning
 		}
 		return r.OpenRoot(ctx, p.Workspace, config)
 	case "conversation.list":

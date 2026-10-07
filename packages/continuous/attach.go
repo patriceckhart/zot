@@ -102,6 +102,8 @@ func (d *AttachedDriver) Prompt(ctx context.Context, agent *core.Agent, prompt s
 }
 
 func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt string, sink func(core.AgentEvent)) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var snap ConversationSnapshot
 	if err := d.Client.CallInto(ctx, "conversation.snapshot", map[string]any{"id": d.ConversationID, "limit": 1}, &snap); err != nil {
 		return err

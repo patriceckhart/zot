@@ -16,11 +16,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/patriceckhart/zot/packages/continuous"
 	"github.com/patriceckhart/zot/packages/continuous/storage/journal"
-	"github.com/patriceckhart/zot/packages/core"
 )
 
 // continuousServeOptions are the flags of `zot continuous serve`.
@@ -279,35 +279,47 @@ func runContinuousServe(ctx context.Context, args []string, out io.Writer) (retE
 	}
 	defer func() { retErr = errors.Join(retErr, rt.Close()) }()
 	var host *continuous.Host
-	// buildEngine captures the resolved configuration of one generation.
-	// Reload re-resolves the tool registry after the extension manager
-	// respawned its processes and publishes a new generation; requests that
-	// already built their agent keep the old registry.
-	buildEngine := func(resolved Resolved) continuous.Engine {
-		return continuous.EngineFunc(func(ctx context.Context, c continuous.Conversation) (*core.Agent, error) {
-			ag := resolved.NewAgent()
-			wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-			if host != nil {
-				ag.Tools["subagent"] = &continuous.SubagentTool{Runtime: rt, Service: host.Service()}
-				ag.Tools["handoff"] = continuous.HandoffTool{}
-			}
-			return ag, nil
-		})
+	service := func() *continuous.Service {
+		if host == nil {
+			return nil
+		}
+		return host.Service()
 	}
-	engine := buildEngine(r)
+	engine := newContinuousEngine(r, extMgr, rt, service)
 	host, err = continuous.NewHost(rt, engine, continuous.HostOptions{Execution: continuous.ExecutionOptions{MaxTurns: opts.maxTurns, Compaction: continuousCompaction(r)}, Policy: opts.policy})
 	if err != nil {
 		return err
 	}
-	reload := func(ctx context.Context) (continuous.Engine, error) {
-		stats := extMgr.Reload(ctx, 3*time.Second)
-		next, err := Resolve(hostArgs, true)
+	// Keep successful generations alive until host shutdown. Engines already
+	// built by a request or tool call still own their original manager.
+	var reloadMu sync.Mutex
+	var stopGenerations []func()
+	defer func() {
+		reloadMu.Lock()
+		defer reloadMu.Unlock()
+		for _, stop := range stopGenerations {
+			stop()
+		}
+	}()
+	reload := func(requestCtx context.Context) (continuous.Engine, error) {
+		reloadMu.Lock()
+		defer reloadMu.Unlock()
+		if err := requestCtx.Err(); err != nil {
+			return nil, err
+		}
+		// Extension processes belong to the host, not to the client that
+		// requested the reload. Disconnecting that client must not kill them.
+		next, stop, err := loadContinuousEngine(ctx, hostArgs, rt, service)
 		if err != nil {
 			return nil, err
 		}
-		next.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
-		fmt.Fprintf(os.Stderr, "zot continuous host: extensions reloaded (%d stopped, %d started), publishing engine generation\n", stats.Stopped, stats.Loaded)
-		return buildEngine(next), nil
+		if err := requestCtx.Err(); err != nil {
+			stop()
+			return nil, err
+		}
+		stopGenerations = append(stopGenerations, stop)
+		fmt.Fprintln(os.Stderr, "zot continuous host: extensions loaded, publishing engine generation")
+		return next, nil
 	}
 	var ln net.Listener
 	if opts.socket != "" {
@@ -337,7 +349,8 @@ func runContinuousServe(ctx context.Context, args []string, out io.Writer) (retE
 		ln.Close()
 		return fmt.Errorf("build search index: %w", err)
 	}
-	server := &continuous.HostServer{Host: host, Engine: engine, Tokens: tokens, Version: "continuous", Reload: reload, SearchIndex: index}
+	server := &continuous.HostServer{Host: host, Engine: engine, Tokens: tokens, Version: "continuous", Reload: reload, SearchIndex: index,
+		DefaultConfig: continuous.AgentConfig{Provider: r.Provider, Model: r.Model, Reasoning: r.Reasoning}}
 	plan, err := rt.RecoveryPreview(ctx)
 	if err != nil {
 		ln.Close()
@@ -493,21 +506,26 @@ func runContinuousAttach(ctx context.Context, args []string, out io.Writer) erro
 	} else if opts.tlsCA != "" {
 		conn, err = dialTLS(ctx, opts.address, opts.tlsCA)
 	} else {
-		conn, err = net.DialTimeout("tcp", opts.address, 5*time.Second)
+		dialer := &net.Dialer{Timeout: 5 * time.Second}
+		conn, err = dialer.DialContext(ctx, "tcp", opts.address)
 	}
 	if err != nil {
 		return fmt.Errorf("connect to host: %w", err)
 	}
 	defer conn.Close()
+	// Cancellation must interrupt both protocol reads and writes, including
+	// an idle watch or a submission waiting for approval on the host.
+	stopDetach := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stopDetach()
 	client := &attachClient{conn: conn, reader: bufio.NewReader(conn)}
 	if token != "" {
-		if _, err := client.call("hello", map[string]any{"token": token}); err != nil {
+		if _, err := client.call(ctx, "hello", map[string]any{"token": token}); err != nil {
 			return err
 		}
 	}
 	id := opts.id
 	if id == "" {
-		data, err := client.call("conversation.create", map[string]any{"workspace": opts.workspace})
+		data, err := client.call(ctx, "conversation.create", map[string]any{"workspace": opts.workspace})
 		if err != nil {
 			return err
 		}
@@ -517,18 +535,18 @@ func runContinuousAttach(ctx context.Context, args []string, out io.Writer) erro
 	}
 	enc := json.NewEncoder(out)
 	if opts.prompt != "" {
-		data, err := client.call("conversation.submit", map[string]any{"id": id, "content": opts.prompt, "request_id": randomRequestID()})
+		data, err := client.call(ctx, "conversation.submit", map[string]any{"id": id, "content": opts.prompt, "request_id": randomRequestID()})
 		if err != nil {
 			return err
 		}
 		var sub continuous.Submission
 		json.Unmarshal(data, &sub)
-		data, err = client.call("submission.wait", map[string]any{"id": sub.ID})
+		data, err = client.call(ctx, "submission.wait", map[string]any{"id": sub.ID})
 		if err != nil {
 			return err
 		}
 		json.Unmarshal(data, &sub)
-		snapData, err := client.call("conversation.snapshot", map[string]any{"id": id, "limit": 5})
+		snapData, err := client.call(ctx, "conversation.snapshot", map[string]any{"id": id, "limit": 5})
 		if err != nil {
 			return err
 		}
@@ -551,7 +569,7 @@ func runContinuousAttach(ctx context.Context, args []string, out io.Writer) erro
 			return nil
 		}
 	}
-	snapData, err := client.call("conversation.snapshot", map[string]any{"id": id, "limit": 1})
+	snapData, err := client.call(ctx, "conversation.snapshot", map[string]any{"id": id, "limit": 1})
 	if err != nil {
 		return err
 	}
@@ -623,6 +641,9 @@ func (c *attachClient) read(ctx context.Context) (map[string]any, error) {
 	}
 	line, err := c.reader.ReadBytes('\n')
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, err
 	}
 	var frame map[string]any
@@ -632,10 +653,10 @@ func (c *attachClient) read(ctx context.Context) (map[string]any, error) {
 	return frame, nil
 }
 
-func (c *attachClient) call(method string, params any) (json.RawMessage, error) {
+func (c *attachClient) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	id := c.send(method, params)
 	for {
-		frame, err := c.read(context.Background())
+		frame, err := c.read(ctx)
 		if err != nil {
 			return nil, err
 		}

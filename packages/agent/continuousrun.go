@@ -185,15 +185,7 @@ func runContinuousRun(ctx context.Context, args []string, out io.Writer) (retErr
 		return err
 	}
 	var svc *continuous.Service
-	engine := continuous.EngineFunc(func(ctx context.Context, c continuous.Conversation) (*core.Agent, error) {
-		ag := r.NewAgent()
-		wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-		if svc != nil {
-			ag.Tools["subagent"] = &continuous.SubagentTool{Runtime: rt, Service: svc}
-		}
-		ag.Tools["handoff"] = continuous.HandoffTool{}
-		return ag, nil
-	})
+	engine := newContinuousEngine(r, extMgr, rt, func() *continuous.Service { return svc })
 	enc := json.NewEncoder(out)
 	var text strings.Builder
 	sink := func(ev core.AgentEvent) {
