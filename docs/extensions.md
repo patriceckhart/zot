@@ -457,9 +457,11 @@ chain. `before_agent_start` follows the non-blocking replacement rules above.
   model, so extensions should only request this for content intended to be
   persistent model context. Tool errors are recorded as tool errors.
   Cancellation stops before the model turn and preserves any completed
-  call/result pair. This action is supported for interactive slash commands,
-  not spontaneous `call_tool` requests. The extension does not receive the
-  tool result in the response.
+  call/result pair. This action is supported for embedded interactive slash
+  commands, not spontaneous `call_tool` requests or the continuous attached
+  TUI. Attached mode refuses it without executing a tool or submitting work.
+  Use `"prompt"` to submit ordinary host work while attached. The extension
+  does not receive the tool result in the response.
 - `"insert"` — inserts `insert` into the editor at the cursor without
   submitting.
 - `"display"` — appends `display` to the chat as a one-shot styled

@@ -64,6 +64,14 @@ one provider at a time and refuses a conversation configured for a different
 provider before making a request. Same-provider model overrides remain
 supported. SDK hosts can implement their own provider routing in `Engine.Build`.
 
+The attached TUI leaves automatic compaction and context recovery to the host.
+Local `/compact` is unavailable while attached, use the host protocol's
+`conversation.compact` method for manual compaction. Extension slash commands
+returning `action: "prompt"` still submit ordinary prompts to the host.
+`action: "tool_prompt"` is unavailable while attached and is refused without
+executing a tool or submitting work. Neither action falls back to local
+provider credentials or local model execution.
+
 While a prompt waits, the status bar says why, from committed state only:
 `queued on host`, `awaiting approval: <tool>` (decide with
 `zot continuous decide` or `approval.decide`), or `recovery blocked

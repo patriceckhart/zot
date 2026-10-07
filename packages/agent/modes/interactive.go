@@ -354,7 +354,9 @@ type InteractiveConfig struct {
 	// driver must deliver the same event sequence Agent.Prompt would and
 	// keep the agent's transcript in sync through SetMessages or
 	// AppendUserContext. Cancelling ctx detaches the view from the turn;
-	// whether host work stops is the driver's documented policy.
+	// whether host work stops is the driver's documented policy. The driver
+	// owns compaction and context recovery. Local /compact and tool_prompt
+	// preludes are refused rather than falling back to the mirrored agent.
 	PromptDriver func(ctx context.Context, agent *core.Agent, prompt string, sink func(core.AgentEvent)) error
 
 	// ExecutionLabel is shown in the status bar when execution does not
@@ -3199,6 +3201,9 @@ func (i *Interactive) applyExtensionCommandResponse(name string, resp extproto.C
 		}
 		i.startTurn(i.runCtx, resp.Prompt)
 	case "tool_prompt":
+		if i.rejectAttachedAction("extension tool_prompt", "submit a plain prompt for the host to execute") {
+			return
+		}
 		if strings.TrimSpace(resp.Prompt) == "" || resp.ToolName == "" || !json.Valid(resp.ToolArgs) || !strings.HasPrefix(strings.TrimSpace(string(resp.ToolArgs)), "{") {
 			i.mu.Lock()
 			i.statusErr = "extension /" + name + ": invalid tool_prompt"
@@ -5941,6 +5946,9 @@ func (i *Interactive) clearPendingCompactTurnLocked() {
 // history" and the status bar surfaces "(auto)" next to the context
 // percentage so it's obvious the system triggered this, not the user.
 func (i *Interactive) runCompact(parent context.Context, auto bool) {
+	if i.rejectAttachedAction("/compact", "compaction is managed by the host, use conversation.compact for manual compaction") {
+		return
+	}
 	if i.agent == nil {
 		i.mu.Lock()
 		i.statusErr = "not logged in. type /login first."
@@ -6224,6 +6232,12 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 }
 
 func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt string, images []provider.ImageBlock, overflowRecoveryAttempted bool, tool *toolPromptRequest) {
+	if tool != nil && i.rejectAttachedAction("extension tool_prompt", "submit a plain prompt for the host to execute") {
+		return
+	}
+	if overflowRecoveryAttempted && i.rejectAttachedAction("local continuation", "context recovery is managed by the host") {
+		return
+	}
 	if i.agent == nil {
 		// Text startup pre cannot run without credentials; continue so
 		// deferred InitialInput (pre-fill or auto-submit) still applies.
@@ -6319,7 +6333,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 			return i.compactBetweenTurns(ctx)
 		}
 		var err error
-		if i.cfg.PromptDriver != nil && !overflowRecoveryAttempted && tool == nil {
+		if i.cfg.PromptDriver != nil {
 			err = i.cfg.PromptDriver(ctx, i.agent, prompt, sink)
 		} else if overflowRecoveryAttempted {
 			err = i.agent.Continue(ctx, sink)
@@ -6355,7 +6369,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 			rescueProv  string
 			rescueFprov string
 		)
-		if err != nil && ctx.Err() == nil {
+		if err != nil && ctx.Err() == nil && i.cfg.PromptDriver == nil {
 			if ok, reason := classifyRescueError(err); ok {
 				offer = true
 				rescueWhy = reason
@@ -6377,7 +6391,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 		// limit is measured in raw bytes. Compact once, then continue the
 		// user message already present in the transcript.
 		contextOverflow := err != nil && ctx.Err() == nil && isContextOverflowError(err)
-		recoverContextOverflow := contextOverflow && !overflowRecoveryAttempted
+		recoverContextOverflow := contextOverflow && !overflowRecoveryAttempted && i.cfg.PromptDriver == nil
 		if recoverContextOverflow {
 			i.statusErr = ""
 			i.continueAfterCompact = true
@@ -6561,7 +6575,9 @@ func shouldAutoCompact(inputTokens, contextWindow, thresholdPercent int) bool {
 // usage past the auto-compact threshold. Must be called with i.mu
 // held; it reads lastCtxInput and the current model's context window.
 func (i *Interactive) shouldAutoCompactLocked() bool {
-	if i.agent == nil {
+	// Attached clients only mirror history. The host owns compaction policy
+	// and recovery, regardless of the client's local usage measurements.
+	if i.agent == nil || i.cfg.PromptDriver != nil {
 		return false
 	}
 	if i.autoCompacting {
