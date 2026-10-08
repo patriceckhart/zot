@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -219,6 +220,7 @@ func TestNativeRetriesAreDurable(t *testing.T) {
 func TestNativeAbortDuringToolSettlesPaired(t *testing.T) {
 	ctx := context.Background()
 	tool := &effectTool{name: "effect", block: make(chan struct{}), started: make(chan struct{}, 1)}
+	releaseTool := sync.OnceFunc(func() { close(tool.block) })
 	h := newNativeHarness(t, newMemoryStore(), []scriptStep{
 		{calls: []provider.ToolCallBlock{call("c1", "effect", `{}`), call("c2", "effect", `{}`)}},
 	}, tool)
@@ -227,19 +229,65 @@ func TestNativeAbortDuringToolSettlesPaired(t *testing.T) {
 	sub, _ := h.r.Submit(ctx, c.ID, "actor", "", "hello")
 	done := make(chan error, 1)
 	runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	go func() { done <- h.sched.Run(runCtx) }()
-	select {
-	case <-tool.started:
-	case <-runCtx.Done():
-		t.Fatal("tool never started")
+	defer func() { cancel(); releaseTool(); _ = h.sched.Join(context.Background()) }()
+	// Keep c2 pending until abort, then release the hold so the skipped
+	// result can deterministically commit before c1 returns.
+	h.sched.Hold = func(task Task) bool {
+		if task.Kind != TaskKindTool {
+			return false
+		}
+		in, _, _ := decodeTool(task)
+		return in.CallID == "c2" && !task.AbortRequested
+	}
+	// Drive up to the blocked effect without an idle Run loop, so abort
+	// is already committed when Run starts selecting the skipped call.
+started:
+	for {
+		if _, _, err := h.sched.Tick(runCtx); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-tool.started:
+			break started
+		case res := <-h.sched.done:
+			h.sched.done <- res
+		case <-runCtx.Done():
+			t.Fatal("tool never started")
+		}
 	}
 	run, err := h.r.Abort(ctx, c.ID)
 	if err != nil || !run.AbortRequested || run.Phase != "tools" || len(run.Tools) != 2 || run.Tools[0].State != "running" {
 		t.Fatalf("abort projection: %+v %v", run, err)
 	}
+	go func() { done <- h.sched.Run(runCtx) }()
+	// Let the skipped call settle before the started effect is released.
+	// Abort handlers may finish ahead of an earlier call even when effects
+	// execute sequentially, so transcript entries are in completion order.
+	tasks, err := h.r.Tasks(runCtx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var skippedID string
+	for _, task := range tasks {
+		if task.Kind != TaskKindTool {
+			continue
+		}
+		in, _, err := decodeTool(task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if in.CallID == "c2" {
+			skippedID = task.ID
+		}
+	}
+	if skippedID == "" {
+		t.Fatal("skipped call task not found")
+	}
+	if skipped, err := h.r.WaitTask(runCtx, skippedID); err != nil || skipped.Outcome != "aborted" {
+		t.Fatalf("skipped task: %+v %v", skipped, err)
+	}
 	// The started effect is joined, not cancelled, then the abort settles.
-	close(tool.block)
+	releaseTool()
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
@@ -253,13 +301,39 @@ func TestNativeAbortDuringToolSettlesPaired(t *testing.T) {
 	if got := entryTypes(entries); got != "user assistant tool_result tool_result" {
 		t.Fatalf("entries: %s", got)
 	}
-	if !strings.Contains(entries[3].Content, "aborted") {
-		t.Fatalf("skipped call result: %q", entries[3].Content)
+	results := map[string]provider.ToolResultBlock{}
+	for _, entry := range entries[2:] {
+		msg, err := core.DecodeMessage(entry.Message)
+		if err != nil || msg.Role != provider.RoleTool || len(msg.Content) != 1 {
+			t.Fatalf("invalid result message: %+v %v", msg, err)
+		}
+		result, ok := msg.Content[0].(provider.ToolResultBlock)
+		if !ok {
+			t.Fatalf("invalid result block: %+v", msg.Content[0])
+		}
+		if _, duplicate := results[result.CallID]; duplicate {
+			t.Fatalf("duplicate result for %s", result.CallID)
+		}
+		results[result.CallID] = result
+	}
+	if result, ok := results["c1"]; !ok || result.IsError || core.MessageText(provider.Message{Content: result.Content}) != "effect:{}" {
+		t.Fatalf("joined effect result: %+v", result)
+	}
+	if result, ok := results["c2"]; !ok || !result.IsError || !strings.Contains(core.MessageText(provider.Message{Content: result.Content}), "aborted") {
+		t.Fatalf("skipped call result: %+v", result)
 	}
 	snap, _ := h.r.Snapshot(ctx)
 	messages, err := ModelContext(ctx, snap, c.ID, 0)
 	if err != nil || len(messages) != 3 || len(messages[2].Content) != 2 {
 		t.Fatalf("context not paired: %+v %v", messages, err)
+	}
+	// Persisted results follow completion order, but model context must
+	// still pair them in the original assistant call order.
+	for i, id := range []string{"c1", "c2"} {
+		result, ok := messages[2].Content[i].(provider.ToolResultBlock)
+		if !ok || result.CallID != id || result.IsError != results[id].IsError {
+			t.Fatalf("model result %d: %+v", i, messages[2].Content[i])
+		}
 	}
 	checkValid(t, h.r)
 }

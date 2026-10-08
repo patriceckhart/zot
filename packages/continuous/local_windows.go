@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -208,6 +209,8 @@ type pipeConn struct {
 	server   bool
 	readEv   windows.Handle
 	writeEv  windows.Handle
+	readMu   sync.Mutex
+	writeMu  sync.Mutex
 	closeMu  sync.Mutex
 	closed   bool
 	deadline struct {
@@ -226,8 +229,19 @@ func newPipeConn(h windows.Handle, name string, server bool) *pipeConn {
 // connect waits for a client on a server instance. done ends the wait when
 // the listener closes.
 func (c *pipeConn) connect(done <-chan struct{}) error {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 	ov := &windows.Overlapped{HEvent: c.readEv}
+	var pinned runtime.Pinner
+	pinned.Pin(ov)
+	defer pinned.Unpin()
+	c.closeMu.Lock()
+	if c.closed {
+		c.closeMu.Unlock()
+		return net.ErrClosed
+	}
 	err := windows.ConnectNamedPipe(c.handle, ov)
+	c.closeMu.Unlock()
 	switch {
 	case err == nil, errors.Is(err, windows.ERROR_PIPE_CONNECTED):
 		return nil
@@ -275,23 +289,39 @@ func (c *pipeConn) wait(ov *windows.Overlapped, ev windows.Handle, done <-chan s
 }
 
 func (c *pipeConn) Read(p []byte) (int, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 	c.closeMu.Lock()
-	closed := c.closed
-	c.closeMu.Unlock()
-	if closed {
+	if c.closed {
+		c.closeMu.Unlock()
 		return 0, net.ErrClosed
+	}
+	if len(p) == 0 {
+		c.closeMu.Unlock()
+		return 0, nil
 	}
 	windows.ResetEvent(c.readEv)
 	ov := &windows.Overlapped{HEvent: c.readEv}
+	// The kernel retains both pointers after ReadFile returns pending.
+	// Pinning also moves stack-backed allocations onto the heap, so a
+	// growing or shrinking goroutine stack cannot invalidate the operation.
+	var pinned runtime.Pinner
+	pinned.Pin(ov)
+	pinned.Pin(&p[0])
+	defer pinned.Unpin()
 	var n uint32
 	err := windows.ReadFile(c.handle, p, &n, ov)
+	c.closeMu.Unlock()
 	if err != nil && errors.Is(err, windows.ERROR_IO_PENDING) {
 		c.deadline.mu.Lock()
 		deadline := c.deadline.read
 		c.deadline.mu.Unlock()
-		if err = c.wait(ov, c.readEv, nil, deadline); err == nil {
-			err = windows.GetOverlappedResult(c.handle, ov, &n, false)
-		}
+		err = c.wait(ov, c.readEv, nil, deadline)
+	}
+	if err == nil {
+		// Overlapped operations report their final byte count here, even
+		// when ReadFile completed synchronously.
+		err = windows.GetOverlappedResult(c.handle, ov, &n, false)
 	}
 	switch {
 	case err == nil:
@@ -308,25 +338,40 @@ func (c *pipeConn) Read(p []byte) (int, error) {
 }
 
 func (c *pipeConn) Write(p []byte) (int, error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	c.closeMu.Lock()
 	closed := c.closed
 	c.closeMu.Unlock()
 	if closed {
 		return 0, net.ErrClosed
 	}
+	var pinned runtime.Pinner
+	defer pinned.Unpin()
+	if len(p) > 0 {
+		pinned.Pin(&p[0])
+	}
 	total := 0
 	for total < len(p) {
 		windows.ResetEvent(c.writeEv)
 		ov := &windows.Overlapped{HEvent: c.writeEv}
+		pinned.Pin(ov)
 		var n uint32
+		c.closeMu.Lock()
+		if c.closed {
+			c.closeMu.Unlock()
+			return total, net.ErrClosed
+		}
 		err := windows.WriteFile(c.handle, p[total:], &n, ov)
+		c.closeMu.Unlock()
 		if err != nil && errors.Is(err, windows.ERROR_IO_PENDING) {
 			c.deadline.mu.Lock()
 			deadline := c.deadline.write
 			c.deadline.mu.Unlock()
-			if err = c.wait(ov, c.writeEv, nil, deadline); err == nil {
-				err = windows.GetOverlappedResult(c.handle, ov, &n, false)
-			}
+			err = c.wait(ov, c.writeEv, nil, deadline)
+		}
+		if err == nil {
+			err = windows.GetOverlappedResult(c.handle, ov, &n, false)
 		}
 		total += int(n)
 		if err != nil {
@@ -349,9 +394,16 @@ func (c *pipeConn) Close() error {
 		return nil
 	}
 	c.closed = true
-	c.closeMu.Unlock()
-	// Cancel pending I/O so blocked readers return, then release the handle.
+	// Submission holds closeMu until the kernel has accepted the operation,
+	// so cancellation cannot race ahead of a new pending read or write.
 	windows.CancelIoEx(c.handle, nil)
+	c.closeMu.Unlock()
+	// Keep handles and events valid until cancelled operations have joined
+	// and released their pinned memory.
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	if c.server {
 		windows.FlushFileBuffers(c.handle)
 		windows.DisconnectNamedPipe(c.handle)
