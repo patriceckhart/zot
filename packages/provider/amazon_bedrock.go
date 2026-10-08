@@ -403,6 +403,9 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 	// Resolve the model ID as it will appear on the wire so the caching
 	// check operates on the same ID used for FindModel.
 	resolvedModel := resolveBedrockInferenceProfileID(req.Model, c.region)
+	if resolvedModel == req.Model && (req.Model == "anthropic.claude-sonnet-5-5" || req.Model == "anthropic.claude-haiku-5-5") {
+		return nil, fmt.Errorf("no regional inference profile for %q in %q: select an explicit inference profile (global.%s enables worldwide routing)", req.Model, c.region, req.Model)
+	}
 	caching := bedrockModelSupportsCaching(resolvedModel)
 	model := Model{ID: resolvedModel}
 	if catalogModel, err := FindModel("amazon-bedrock", resolvedModel); err == nil {
@@ -586,6 +589,23 @@ func resolveBedrockInferenceProfileID(modelID, region string) string {
 	// inference profile rather than a region-specific profile.
 	if modelID == "anthropic.claude-opus-5" {
 		return "global." + modelID
+	}
+	// These models have no APAC profile. Preserve geographic routing where
+	// supported and require an explicit choice instead of falling back to global.
+	if modelID == "anthropic.claude-sonnet-5-5" || modelID == "anthropic.claude-haiku-5-5" {
+		prefix := bedrockGeoPrefixForRegion(region)
+		if region == "" || strings.HasPrefix(region, "eu-") || strings.HasPrefix(region, "ca-") || (strings.HasPrefix(region, "us-") && !strings.HasPrefix(region, "us-gov-")) {
+			return prefix + "." + modelID
+		}
+		if modelID == "anthropic.claude-haiku-5-5" {
+			switch region {
+			case "ap-southeast-2", "ap-southeast-4":
+				return "au." + modelID
+			case "ap-northeast-1", "ap-northeast-3":
+				return "jp." + modelID
+			}
+		}
+		return modelID
 	}
 	if !bedrockRequiresInferenceProfile(modelID) {
 		return modelID
