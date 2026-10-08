@@ -89,8 +89,12 @@ func defaultReasoningLevels(model Model) []string {
 
 // alwaysOnAdaptiveThinking reports whether a Claude model rejects thinking
 // being turned off. Both the hyphenated Anthropic ID and the dotted Copilot
-// ID are recognised.
+// ID are recognised, as are Bedrock IDs ("anthropic." plus an optional
+// inference-profile prefix such as "us." or "global.").
 func alwaysOnAdaptiveThinking(id string) bool {
+	if i := strings.Index(id, "anthropic."); i >= 0 && !strings.Contains(id[:i], "/") {
+		id = id[i+len("anthropic."):]
+	}
 	switch id {
 	case "claude-opus-5-5", "claude-opus-5.5", "claude-sonnet-5-5", "claude-sonnet-5.5":
 		return true
