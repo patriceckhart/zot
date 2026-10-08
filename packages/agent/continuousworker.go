@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/continuous"
@@ -93,7 +94,7 @@ func parseContinuousWorkerArgs(args []string) (continuousWorkerOptions, error) {
 // desktop app) writes requests to stdin and reads responses from stdout.
 // Every tool call names a repository; the worker runs the tool jailed to
 // that repository's directory and refuses unknown repositories.
-func runContinuousWorker(ctx context.Context, args []string, in io.Reader, out io.Writer) error {
+func runContinuousWorker(ctx context.Context, args []string, in io.ReadCloser, out io.WriteCloser) error {
 	opts, err := parseContinuousWorkerArgs(args)
 	if err != nil {
 		return err
@@ -107,16 +108,25 @@ func runContinuousWorker(ctx context.Context, args []string, in io.Reader, out i
 		return err
 	}
 	defer w.Close()
-	w.ServeConn(ctx, stdioConn{Reader: in, Writer: out})
+	w.ServeConn(ctx, &stdioConn{ReadCloser: in, WriteCloser: out})
 	return nil
 }
 
+// stdioConn owns the worker's streams. Closing both endpoints unblocks
+// pending reads and writes when ServeConn observes cancellation.
 type stdioConn struct {
-	io.Reader
-	io.Writer
+	io.ReadCloser
+	io.WriteCloser
+	once sync.Once
+	err  error
 }
 
-func (stdioConn) Close() error { return nil }
+func (c *stdioConn) Close() error {
+	c.once.Do(func() {
+		c.err = errors.Join(c.ReadCloser.Close(), c.WriteCloser.Close())
+	})
+	return c.err
+}
 
 // repoWorkerTool resolves the call's repository and runs the standard
 // tool jailed to it.

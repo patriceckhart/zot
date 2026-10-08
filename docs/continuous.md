@@ -186,6 +186,12 @@ Execution and recovery:
   connection is an unknown outcome (`core.ErrToolOutcomeUnknown`), never a
   failure that invites a retry: the run is held and recovery reconciles
   through `tool.lookup`. Stale epochs are refused by the worker.
+  `zot continuous worker --root name=directory` serves this protocol on
+  stdin/stdout. Repeat `--root` to share multiple repositories. Tool arguments
+  carry `{repo, args}`. Optional flags are `--ledger`, `--environment`, and
+  `--token`. EOF or interruption closes the worker's streams and stops serving.
+  File tools enforce the shared root. Bash jail checks are best-effort accident
+  prevention, not a security boundary. Only connect trusted hosts.
 - Hook memos (`Memoize`, first write wins, scoped to a run or task).
 - Context entries: the system prompt and tool definitions a request used
   are part of the transcript. A `context` entry is written directly before
@@ -1117,6 +1123,16 @@ The Go API provides `journal.Backup(ctx, source, archive, opts)`,
 `journal.Restore(ctx, archive, newDirectory, opts)`. Options describe the
 **destination's** durability. These operations bypass model requests and tools.
 Their JSON reports contain verification metadata, not transcript content.
+
+For an open store, `(*journal.Store).Backup(ctx, archive, opts)` captures the
+committed prefix without stopping the writer, using the same archive format.
+`(*sqlite.Store).Backup(ctx, destination)` copies a consistent committed database
+snapshot with SQLite's online backup API. Its destination is a filesystem path,
+not a SQLite URI. The parent must exist. The new file is reserved exclusively
+with mode `0600` before copying, and an existing file or symlink is never
+replaced. This Go API does not change the journal-only backup CLI. Interrupted
+processes can leave incomplete destinations. External filesystem replacement
+while a backup runs is unsupported.
 
 Backup holds the source's existing writer lock through verification and copying.
 It captures the complete committed journal prefix and its exact boundary, not a
