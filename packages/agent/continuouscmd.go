@@ -24,6 +24,9 @@ Usage:
   zot continuous serve --store <directory> [--backend journal|sqlite] [--socket <path>] [--token-file <file>] [--recover safe|all|none] [zot flags]
   zot continuous serve --store <directory> --listen <host:port> --token-file <file> [--tls-cert <pem> --tls-key <pem> [--tls-client-ca <pem>]]
   zot continuous attach "<prompt>" --socket <path>|--address <host:port> [--tls-ca <pem>] --workspace <id> [--token-file <file>] [--file <path>] [--follow] [--json]
+  zot continuous worker --root [name=]<directory>... [--ledger <file>] [--environment <name>] [--token <t>]
+                               Serve the remote worker protocol on stdin/stdout. Calls carry
+                               {repo, args}; tools run jailed to the named root.
   zot continuous import <session-path> --store <directory> [--backend journal|sqlite]
   zot continuous export <conversation-id> --store <directory> --format session [--output <new-file>]
   zot continuous status --store <directory>
@@ -142,6 +145,10 @@ func runContinuousCommand(rawArgs []string) (bool, error) {
 			ctx, stop := signalContext()
 			defer stop()
 			return true, runContinuousAttach(ctx, rawArgs[2:], os.Stdout)
+		case "worker":
+			ctx, stop := signalContext()
+			defer stop()
+			return true, runContinuousWorker(ctx, rawArgs[2:], os.Stdin, os.Stdout)
 		}
 	}
 	return true, runContinuous(context.Background(), rawArgs[1:], os.Stdout)
