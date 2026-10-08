@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/patriceckhart/zot/packages/continuous/storage"
+	"github.com/patriceckhart/zot/packages/provider"
 )
 
 var ErrRequestConflict = errors.New("continuous request ID reused with different payload")
@@ -126,13 +127,14 @@ func (c Conversation) ProviderSessionID() string {
 }
 
 type Submission struct {
-	ID             string `json:"id"`
-	ConversationID string `json:"conversation_id"`
-	RequestID      string `json:"request_id,omitempty"`
-	Actor          string `json:"actor"`
-	Content        string `json:"content"`
-	Sequence       uint64 `json:"sequence"`
-	Revision       uint64 `json:"revision"`
+	ID             string                `json:"id"`
+	ConversationID string                `json:"conversation_id"`
+	RequestID      string                `json:"request_id,omitempty"`
+	Actor          string                `json:"actor"`
+	Content        string                `json:"content"`
+	Images         []provider.ImageBlock `json:"images,omitempty"`
+	Sequence       uint64                `json:"sequence"`
+	Revision       uint64                `json:"revision"`
 	// State is queued, running, answered, failed, aborted, withdrawn, or
 	// (for writes) written.
 	State string `json:"state"`
@@ -163,6 +165,10 @@ type SubmitOptions struct {
 	MaxQueue int
 	// Kind is empty for a prompt or SubmissionWrite.
 	Kind string
+	// Images and Files carry client-side attachment bytes. Files are expanded
+	// into context at admission, images are retained in submission and entry.
+	Images []provider.ImageBlock
+	Files  []FileAttachment
 }
 
 const (
@@ -171,12 +177,13 @@ const (
 )
 
 type Entry struct {
-	ID             string `json:"id"`
-	ConversationID string `json:"conversation_id"`
-	SubmissionID   string `json:"submission_id"`
-	Revision       uint64 `json:"revision"`
-	Type           string `json:"type"`
-	Content        string `json:"content"`
+	ID             string                `json:"id"`
+	ConversationID string                `json:"conversation_id"`
+	SubmissionID   string                `json:"submission_id"`
+	Revision       uint64                `json:"revision"`
+	Type           string                `json:"type"`
+	Content        string                `json:"content"`
+	Images         []provider.ImageBlock `json:"images,omitempty"`
 	// Message is the provider message of assistant, tool_result, and attempt
 	// entries, in the session JSON representation decoded by core.DecodeMessage.
 	Message json.RawMessage `json:"message,omitempty"`
@@ -219,7 +226,9 @@ func New(store storage.Store) (*Runtime, error) {
 // RuntimeFormat is the version of the runtime's record layout, separate from
 // the backend's commit framing (storage schema). Version 1 is the run-based
 // layout; version 2 adds generation chains and task records (chain, progress,
-// bgcompaction, task effect and approval waits). A store is raised to 2 by
+// bgcompaction, task effect and approval waits). Version 3 adds images to
+// submissions and user entries, and is written only on image admission.
+// A store is raised to 2 by
 // the first switch to task execution; older builds would not understand
 // those records, so a build refuses stores newer than it supports.
 type RuntimeFormat struct {
@@ -228,7 +237,7 @@ type RuntimeFormat struct {
 }
 
 // RuntimeFormatVersion is the newest runtime record format this build reads.
-const RuntimeFormatVersion = 2
+const RuntimeFormatVersion = 3
 
 const runtimeFormatKey = "runtime/format"
 
@@ -381,8 +390,12 @@ func (r *Runtime) Submit(ctx context.Context, id, actor, requestID, content stri
 // SubmitWith is Submit with an explicit scheduling policy. A request-ID retry
 // must use the same policy; a different policy is a payload conflict.
 func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content string, opts SubmitOptions) (Submission, error) {
-	if strings.TrimSpace(actor) == "" || strings.TrimSpace(content) == "" {
-		return Submission{}, fmt.Errorf("actor and nonempty content required")
+	content, images, err := PrepareSubmission(content, opts.Images, opts.Files)
+	if err != nil {
+		return Submission{}, err
+	}
+	if strings.TrimSpace(actor) == "" || (strings.TrimSpace(content) == "" && len(images) == 0) {
+		return Submission{}, fmt.Errorf("actor and nonempty content or attachments required")
 	}
 	policy := opts.Policy
 	switch policy {
@@ -417,7 +430,7 @@ func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content 
 				return Submission{}, err
 			}
 			if ok {
-				if original.Content != content || original.Policy != policy || original.Kind != opts.Kind {
+				if original.Content != content || !sameImages(original.Images, images) || original.Policy != policy || original.Kind != opts.Kind {
 					return Submission{}, ErrRequestConflict
 				}
 				// The deduplication record is the admission. Return the live
@@ -443,7 +456,7 @@ func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content 
 			if err != nil {
 				return Submission{}, err
 			}
-			s, ops, err := admissionOps(snap, &c, actor, requestID, content, "")
+			s, ops, err := admissionOps(snap, &c, actor, requestID, content, "", images...)
 			if err != nil {
 				return Submission{}, err
 			}
@@ -474,7 +487,7 @@ func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content 
 				return Submission{}, ErrQueueFull
 			}
 		}
-		s, ops, err := admissionOps(snap, &c, actor, requestID, content, policy)
+		s, ops, err := admissionOps(snap, &c, actor, requestID, content, policy, images...)
 		if err != nil {
 			return Submission{}, err
 		}
@@ -506,7 +519,7 @@ func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content 
 // admissionOps builds the records of one admission against the conversation
 // counters in c, which it advances. The caller commits them together with the
 // updated conversation record, possibly alongside other operations.
-func admissionOps(snap storage.Snapshot, c *Conversation, actor, requestID, content, policy string) (Submission, []storage.Operation, error) {
+func admissionOps(snap storage.Snapshot, c *Conversation, actor, requestID, content, policy string, images ...provider.ImageBlock) (Submission, []storage.Operation, error) {
 	if c.QueueSequence == ^uint64(0) {
 		return Submission{}, nil, fmt.Errorf("conversation queue exhausted")
 	}
@@ -517,8 +530,8 @@ func admissionOps(snap storage.Snapshot, c *Conversation, actor, requestID, cont
 	c.QueueSequence++
 	c.EntrySequence++
 	c.Revision = snap.Revision() + 1
-	s := Submission{ID: uuid.NewString(), ConversationID: c.ID, RequestID: requestID, Actor: actor, Content: content, Sequence: c.QueueSequence, Revision: c.Revision, State: "queued", Policy: policy}
-	entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, SubmissionID: s.ID, Revision: c.Revision, Type: "user", Content: content, Time: time.Now().UTC()}
+	s := Submission{ID: uuid.NewString(), ConversationID: c.ID, RequestID: requestID, Actor: actor, Content: content, Images: images, Sequence: c.QueueSequence, Revision: c.Revision, State: "queued", Policy: policy}
+	entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, SubmissionID: s.ID, Revision: c.Revision, Type: "user", Content: content, Images: images, Time: time.Now().UTC()}
 	ops := []storage.Operation{
 		record("submission/"+s.ID, s),
 		record(fmt.Sprintf("queue/%s/%020d", c.ID, s.Sequence), s.ID),
@@ -526,6 +539,9 @@ func admissionOps(snap storage.Snapshot, c *Conversation, actor, requestID, cont
 	}
 	if requestID != "" {
 		ops = append(ops, record(hashedKey("dedup/submit/", c.ID, actor, requestID), s))
+	}
+	if len(images) > 0 {
+		ops = append(ops, formatOps(snap, 3)...)
 	}
 	return s, ops, nil
 }

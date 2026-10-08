@@ -10,6 +10,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"image"
+	"image/png"
 	"math/big"
 	"net"
 	"net/http"
@@ -68,12 +71,32 @@ func TestContinuousServeAttach(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	fileDir := t.TempDir()
+	textFile := filepath.Join(fileDir, "notes.txt")
+	imageFile := filepath.Join(fileDir, "photo.png")
+	if err := os.WriteFile(textFile, []byte("client attachment contents"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var imageData bytes.Buffer
+	if err := png.Encode(&imageData, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imageFile, imageData.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var out bytes.Buffer
-	if err := runContinuousAttach(ctx, []string{"say hello", "--socket", sock, "--workspace", "ws", "--token", "submit-token-0123456789"}, &out); err != nil {
+	if err := runContinuousAttach(ctx, []string{"say hello", "--file", textFile, "--file", imageFile, "--socket", sock, "--workspace", "ws", "--token", "submit-token-0123456789"}, &out); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 	if strings.TrimSpace(out.String()) != "hello from the host" {
 		t.Fatalf("answer: %q", out.String())
+	}
+	server.mu.Lock()
+	request := server.requests[0]
+	server.mu.Unlock()
+	payload := fmt.Sprint(request["messages"])
+	if !strings.Contains(payload, "client attachment contents") || !strings.Contains(payload, "data:image/png;base64,") {
+		t.Fatal("client file or image did not reach the host provider")
 	}
 	// Read-only tokens cannot submit.
 	out.Reset()

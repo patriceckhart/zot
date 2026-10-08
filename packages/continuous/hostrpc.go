@@ -14,6 +14,7 @@ import (
 
 	"github.com/patriceckhart/zot/packages/continuous/storage"
 	"github.com/patriceckhart/zot/packages/core"
+	"github.com/patriceckhart/zot/packages/provider"
 )
 
 // The host protocol is newline-delimited JSON, one object per line in each
@@ -342,7 +343,7 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"status": status, "blocked_runs": c.server.Host.Blocked(), "metrics": metrics, "version": c.server.Version}, nil
+		return map[string]any{"status": status, "blocked_runs": c.server.Host.Blocked(), "metrics": metrics, "version": c.server.Version, "capabilities": map[string]bool{"attachments": true}}, nil
 	case "conversation.create":
 		var p struct {
 			Workspace string       `json:"workspace"`
@@ -441,11 +442,13 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 		return map[string]any{}, nil
 	case "conversation.submit":
 		var p struct {
-			ID        string `json:"id"`
-			Content   string `json:"content"`
-			RequestID string `json:"request_id"`
-			WhenBusy  string `json:"when_busy"`
-			Policy    string `json:"policy"`
+			ID        string                `json:"id"`
+			Content   string                `json:"content"`
+			Images    []provider.ImageBlock `json:"images,omitempty"`
+			Files     []FileAttachment      `json:"files,omitempty"`
+			RequestID string                `json:"request_id"`
+			WhenBusy  string                `json:"when_busy"`
+			Policy    string                `json:"policy"`
 			// Kind is empty for a prompt or write for an entry without a
 			// model request.
 			Kind string `json:"kind"`
@@ -457,7 +460,7 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 		if maxQueue <= 0 {
 			maxQueue = 64
 		}
-		opts := SubmitOptions{Policy: p.Policy, RejectBusy: p.WhenBusy == "reject", MaxQueue: maxQueue, Kind: p.Kind}
+		opts := SubmitOptions{Policy: p.Policy, RejectBusy: p.WhenBusy == "reject", MaxQueue: maxQueue, Kind: p.Kind, Images: p.Images, Files: p.Files}
 		if p.WhenBusy == "steer" {
 			opts.Policy = PolicySteer
 		}
@@ -866,6 +869,14 @@ func (c *hostConn) watch(ctx context.Context, watchID, conversationID string, af
 	if watchID == "" {
 		return nil, fmt.Errorf("watch requires a request id")
 	}
+	rt := c.server.Host.Runtime()
+	// Reject invalid cursors before acknowledging the stream so clients
+	// can resnapshot. Event mode starts from its own fresh snapshot.
+	if mode != "events" {
+		if _, err := rt.Scan(ctx, after, 1); err != nil {
+			return nil, err
+		}
+	}
 	max := c.server.MaxWatches
 	if max <= 0 {
 		max = 16
@@ -887,7 +898,6 @@ func (c *hostConn) watch(ctx context.Context, watchID, conversationID string, af
 	c.watches[watchID] = cancel
 	c.mu.Unlock()
 	var err error
-	rt := c.server.Host.Runtime()
 	switch mode {
 	case "view":
 		c.write(hostResponse{ID: watchID, Type: "response", Method: "conversation.watch", Success: true, Data: map[string]any{"watch_id": watchID, "after": after, "mode": mode}})

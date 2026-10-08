@@ -100,7 +100,7 @@ func selectCut(ctx context.Context, snap storage.Snapshot, conversationID string
 				return fmt.Errorf("%w: %v", storage.ErrCorrupt, err)
 			}
 		} else if e.Type == "user" || e.Type == entrySteer || e.Type == entryContinue {
-			msg = provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: e.Content}}}
+			msg = userEntryMessage(e)
 		}
 		// Safe boundaries: a user entry, or an assistant entry without tool calls.
 		safe := e.Type == "user" || e.Type == entrySteer || e.Type == entryContinue

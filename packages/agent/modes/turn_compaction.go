@@ -34,7 +34,7 @@ func (i *Interactive) compactBetweenTurns(ctx context.Context) error {
 	i.mu.Lock()
 	i.compacting = false
 	i.autoCompacting = false
-	var queued []string
+	var queued []queuedPrompt
 	if err == nil {
 		queued, i.queued = i.queued, nil
 		i.lastCtxInput = estimateTimelineMessageTokens(i.agent.Messages())
@@ -48,7 +48,7 @@ func (i *Interactive) compactBetweenTurns(ctx context.Context) error {
 	// Prompts entered during compaction were held by the host. Inject them
 	// at this same safe boundary rather than waiting for the run to finish.
 	for _, prompt := range queued {
-		i.agent.QueueMessage(prompt)
+		i.agent.QueueMessage(prompt.Text)
 	}
 	i.invalidate()
 	if err != nil {

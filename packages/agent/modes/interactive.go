@@ -358,6 +358,15 @@ type InteractiveConfig struct {
 	// owns compaction and context recovery. Local /compact and tool_prompt
 	// preludes are refused rather than falling back to the mirrored agent.
 	PromptDriver func(ctx context.Context, agent *core.Agent, prompt string, sink func(core.AgentEvent)) error
+	// PromptDriverWithImages is the attachment-aware alternative. When set,
+	// it takes precedence over PromptDriver and receives inline image bytes.
+	PromptDriverWithImages func(ctx context.Context, agent *core.Agent, prompt string, images []provider.ImageBlock, sink func(core.AgentEvent)) error
+
+	// AttachedObserver owns the attached transcript and events for the entire
+	// Run lifetime, including idle time. Its paired prompt driver only submits
+	// and waits, it must not emit duplicate events. reset clears live overlays
+	// after the observer replaces the transcript from a fresh snapshot.
+	AttachedObserver func(ctx context.Context, sink func(core.AgentEvent), reset func()) error
 
 	// ExecutionLabel is shown in the status bar when execution does not
 	// happen in this process, for example "attached: host.sock".
@@ -507,7 +516,7 @@ type Interactive struct {
 	// Messages typed while a turn is in flight. Each is delivered as
 	// its own follow-up turn once the current one finishes. Rendered
 	// above the status bar as "sliding in: ..." chips.
-	queued []string
+	queued []queuedPrompt
 
 	// runCtx is the top-level context passed to Run(). Follow-up turns
 	// drained from `queued` are started against this context so they
@@ -843,6 +852,9 @@ func (i *Interactive) Run(ctx context.Context) error {
 		// invisible.
 		i.redraw()
 	})
+
+	stopObserver := i.startAttachedObserver(ctx)
+	defer stopObserver()
 
 	if i.cfg.StartupPre != "" {
 		i.deferredInitialInput = i.cfg.InitialInput
@@ -1604,7 +1616,7 @@ func (i *Interactive) redraw() {
 	// in flight. Shown directly above the status bar so they're close
 	// to the editor but don't push the chat around.
 	var queue []string
-	queued := append([]string(nil), i.queued...)
+	queued := queuedPromptLabels(i.queued)
 	if i.agent != nil {
 		queued = append(queued, i.agent.PendingQueuedMessages()...)
 	}
@@ -2736,8 +2748,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			}
 			if text == "" {
 				if n := len(i.queued); n > 0 {
-					text = i.queued[n-1]
+					q := i.queued[n-1]
 					i.queued = i.queued[:n-1]
+					i.mu.Unlock()
+					i.restoreQueuedPrompt(q)
+					i.inputHistoryIndex = -1
+					i.invalidate()
+					return false
 				}
 			}
 			i.mu.Unlock()
@@ -2930,9 +2947,18 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// placeholders back into their bodies; the raw Value()
 		// is only what the user sees on screen.
 		text := strings.TrimRight(i.ed.SubmitValue(), "\n")
-		// Expand [file:name] and [dir:name/] chips to full paths.
-		text = expandFileChips(text, i.cfg.CWD)
-		text, images := preparePromptWithClipboardImages(text, i.clipboardImages)
+		text, images, err := i.prepareEditorPrompt(ctx, text)
+		if err != nil {
+			i.mu.Lock()
+			i.statusErr = "attachment: " + err.Error()
+			i.statusOK = ""
+			i.mu.Unlock()
+			i.invalidate()
+			return false
+		}
+		if i.rejectAttachedImagePrompt(images) {
+			return false
+		}
 		if text == "" && len(images) == 0 {
 			return false
 		}
@@ -3005,6 +3031,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		ag := i.agent
 		i.mu.Unlock()
 		if busy {
+			if i.hasPromptDriver() {
+				i.mu.Lock()
+				i.queued = append(i.queued, newQueuedPrompt(text, images))
+				i.mu.Unlock()
+				i.invalidate()
+				return false
+			}
 			if len(images) > 0 {
 				i.mu.Lock()
 				i.statusErr = "can't queue clipboard images while a turn is running; wait for the current turn to finish"
@@ -3016,7 +3049,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 				ag.QueueMessage(text)
 			} else {
 				i.mu.Lock()
-				i.queued = append(i.queued, text)
+				i.queued = append(i.queued, newQueuedPrompt(text, nil))
 				i.mu.Unlock()
 			}
 			i.invalidate()
@@ -3419,10 +3452,12 @@ func (i *Interactive) SubmitSlash(text string) {
 // appends it to the pending queue if a turn is already in flight.
 // Used by the telegram bridge (and by the editor submit path) so
 // both input sources share the same "queue behind an active turn"
-// semantics. Images are ignored for now — only the text prompt is
-// forwarded — because the queued-prompt path is text-only; a
-// follow-up can expand the queue entry to carry images.
+// semantics. Attached prompts retain image bytes in the follow-up queue.
+// Embedded runs keep their existing text-only queue behavior.
 func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
+	if i.rejectAttachedImagePrompt(images) {
+		return
+	}
 	if cmd, ok := shellEscapeCommand(text); ok {
 		i.startShellEscape(i.runCtx, cmd)
 		return
@@ -3435,7 +3470,13 @@ func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 		return
 	}
 	if i.busy {
-		// Queue text only; images are dropped for queued prompts. Compaction
+		if i.hasPromptDriver() {
+			i.queued = append(i.queued, newQueuedPrompt(text, images))
+			i.mu.Unlock()
+			i.invalidate()
+			return
+		}
+		// Queue text only for embedded runs. Compaction
 		// uses the host queue because it has no active agent loop to drain
 		// Agent.QueueMessage entries.
 		ag := i.agent
@@ -3445,7 +3486,7 @@ func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 			ag.QueueMessage(text)
 		} else {
 			i.mu.Lock()
-			i.queued = append(i.queued, text)
+			i.queued = append(i.queued, newQueuedPrompt(text, nil))
 			i.mu.Unlock()
 		}
 		i.invalidate()
@@ -4972,11 +5013,11 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		ag := i.agent
 		i.mu.Unlock()
 		if busy {
-			if ag != nil && !compacting {
+			if ag != nil && !compacting && !i.hasPromptDriver() {
 				ag.QueueMessage(studyPrompt)
 			} else {
 				i.mu.Lock()
-				i.queued = append(i.queued, studyPrompt)
+				i.queued = append(i.queued, newQueuedPrompt(studyPrompt, nil))
 				i.mu.Unlock()
 			}
 			i.invalidate()
@@ -5511,11 +5552,11 @@ func (i *Interactive) submitOrQueuePrompt(ctx context.Context, prompt string) {
 	i.mu.Unlock()
 
 	if busy {
-		if !compacting {
+		if !compacting && !i.hasPromptDriver() {
 			ag.QueueMessage(prompt)
 		} else {
 			i.mu.Lock()
-			i.queued = append(i.queued, prompt)
+			i.queued = append(i.queued, newQueuedPrompt(prompt, nil))
 			i.mu.Unlock()
 		}
 		i.invalidate()
@@ -6056,7 +6097,8 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 				i.hasPendingCompactPrompt = false
 				hasNext = true
 			case len(i.queued) > 0:
-				next, i.queued = i.queued[0], i.queued[1:]
+				next, nextImages = i.queued[0].Text, i.queued[0].Images
+				i.queued = i.queued[1:]
 				hasNext = true
 			}
 			// A prompt resumed immediately after compaction must not trigger
@@ -6232,6 +6274,9 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 }
 
 func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt string, images []provider.ImageBlock, overflowRecoveryAttempted bool, tool *toolPromptRequest) {
+	if i.rejectAttachedImagePrompt(images) {
+		return
+	}
 	if tool != nil && i.rejectAttachedAction("extension tool_prompt", "submit a plain prompt for the host to execute") {
 		return
 	}
@@ -6281,11 +6326,15 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 	i.cancelTurn = cancel
 	i.statusErr = ""
 	i.statusOK = ""
-	i.streaming.Reset()
-	i.streamOn = true
-	i.toolCalls = map[string]*tui.ToolCallView{}
-	i.toolOrder = nil
-	i.toolGate = map[string]int{}
+	// A lifetime observer owns live output, including another client's turn.
+	// Submitting a queued prompt must not erase that remote stream or tools.
+	if i.cfg.AttachedObserver == nil {
+		i.streaming.Reset()
+		i.streamOn = true
+		i.toolCalls = map[string]*tui.ToolCallView{}
+		i.toolOrder = nil
+		i.toolGate = map[string]int{}
+	}
 	i.extNotes = nil   // ext notes are one-shot; a new prompt clears them
 	i.scrollOffset = 0 // jump back to the bottom on new turn
 	// Lift the resume tail cap once the user starts interacting. The
@@ -6333,7 +6382,9 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 			return i.compactBetweenTurns(ctx)
 		}
 		var err error
-		if i.cfg.PromptDriver != nil {
+		if i.cfg.PromptDriverWithImages != nil {
+			err = i.cfg.PromptDriverWithImages(ctx, i.agent, prompt, images, sink)
+		} else if i.cfg.PromptDriver != nil {
 			err = i.cfg.PromptDriver(ctx, i.agent, prompt, sink)
 		} else if overflowRecoveryAttempted {
 			err = i.agent.Continue(ctx, sink)
@@ -6351,7 +6402,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 		// pacer may still be draining the final deltas and needs to
 		// paint them even though Prompt has returned. It will reset
 		// streamOn on its own once the buffer empties.
-		if len(i.streamPending) == 0 {
+		if i.cfg.AttachedObserver == nil && len(i.streamPending) == 0 {
 			i.streamOn = false
 		}
 		i.cancelTurn = nil
@@ -6369,7 +6420,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 			rescueProv  string
 			rescueFprov string
 		)
-		if err != nil && ctx.Err() == nil && i.cfg.PromptDriver == nil {
+		if err != nil && ctx.Err() == nil && !i.hasPromptDriver() {
 			if ok, reason := classifyRescueError(err); ok {
 				offer = true
 				rescueWhy = reason
@@ -6391,7 +6442,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 		// limit is measured in raw bytes. Compact once, then continue the
 		// user message already present in the transcript.
 		contextOverflow := err != nil && ctx.Err() == nil && isContextOverflowError(err)
-		recoverContextOverflow := contextOverflow && !overflowRecoveryAttempted && i.cfg.PromptDriver == nil
+		recoverContextOverflow := contextOverflow && !overflowRecoveryAttempted && !i.hasPromptDriver()
 		if recoverContextOverflow {
 			i.statusErr = ""
 			i.continueAfterCompact = true
@@ -6412,7 +6463,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 		i.mu.Lock()
 		awaitingPre := i.awaitingStartupPre
 		// Pop the next queued message, if any, and relaunch.
-		var next string
+		var next queuedPrompt
 		var hasNext bool
 		if !awaitingPre && len(i.queued) > 0 && ctx.Err() == nil && err == nil {
 			next, i.queued = i.queued[0], i.queued[1:]
@@ -6447,7 +6498,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 		}
 		switch {
 		case hasNext:
-			i.startTurn(parent, next)
+			i.startTurnWithImages(parent, next.Text, next.Images)
 		case offer:
 			i.openRescueDialog(rescueProv, rescueFprov, rescueModel, rescueWhy, prompt, rescueImgs)
 		case recoverContextOverflow:
@@ -6577,7 +6628,7 @@ func shouldAutoCompact(inputTokens, contextWindow, thresholdPercent int) bool {
 func (i *Interactive) shouldAutoCompactLocked() bool {
 	// Attached clients only mirror history. The host owns compaction policy
 	// and recovery, regardless of the client's local usage measurements.
-	if i.agent == nil || i.cfg.PromptDriver != nil {
+	if i.agent == nil || i.hasPromptDriver() {
 		return false
 	}
 	if i.autoCompacting {
@@ -6691,7 +6742,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		// Only attached execution renders progress: the host commits it,
 		// otherwise a remote tool would look idle until it finished.
 		// Embedded runs keep their established rendering.
-		if i.cfg.PromptDriver == nil {
+		if !i.hasPromptDriver() {
 			return
 		}
 		if tc, ok := i.toolCalls[e.ID]; ok && !tc.Done {

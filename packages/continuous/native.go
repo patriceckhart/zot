@@ -422,7 +422,7 @@ func placementOps(view storage.Snapshot, c *Conversation, sub Submission, force 
 		}
 	}
 	c.EntrySequence++
-	entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, SubmissionID: sub.ID, Revision: view.Revision() + 1, Type: entrySteer, Content: sub.Content, Time: time.Now().UTC()}
+	entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, SubmissionID: sub.ID, Revision: view.Revision() + 1, Type: entrySteer, Content: sub.Content, Images: sub.Images, Time: time.Now().UTC()}
 	return []storage.Operation{record(entryKey(c.ID, c.EntrySequence), entry)}, nil
 }
 

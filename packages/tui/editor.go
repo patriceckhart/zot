@@ -92,6 +92,29 @@ func (e *Editor) SubmitValue() string {
 	return raw
 }
 
+// SubmissionFiles returns the paths of drag-dropped file chips still present
+// in the editor. Ordinary prose paths and removed chips are not attachments.
+func (e *Editor) SubmissionFiles() []string {
+	var paths []string
+	seen := map[int]bool{}
+	for _, match := range filePlaceholderRE.FindAllStringSubmatch(e.Value(), -1) {
+		if match[1] != "file" {
+			continue
+		}
+		var id int
+		if _, err := fmt.Sscanf(match[2], "%d", &id); err != nil || seen[id] {
+			continue
+		}
+		if quoted, ok := e.files[id]; ok {
+			// File paths are stored using singleQuote for shell-safe display.
+			path := strings.TrimSuffix(strings.TrimPrefix(quoted, "'"), "'")
+			paths = append(paths, strings.ReplaceAll(path, "'\\''", "'"))
+			seen[id] = true
+		}
+	}
+	return paths
+}
+
 // SetValue replaces the buffer and places the cursor at the end.
 // Also drops any stored pastes because the placeholders they back
 // are now gone from the visible text.

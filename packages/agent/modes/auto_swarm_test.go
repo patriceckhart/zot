@@ -122,7 +122,7 @@ func waitForQueuedPrompt(t *testing.T, iv *Interactive) string {
 	for {
 		iv.mu.Lock()
 		if len(iv.queued) > 0 {
-			prompt := iv.queued[0]
+			prompt := iv.queued[0].Text
 			iv.mu.Unlock()
 			return prompt
 		}

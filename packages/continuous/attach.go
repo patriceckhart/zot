@@ -61,7 +61,7 @@ func MessagesFromEntries(entries []Entry) []provider.Message {
 		switch e.Type {
 		case "user", entrySteer, entryContinue:
 			flushTool()
-			messages = append(messages, provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: e.Content}}, Time: e.Time})
+			messages = append(messages, userEntryMessage(e))
 		case entryAssistant:
 			flushTool()
 			if msg, err := core.DecodeMessage(e.Message); err == nil {
@@ -92,7 +92,12 @@ func MessagesFromEntries(entries []Entry) []provider.Message {
 // claimed the submission settles. Events are projected from committed
 // entries, so the view shows exactly what the host recorded.
 func (d *AttachedDriver) Prompt(ctx context.Context, agent *core.Agent, prompt string, sink func(core.AgentEvent)) error {
-	err := d.prompt(ctx, agent, prompt, sink)
+	return d.PromptWithImages(ctx, agent, prompt, nil, sink)
+}
+
+// PromptWithImages transfers inline image bytes with the text submission.
+func (d *AttachedDriver) PromptWithImages(ctx context.Context, agent *core.Agent, prompt string, images []provider.ImageBlock, sink func(core.AgentEvent)) error {
+	err := d.prompt(ctx, agent, prompt, images, sink)
 	if err != nil && ctx.Err() != nil && !errors.Is(err, ErrDetached) {
 		// The view's context ended mid-call: whatever the host has is still
 		// its work, not a failure of the prompt.
@@ -101,11 +106,23 @@ func (d *AttachedDriver) Prompt(ctx context.Context, agent *core.Agent, prompt s
 	return err
 }
 
-func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt string, sink func(core.AgentEvent)) error {
+func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt string, images []provider.ImageBlock, sink func(core.AgentEvent)) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	var snap ConversationSnapshot
-	if err := d.Client.CallInto(ctx, "conversation.snapshot", map[string]any{"id": d.ConversationID, "limit": 1}, &snap); err != nil {
+	if len(images) > 0 {
+		status, err := d.Client.Call(ctx, "runtime.status", nil)
+		if err != nil {
+			return err
+		}
+		if err := RequireAttachmentSupport(status); err != nil {
+			return err
+		}
+	}
+	// Work can finish while this view is idle or detached. Refresh the
+	// transcript and start the watch from that same snapshot so those
+	// commits are not skipped when the next prompt begins.
+	snap, err := d.Load(ctx, agent)
+	if err != nil {
 		return err
 	}
 	watch, err := d.Client.Watch(ctx, d.ConversationID, snap.Revision)
@@ -114,11 +131,11 @@ func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt s
 	}
 	var sub Submission
 	requestID := "tui-" + uuid.NewString()
-	if err := d.Client.CallInto(ctx, "conversation.submit", map[string]any{"id": d.ConversationID, "content": prompt, "request_id": requestID}, &sub); err != nil {
+	if err := d.Client.CallInto(ctx, "conversation.submit", map[string]any{"id": d.ConversationID, "content": prompt, "images": images, "request_id": requestID}, &sub); err != nil {
 		return err
 	}
-	user := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: prompt}}}
-	agent.AppendUserContext(prompt, nil)
+	user := userEntryMessage(Entry{Content: sub.Content, Images: sub.Images})
+	agent.SetMessages(append(agent.Messages(), user))
 	sink(core.EvUserMessage{Message: user})
 	ws := newWaitState(sub, snap)
 	d.status(ws.describe())

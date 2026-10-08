@@ -594,7 +594,7 @@ func ModelContext(ctx context.Context, snap storage.Snapshot, conversationID str
 				}
 				delete(userAt, e.SubmissionID)
 			}
-			messages = append(messages, provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: e.Content}}})
+			messages = append(messages, userEntryMessage(e))
 		case e.Type == entryReset:
 			messages = messages[:0]
 			clear(userAt)
@@ -645,7 +645,7 @@ func ModelContext(ctx context.Context, snap storage.Snapshot, conversationID str
 				}
 				userAt[e.SubmissionID] = len(messages)
 			}
-			messages = append(messages, provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: e.Content}}})
+			messages = append(messages, userEntryMessage(e))
 		case strings.HasPrefix(e.Type, "legacy_"):
 			rows := e.SessionProjection
 			if len(rows) == 0 {

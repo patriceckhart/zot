@@ -53,8 +53,20 @@ zot --continuous ./continuous-store/host.sock --continuous-workspace main
 Prompts are submitted to the host, committed entries are rendered as they
 land, the status bar shows `attached: host.sock`, and closing the TUI detaches
 without cancelling the run. Session files are disabled: the store is the
-authority. Ctrl+C also detaches an idle CLI `attach --follow` or an attach
-waiting for a submission, without cancelling the host's work.
+authority. Each attached TUI keeps one conversation subscription alive for
+its entire lifetime, including while its editor is idle. Multiple views of
+the same workspace automatically receive each other's admitted prompts,
+streamed text, tool progress, and committed answers without typing or sending
+another prompt. Unsent editor text and image attachments are left untouched.
+Cancelling a prompt only stops waiting for it, the view keeps receiving host
+updates. Closing the view ends its subscription without cancelling host work.
+
+A dropped watch reloads committed history and resumes automatically. If the
+host connection itself closes, the TUI reports that live updates stopped.
+Reconnect the TUI to resume, connections are not automatically redialed.
+A newly attached view loads the newest history page and any live partial text.
+Ctrl+C also detaches an idle CLI `attach --follow` or an attach waiting for a
+submission, without cancelling the host's work.
 
 New workspace roots use the host's provider, model, and reasoning defaults.
 The attached TUI forwards only explicitly supplied `--provider`, `--model`,
@@ -71,6 +83,41 @@ returning `action: "prompt"` still submit ordinary prompts to the host.
 `action: "tool_prompt"` is unavailable while attached and is refused without
 executing a tool or submitting work. Neither action falls back to local
 provider credentials or local model execution.
+
+### File and image attachments
+
+The attached TUI sends clipboard images and explicitly selected local files
+with the prompt. Select files through the `@` picker or drag them into the
+editor as file chips. UTF-8 files are included as labelled `<file>` context,
+PNG, JPEG, GIF, and WebP files are sent as inline image blocks. The client
+reads the files, the host does not need access to the client's filesystem.
+Directory chips and ordinary paths in prose remain references, they do not
+upload directory trees or implicitly read local files.
+
+Attachments are prompt context, not workspace uploads. The host never writes
+attachment names into its filesystem. File reads honor the client's jail
+setting, and file-read or validation failures leave the editor input intact.
+Inputs queued behind an attached turn retain their image bytes. Alt+Up
+restores queued text and images for editing. Closing the view still detaches
+without cancelling admitted work.
+
+The CLI accepts repeated `--file` flags, including an attachment-only prompt:
+
+```sh
+zot continuous attach "review these" --socket ./continuous-store/host.sock --workspace main --file ./notes.txt --file ./screenshot.png
+```
+
+One submission accepts at most 16 attachments and 1 MiB of combined decoded
+file and image bytes. Unsupported binary files and mismatched image MIME types
+are rejected before admission. The selected model must support vision to
+interpret images. Attachment-aware clients check the host's advertised
+capability and refuse image or file-field transfers to older hosts instead of
+silently losing them. Legacy text-only TUI prompt drivers still reject images.
+
+Images persist with user entries and submissions through restart, steering,
+forking, and session export. The first image admission raises the store's
+runtime record format to 3, so older binaries refuse to open it rather than
+drop images. Existing text-only stores remain readable without migration.
 
 While a prompt waits, the status bar says why, from committed state only:
 `queued on host`, `awaiting approval: <tool>` (decide with
@@ -638,17 +685,29 @@ conversation once per `(owner.id, key)` and returns the existing child on a
 retry; `config` overrides the inherited parent configuration.
 `conversation.submit` accepts `request_id`, `policy` (`queue` or `steer`),
 `when_busy` (`reject` or `steer`), and `kind` (`write` for an entry without
-a model request). `document.read` and `document.write` need
+a model request). Optional `images` is an array of `{mime_type, data}` image
+blocks, optional `files` is an array of `{name, data}` attachments. `data` is
+base64-encoded bytes, not a URL or path for the host to fetch. `content` may be
+empty for attachment-only input. Image blocks are returned in submissions and
+user entries as `images`. Text-file bytes become labelled text in `content`.
+Request-ID deduplication includes attachment bytes and file names, changed
+payloads return `duplicate_key`. `runtime.status` advertises
+`capabilities.attachments: true`, clients must check it before sending new
+attachment fields to an older host. These fields are additive, text-only
+clients and existing stored submissions continue to work. `document.read` and `document.write` need
 a `Documents` registry on the server, otherwise they return `unsupported`.
 
 Error codes: `bad_request`, `unauthorized`, `forbidden`, `not_found`,
 `conflict`, `duplicate_key`, `busy`, `queue_full`, `budget_exceeded`,
 `blocked`, `unsupported`, `cursor_expired`, `event_lag`, `storage`,
-`cancelled`, `limit`, `error`. A watch cursor older than the store's retained history returns
-`cursor_expired`, the client must take a new snapshot. `MaxWatches` bounds
-watches per connection, `MaxQueue` unclaimed submissions per conversation,
-`MaxConnections` concurrent clients; excess connections receive `limit` and
-are closed.
+`cancelled`, `limit`, `error`. A watch cursor outside the store's retained
+history returns `cursor_expired` before the watch is acknowledged. The client
+must take a new snapshot. Errors after acknowledgment terminate the watch,
+and the Go client closes its commit channel so consumers can resnapshot or
+reconnect.
+`MaxWatches` bounds watches per connection, `MaxQueue` unclaimed submissions
+per conversation, and `MaxConnections` concurrent clients. Excess connections
+receive `limit` and are closed.
 
 `zot continuous serve` listens on `<store>/host.sock` (mode `0600`) or
 `--socket <path>`. `--listen host:port` requires `--token-file`, a file with

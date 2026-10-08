@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -82,7 +83,7 @@ func TestContinuousCLIBackupRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	retry, err := r.Submit(ctx, c.ID, "actor", "stable-request", "private synthetic input")
-	if err != nil || retry != original {
+	if err != nil || !reflect.DeepEqual(retry, original) {
 		t.Fatalf("CLI restore changed deduplication: %v", err)
 	}
 	out.Reset()

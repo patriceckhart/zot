@@ -154,6 +154,14 @@ func (c *Client) readLoop() {
 				ch <- frame.hostResponse
 				delete(c.calls, frame.ID)
 			}
+			// A watch can fail after its initial acknowledgement. Such a
+			// response has no pending call, but still terminates the stream.
+			if !frame.Success {
+				if ch, ok := c.watches[frame.ID]; ok {
+					close(ch)
+					delete(c.watches, frame.ID)
+				}
+			}
 		case "commit":
 			if ch, ok := c.watches[frame.WatchID]; ok {
 				select {
@@ -312,14 +320,11 @@ func (c *Client) Watch(ctx context.Context, conversationID string, after uint64)
 	go func() {
 		defer close(out)
 		defer func() {
-			c.mu.Lock()
-			_, live := c.watches[id]
-			c.mu.Unlock()
-			if live {
-				// Cancelling the watch is best effort; closing the client
-				// ends it as well.
-				c.notify("watch.cancel", map[string]any{"watch_id": id})
-			}
+			// A local buffer overflow removes the registration before this
+			// goroutine exits, but the host watch still needs cancellation.
+			// Cancelling an already-ended host watch is harmless.
+			c.forget(id)
+			c.notify("watch.cancel", map[string]any{"watch_id": id})
 		}()
 		for {
 			select {

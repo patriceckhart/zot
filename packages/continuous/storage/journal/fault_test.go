@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -285,7 +286,7 @@ func checkFaultRecovery(t *testing.T, path string, opts Options, stage, point st
 		t.Fatalf("root changed: %v", err)
 	}
 	baseline, err := r.Submit(ctx, c.ID, "baseline", "accepted-key", "acknowledged input")
-	if err != nil || baseline != seed.submission {
+	if err != nil || !reflect.DeepEqual(baseline, seed.submission) {
 		t.Fatalf("acknowledged admission changed: %v", err)
 	}
 	if stage == "submit" {
@@ -335,11 +336,11 @@ func checkFaultRecovery(t *testing.T, path string, opts Options, stage, point st
 		if err != nil || first.Sequence != 2 {
 			t.Fatalf("retry admission: %v", err)
 		}
-		if persisted.ID != "" && first != persisted {
+		if persisted.ID != "" && !reflect.DeepEqual(first, persisted) {
 			t.Fatal("retry changed committed uncertain admission")
 		}
 		second, err := r.Submit(ctx, c.ID, "uncertain", "retry-key", "synthetic input")
-		if err != nil || second != first {
+		if err != nil || !reflect.DeepEqual(second, first) {
 			t.Fatalf("retry duplicated work: %v", err)
 		}
 		if _, err := r.Submit(ctx, c.ID, "uncertain", "retry-key", "different input"); !errors.Is(err, continuous.ErrRequestConflict) {

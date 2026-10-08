@@ -23,7 +23,7 @@ Usage:
   zot continuous run --resume --store <directory> [zot flags]
   zot continuous serve --store <directory> [--backend journal|sqlite] [--socket <path>] [--token-file <file>] [--recover safe|all|none] [zot flags]
   zot continuous serve --store <directory> --listen <host:port> --token-file <file> [--tls-cert <pem> --tls-key <pem> [--tls-client-ca <pem>]]
-  zot continuous attach "<prompt>" --socket <path>|--address <host:port> [--tls-ca <pem>] --workspace <id> [--token-file <file>] [--follow] [--json]
+  zot continuous attach "<prompt>" --socket <path>|--address <host:port> [--tls-ca <pem>] --workspace <id> [--token-file <file>] [--file <path>] [--follow] [--json]
   zot continuous import <session-path> --store <directory> [--backend journal|sqlite]
   zot continuous export <conversation-id> --store <directory> --format session [--output <new-file>]
   zot continuous status --store <directory>
@@ -73,7 +73,8 @@ plaintext, any other address requires --tls-cert and --tls-key (TLS 1.3), option
 token file every local socket connection is admin. SIGHUP (or runtime.reload) reloads
 extensions into a new engine generation without stopping the host.
 attach connects to a host, submits to the workspace root conversation, prints the answer, and
-with --follow streams committed entries. Closing attach never cancels host work.
+with --follow streams committed entries. Repeat --file to transfer local UTF-8 files or images
+as prompt attachments. Closing attach never cancels host work.
 zot --continuous <address> runs the interactive TUI attached to a host: prompts are
 submitted to the host, committed entries are rendered, and closing the TUI detaches.
 recover --dry-run lists what the next run would do for each interrupted conversation.

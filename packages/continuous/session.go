@@ -401,8 +401,8 @@ func (r *Runtime) ExportSession(ctx context.Context, id string, out io.Writer) e
 			// A steered input is exported where it joined the run.
 			return nil
 		case e.Type == "user" || e.Type == entrySteer || e.Type == entryContinue:
-			msg := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: e.Content}}}
-			b, _ := json.Marshal(msg)
+			msg := userEntryMessage(e)
+			b := marshalMessage(msg)
 			return writeSessionRow(out, record("", struct {
 				Type    string          `json:"type"`
 				Message json.RawMessage `json:"message"`
@@ -424,7 +424,7 @@ func (r *Runtime) ExportSession(ctx context.Context, id string, out io.Writer) e
 					ownRows, ownSeqs = append(ownRows, msg), append(ownSeqs, seq)
 				}
 			case (e.Type == "user" && !steered[e.SubmissionID]) || e.Type == entrySteer:
-				ownRows = append(ownRows, provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: e.Content}}})
+				ownRows = append(ownRows, userEntryMessage(e))
 				ownSeqs = append(ownSeqs, seq)
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/patriceckhart/zot/packages/continuous/storage"
@@ -288,6 +289,9 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 				return bad("invalid or duplicate entry")
 			}
 			entryIDs[e.ID] = row.Key
+			if len(e.Images) > 0 && e.Type != "user" && e.Type != entrySteer {
+				return bad("images on non-user entry")
+			}
 			if (imported && info.Rows > 0 && entries <= uint64(info.Rows)) != strings.HasPrefix(e.Type, "legacy_") {
 				return bad("import entry range mismatch")
 			}
@@ -340,7 +344,7 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 				if err != nil {
 					return err
 				}
-				if s.ConversationID != c.ID || s.Content != e.Content || s.Revision != e.Revision || userEntries[s.ID] || len(e.LegacyRow) != 0 || len(e.SessionProjection) != 0 {
+				if s.ConversationID != c.ID || s.Content != e.Content || !sameImages(s.Images, e.Images) || s.Revision != e.Revision || userEntries[s.ID] || len(e.LegacyRow) != 0 || len(e.SessionProjection) != 0 {
 					return bad("user entry submission mismatch")
 				}
 				userEntries[s.ID] = true
@@ -349,7 +353,7 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 				if err != nil {
 					return err
 				}
-				if s.ConversationID != c.ID || s.Content != e.Content || s.State == "queued" || s.State == "withdrawn" || !userEntries[s.ID] || steerEntries[s.ID] || len(e.Message) != 0 {
+				if s.ConversationID != c.ID || s.Content != e.Content || !sameImages(s.Images, e.Images) || s.State == "queued" || s.State == "withdrawn" || !userEntries[s.ID] || steerEntries[s.ID] || len(e.Message) != 0 {
 					return bad("steer entry submission mismatch")
 				}
 				steerEntries[s.ID] = true
@@ -732,8 +736,11 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 			}
 		case strings.HasPrefix(row.Key, "submission/"):
 			var s Submission
-			if json.Unmarshal(row.Value, &s) != nil || !validID(s.ID) || row.Key != "submission/"+s.ID || !validRevision(s.Revision) || s.Sequence == 0 || strings.TrimSpace(s.Actor) == "" || strings.TrimSpace(s.Content) == "" || !userEntries[s.ID] {
+			if json.Unmarshal(row.Value, &s) != nil || !validID(s.ID) || row.Key != "submission/"+s.ID || !validRevision(s.Revision) || s.Sequence == 0 || strings.TrimSpace(s.Actor) == "" || (strings.TrimSpace(s.Content) == "" && len(s.Images) == 0) || !userEntries[s.ID] {
 				return bad("invalid or orphan submission")
+			}
+			if _, _, err := PrepareSubmission(s.Content, s.Images, nil); err != nil {
+				return bad("invalid submission images")
 			}
 			c, err := getConversation(s.ConversationID)
 			if err != nil {
@@ -856,6 +863,10 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 // sameAdmission compares the immutable admission of two submission records.
 // The deduplication record keeps the admitted state, the submission advances.
 func sameAdmission(a, b Submission) bool {
+	if !sameImages(a.Images, b.Images) {
+		return false
+	}
 	a.State, b.State = "", ""
-	return a == b
+	a.Images, b.Images = nil, nil
+	return reflect.DeepEqual(a, b)
 }

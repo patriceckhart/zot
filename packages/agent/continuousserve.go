@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/patriceckhart/zot/packages/agent/attachments"
 	"github.com/patriceckhart/zot/packages/continuous"
 	"github.com/patriceckhart/zot/packages/continuous/storage/journal"
 )
@@ -397,6 +398,7 @@ type continuousAttachOptions struct {
 	workspace string
 	id        string
 	prompt    string
+	files     []string
 	json      bool
 	follow    bool
 }
@@ -449,6 +451,12 @@ func parseContinuousAttachArgs(args []string) (continuousAttachOptions, error) {
 				return opts, err
 			}
 			opts.workspace = v
+		case "--file":
+			v, err := value()
+			if err != nil {
+				return opts, err
+			}
+			opts.files = append(opts.files, v)
 		case "--conversation":
 			v, err := value()
 			if err != nil {
@@ -475,8 +483,8 @@ func parseContinuousAttachArgs(args []string) (continuousAttachOptions, error) {
 	if opts.workspace == "" && opts.id == "" {
 		return opts, fmt.Errorf("attach requires --workspace or --conversation")
 	}
-	if opts.prompt == "" && !opts.follow {
-		return opts, fmt.Errorf("attach requires a prompt or --follow")
+	if opts.prompt == "" && len(opts.files) == 0 && !opts.follow {
+		return opts, fmt.Errorf("attach requires a prompt, --file, or --follow")
 	}
 	return opts, nil
 }
@@ -488,6 +496,17 @@ func parseContinuousAttachArgs(args []string) (continuousAttachOptions, error) {
 func runContinuousAttach(ctx context.Context, args []string, out io.Writer) error {
 	opts, err := parseContinuousAttachArgs(args)
 	if err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	files, err := attachments.ReadFiles(ctx, cwd, opts.files, nil)
+	if err != nil {
+		return err
+	}
+	if _, _, err := continuous.PrepareSubmission(opts.prompt, nil, files); err != nil {
 		return err
 	}
 	token := opts.token
@@ -523,6 +542,15 @@ func runContinuousAttach(ctx context.Context, args []string, out io.Writer) erro
 			return err
 		}
 	}
+	if len(files) > 0 {
+		status, err := client.call(ctx, "runtime.status", nil)
+		if err != nil {
+			return err
+		}
+		if err := continuous.RequireAttachmentSupport(status); err != nil {
+			return err
+		}
+	}
 	id := opts.id
 	if id == "" {
 		data, err := client.call(ctx, "conversation.create", map[string]any{"workspace": opts.workspace})
@@ -534,8 +562,8 @@ func runContinuousAttach(ctx context.Context, args []string, out io.Writer) erro
 		id = c.ID
 	}
 	enc := json.NewEncoder(out)
-	if opts.prompt != "" {
-		data, err := client.call(ctx, "conversation.submit", map[string]any{"id": id, "content": opts.prompt, "request_id": randomRequestID()})
+	if opts.prompt != "" || len(files) > 0 {
+		data, err := client.call(ctx, "conversation.submit", map[string]any{"id": id, "content": opts.prompt, "files": files, "request_id": randomRequestID()})
 		if err != nil {
 			return err
 		}

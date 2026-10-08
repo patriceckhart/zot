@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"testing"
 
@@ -87,7 +88,7 @@ func TestBackupRestore(t *testing.T) {
 				t.Fatal(err)
 			}
 			retry, err := r.Submit(ctx, seed.submission.ConversationID, "baseline", "accepted-key", "acknowledged input")
-			if err != nil || retry != seed.submission {
+			if err != nil || !reflect.DeepEqual(retry, seed.submission) {
 				t.Fatalf("restored deduplication changed admission: %v", err)
 			}
 			if _, err := r.Submit(ctx, seed.submission.ConversationID, "baseline", "accepted-key", "conflict"); !errors.Is(err, continuous.ErrRequestConflict) {

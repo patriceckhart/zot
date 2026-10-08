@@ -1389,7 +1389,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// Attached execution: the host runs the model and tools, this process
 	// renders committed state. The agent object only mirrors the host's
 	// transcript; its client is never used for requests.
-	var promptDriver func(context.Context, *core.Agent, string, func(core.AgentEvent)) error
+	var promptDriver func(context.Context, *core.Agent, string, []provider.ImageBlock, func(core.AgentEvent)) error
+	var attachedObserver func(context.Context, func(core.AgentEvent), func()) error
 	executionLabel, historyNotice := "", ""
 	if args.Continuous != "" {
 		// iv is assigned below, before any prompt can run.
@@ -1403,11 +1404,13 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return err
 		}
 		defer closeAttached()
-		promptDriver, executionLabel, historyNotice = attached, label, notice
+		promptDriver, attachedObserver = attached.PromptWithImages, attached.Observe
+		executionLabel, historyNotice = label, notice
 	}
 
 	iv = modes.NewInteractive(modes.InteractiveConfig{
-		PromptDriver:                  promptDriver,
+		PromptDriverWithImages:        promptDriver,
+		AttachedObserver:              attachedObserver,
 		ExecutionLabel:                executionLabel,
 		Terminal:                      term,
 		Theme:                         theme,

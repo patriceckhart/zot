@@ -19,7 +19,7 @@ import (
 // onStatus receives waiting-state descriptions of followed submissions; it
 // may be nil. The returned notice is non-empty when the loaded transcript
 // is only the newest page of the conversation.
-func attachContinuous(ctx context.Context, args Args, r Resolved, ag *core.Agent, onStatus func(string)) (func(context.Context, *core.Agent, string, func(core.AgentEvent)) error, string, string, func(), error) {
+func attachContinuous(ctx context.Context, args Args, r Resolved, ag *core.Agent, onStatus func(string)) (*continuous.AttachedSession, string, string, func(), error) {
 	dial, err := continuousDialer(args)
 	if err != nil {
 		return nil, "", "", nil, err
@@ -44,17 +44,16 @@ func attachContinuous(ctx context.Context, args Args, r Resolved, ag *core.Agent
 		return nil, "", "", nil, fmt.Errorf("open workspace conversation on host: %w", err)
 	}
 	driver := &continuous.AttachedDriver{Client: client, ConversationID: conv.ID, OnStatus: onStatus}
-	notice := ""
-	if ag != nil {
-		snap, err := driver.Load(ctx, ag)
-		if err != nil {
-			client.Close()
-			return nil, "", "", nil, err
-		}
-		notice = continuous.HistoryNotice(snap, conv.ID)
+	session, err := continuous.NewAttachedSession(ctx, driver, ag)
+	if err != nil {
+		client.Close()
+		return nil, "", "", nil, err
 	}
 	label := "attached: " + shortAddress(args.Continuous)
-	return driver.Prompt, label, notice, func() { client.Close() }, nil
+	return session, label, session.HistoryNotice(), func() {
+		session.Close()
+		client.Close()
+	}, nil
 }
 
 // continuousWorkspace is the workspace identity of the root conversation an

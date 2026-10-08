@@ -53,7 +53,7 @@ func waitAttachedIdle(t *testing.T, iv *Interactive, requireError bool) {
 }
 
 func TestAttachedModeRejectsLocalExecution(t *testing.T) {
-	for _, action := range []string{"compact command", "automatic compact", "extension response", "tool prelude", "local continuation"} {
+	for _, action := range []string{"compact command", "automatic compact", "extension response", "tool prelude", "local continuation", "image prompt", "image-only prompt"} {
 		t.Run(action, func(t *testing.T) {
 			client := &toolPromptClient{requests: make(chan provider.Request, 8)}
 			tool := &attachedExecutionTool{}
@@ -80,6 +80,10 @@ func TestAttachedModeRejectsLocalExecution(t *testing.T) {
 				iv.startTurnWithPrelude(ctx, "do it", nil, &toolPromptRequest{call: call, origin: "shortcut"})
 			case "local continuation":
 				iv.startTurnRequest(ctx, "", nil, true)
+			case "image prompt":
+				iv.startTurnWithImages(ctx, "describe this", []provider.ImageBlock{{}})
+			case "image-only prompt":
+				iv.startTurnWithImages(ctx, "", []provider.ImageBlock{{}})
 			}
 			waitAttachedIdle(t, iv, false)
 			if len(client.requests) != 0 || tool.calls.Load() != 0 || submitted.Load() != 0 {

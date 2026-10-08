@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -40,7 +41,7 @@ func TestAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	repeat, err := r.Submit(ctx, c.ID, "actor", "request", "input")
-	if err != nil || repeat != s {
+	if err != nil || !reflect.DeepEqual(repeat, s) {
 		t.Fatalf("duplicate: %+v, %v", repeat, err)
 	}
 	if _, err := r.Submit(ctx, c.ID, "actor", "request", "different"); !errors.Is(err, ErrRequestConflict) {
@@ -178,7 +179,7 @@ func TestPersistentAdmission(t *testing.T) {
 		t.Fatalf("reopened root: %+v, %v", again, err)
 	}
 	retry, err := r.Submit(ctx, c.ID, "actor", "request", "input")
-	if err != nil || retry != first {
+	if err != nil || !reflect.DeepEqual(retry, first) {
 		t.Fatalf("restart dedup: %+v, %v", retry, err)
 	}
 	cancelled, cancel := context.WithCancel(ctx)
