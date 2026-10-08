@@ -157,37 +157,32 @@ func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt s
 				if ctx.Err() != nil {
 					return ErrDetached
 				}
-				// Watch dropped (slow consumer or host limit). The
-				// submission is never resent: follow it again.
+				// Replay from the last rendered commit even if the submission
+				// already settled. Its missed tool results and assistant message
+				// must be projected before the view reports completion.
+				before := last
+				if watch, err = d.rewatch(ctx, agent, &last, seen); err != nil {
+					return fmt.Errorf("resume submission watch: %w", err)
+				}
+				if last == before {
+					continue
+				}
+				// Only a resnapshot fallback can skip the settlement commit.
+				// In that case the transcript was replaced instead of replayed.
 				var s Submission
 				if err := d.Client.CallInto(ctx, "submission.get", map[string]any{"id": sub.ID}, &s); err != nil {
-					if ctx.Err() != nil {
-						return ErrDetached
-					}
 					return err
 				}
 				if s.State == "queued" || s.State == "running" {
-					if watch, err = d.rewatch(ctx, agent, &last, seen); err != nil {
-						if ctx.Err() != nil {
-							return ErrDetached
-						}
-						return fmt.Errorf("resume watch while the submission is %s: %w", s.State, err)
-					}
-					// The run may have settled before the new watch opened;
-					// anything later arrives on the watch.
-					if err := d.Client.CallInto(ctx, "submission.get", map[string]any{"id": sub.ID}, &s); err != nil {
-						if ctx.Err() != nil {
-							return ErrDetached
-						}
-						return err
-					}
-					if s.State == "queued" || s.State == "running" {
-						continue
-					}
+					continue
 				}
-				d.Load(context.Background(), agent)
+				latest, err := d.Load(ctx, agent)
+				if err != nil {
+					return err
+				}
+				sink(core.EvTurnEnd{Stop: provider.StopEnd})
 				sink(core.EvDone{})
-				return nil
+				return attachedSubmissionError(s.State, latest.Run)
 			}
 			last = cm.Revision
 			if ws.apply(cm, d.ConversationID) {

@@ -18,6 +18,31 @@ import (
 
 const crashExitCode = 86
 
+func TestInitializeDataCreateFailureReleasesFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store")
+	failure := errors.New("synthetic failure after creating data file")
+	s, err := open(context.Background(), path, Options{Durability: storage.Process}, func(point string) error {
+		if point == "after.open.data.create" {
+			return failure
+		}
+		return nil
+	})
+	if s != nil {
+		s.Close()
+		t.Fatal("failed initialization returned a store")
+	}
+	if !errors.Is(err, failure) {
+		t.Fatalf("initialization failure: %v", err)
+	}
+	// Windows refuses removal while a leaked handle is still open. Failed
+	// initialization must release both the data file and the writer lock.
+	for _, name := range []string{"commits.log", "writer.lock"} {
+		if err := os.Remove(filepath.Join(path, name)); err != nil {
+			t.Fatalf("failed initialization kept %s open: %v", name, err)
+		}
+	}
+}
+
 // Discover checkpoints from the real path, rather than maintaining a matrix
 // which can silently omit newly added persistence operations.
 func collectFaultPoints(t *testing.T, opts Options, stage string) []string {

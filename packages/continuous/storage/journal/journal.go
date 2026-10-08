@@ -152,6 +152,10 @@ func open(ctx context.Context, path string, opts Options, hook faultHook) (stora
 			data, err = os.OpenFile(dataPath, os.O_CREATE|os.O_RDWR, 0o600)
 			return err
 		}); err != nil {
+			// An after-operation failure can leave a successfully opened file.
+			if data != nil {
+				data.Close()
+			}
 			return nil, err
 		}
 		if opts.Durability == storage.Strict {

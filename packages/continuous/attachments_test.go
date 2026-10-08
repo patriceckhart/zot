@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/patriceckhart/zot/packages/continuous/storage"
 	"github.com/patriceckhart/zot/packages/continuous/storage/journal"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
@@ -46,7 +47,7 @@ func TestSubmissionAttachmentsSurviveRestartForkAndExport(t *testing.T) {
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "store")
 	open := func() *Runtime {
-		s, err := journal.Open(ctx, dir, journal.Options{})
+		s, err := journal.Open(ctx, dir, journal.Options{Durability: storage.Process})
 		if err != nil {
 			t.Fatal(err)
 		}

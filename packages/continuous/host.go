@@ -182,7 +182,7 @@ func (h *Host) Run(ctx context.Context) error {
 // sleepOrFinish sleeps until a commit, a deadline, a nudge, or a finished
 // task invocation.
 func (h *Host) sleepOrFinish(ctx context.Context, revision uint64, wake time.Time) error {
-	if h.tasks.InFlight() == 0 {
+	if h.tasks.idle() {
 		return h.sleep(ctx, revision, wake)
 	}
 	return h.tasks.waitProgress(ctx, wake)

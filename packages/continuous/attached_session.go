@@ -109,20 +109,25 @@ func (s *AttachedSession) Observe(ctx context.Context, sink func(core.AgentEvent
 			return s.ctx.Err()
 		case cm, ok := <-s.watch:
 			if !ok {
+				// Serialize admission through the whole refresh. A new prompt
+				// must not settle in the snapshot/watch gap and be restored as
+				// historical context instead of delivering its fresh events.
+				s.mu.Lock()
 				// Use a new snapshot for both expired cursors and slow consumers.
 				snap, err := s.driver.Load(s.ctx, s.agent)
 				if err != nil {
+					s.mu.Unlock()
 					return fmt.Errorf("refresh attached conversation: %w", err)
 				}
 				entries, last = append([]Entry(nil), snap.Entries...), snap.Revision
 				restore(snap)
 				s.watch, err = s.driver.Client.Watch(s.ctx, s.driver.ConversationID, last)
 				if err != nil {
+					s.mu.Unlock()
 					return fmt.Errorf("resume attached conversation watch: %w", err)
 				}
 				// Settlement may have been among the dropped frames. Read each
 				// pending submission after restoring its committed transcript.
-				s.mu.Lock()
 				for id, p := range s.pending {
 					var sub Submission
 					if err := s.driver.Client.CallInto(s.ctx, "submission.get", map[string]any{"id": id}, &sub); err != nil {

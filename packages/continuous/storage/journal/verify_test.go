@@ -14,8 +14,9 @@ import (
 	"github.com/patriceckhart/zot/packages/continuous/storage"
 )
 
-// journalFiles reads every file under the store, keyed by path relative to
-// it, so derived directories (indexes, checkpoints, segments) are covered.
+// journalFiles reads journal and derived files, keyed by path relative to
+// the store. The writer lock is not journal data, and Windows forbids reading
+// its locked byte while the store is open.
 func journalFiles(t *testing.T, path string) map[string][]byte {
 	t.Helper()
 	files := make(map[string][]byte)
@@ -23,7 +24,7 @@ func journalFiles(t *testing.T, path string) map[string][]byte {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
+		if d.IsDir() || p == filepath.Join(path, "writer.lock") {
 			return nil
 		}
 		b, err := os.ReadFile(p)

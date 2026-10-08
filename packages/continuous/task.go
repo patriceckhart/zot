@@ -533,7 +533,7 @@ func (s *TaskScheduler) Tick(ctx context.Context) (int, time.Time, error) {
 	}
 	s.mu.Lock()
 	if s.done == nil {
-		s.done = make(chan taskResult, 1024)
+		s.done = make(chan taskResult, max(1024, workers))
 	}
 	done := s.done
 	s.mu.Unlock()
@@ -555,8 +555,11 @@ func (s *TaskScheduler) Tick(ctx context.Context) (int, time.Time, error) {
 		}
 		s.mu.Lock()
 		inflight := len(s.active)
+		// Reserve a result slot for each active invocation. Completion can
+		// then publish under mu without blocking on a full channel.
+		full := inflight+len(done) >= cap(done)
 		s.mu.Unlock()
-		if inflight >= workers {
+		if inflight >= workers || full {
 			break
 		}
 		snap, err := s.r.store.Snapshot(ctx)
@@ -580,6 +583,14 @@ func (s *TaskScheduler) Tick(ctx context.Context) (int, time.Time, error) {
 		}
 		invCtx, cancelInv := context.WithCancel(ctx)
 		s.mu.Lock()
+		// Recheck at reservation in case another Tick dispatched while
+		// this one was selecting a task.
+		if len(s.active) >= workers || len(s.active)+len(done) >= cap(done) {
+			s.mu.Unlock()
+			cancelInv()
+			s.r.claims.Delete(runnable.ID)
+			break
+		}
 		s.active[runnable.ID] = cancelInv
 		// aborting marks invocations a later abort mark must not cancel:
 		// abort handlers themselves, and definitions that join on abort.
@@ -595,8 +606,8 @@ func (s *TaskScheduler) Tick(ctx context.Context) (int, time.Time, error) {
 			s.mu.Lock()
 			delete(s.active, t.ID)
 			delete(s.aborting, t.ID)
-			s.mu.Unlock()
 			done <- taskResult{id: t.ID, err: err}
+			s.mu.Unlock()
 		}(runnable)
 	}
 	progressed := 0
@@ -650,6 +661,14 @@ func (s *TaskScheduler) InFlight() int {
 	return len(s.active)
 }
 
+// idle reports whether no invocation or uncollected result remains. Completion
+// publishes its result and removes the active entry in the same critical section.
+func (s *TaskScheduler) idle() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.active) == 0 && len(s.done) == 0
+}
+
 // Run keeps ticking until ctx ends or no task can progress, nothing is in
 // flight, and no timer is pending. Between passes it sleeps until an
 // invocation finishes, a commit lands, or the earliest timer fires.
@@ -665,7 +684,7 @@ func (s *TaskScheduler) Run(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if s.InFlight() == 0 && wake.IsZero() {
+		if s.idle() && wake.IsZero() {
 			return nil
 		}
 		if err := s.waitProgress(ctx, wake); err != nil {

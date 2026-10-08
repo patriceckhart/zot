@@ -109,12 +109,15 @@ func TestContinuousServeAttach(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unauthorized") {
 		t.Fatalf("unknown token accepted: %v", err)
 	}
-	// A world-readable token file is refused by serve.
-	if err := os.Chmod(tokenFile, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadTokens(tokenFile); err == nil || !strings.Contains(err.Error(), "accessible") {
-		t.Fatalf("permissive token file accepted: %v", err)
+	// Unix permission bits are enforced only on Unix. Windows Chmod does
+	// not express the ACL permissions used to protect token files there.
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(tokenFile, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadTokens(tokenFile); err == nil || !strings.Contains(err.Error(), "accessible") {
+			t.Fatalf("permissive token file accepted: %v", err)
+		}
 	}
 	cancel()
 	if err := <-served; err != nil && !errors.Is(err, context.Canceled) {

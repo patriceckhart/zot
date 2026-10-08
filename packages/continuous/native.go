@@ -2292,7 +2292,7 @@ func (s *Service) stepTasks(ctx context.Context, conversationID string) (Run, bo
 		if n > 0 {
 			continue
 		}
-		if sched.InFlight() == 0 {
+		if sched.idle() {
 			// Decide on state committed after this tick's invocations.
 			if fresh, err := s.r.store.Snapshot(ctx); err == nil && fresh.Revision() != snap.Revision() {
 				continue

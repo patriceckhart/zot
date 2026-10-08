@@ -38,6 +38,7 @@ func TestSegmentsRotateAndStayLogical(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer s.Close()
 	for i := 0; i < 40; i++ {
 		keyed(t, s, fmt.Sprintf("k/%02d", i%10), fmt.Sprintf(`{"i":%d,"pad":"%s"}`, i, strings.Repeat("x", 40)))
 	}

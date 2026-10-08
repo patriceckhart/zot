@@ -61,7 +61,11 @@ another prompt. Unsent editor text and image attachments are left untouched.
 Cancelling a prompt only stops waiting for it, the view keeps receiving host
 updates. Closing the view ends its subscription without cancelling host work.
 
-A dropped watch reloads committed history and resumes automatically. If the
+A dropped watch reloads committed history and resumes automatically. New
+prompt admission waits for the view's snapshot and replacement watch to be
+restored, so a fast answer is not swallowed as historical context. Prompt-scoped
+attached drivers replay missed committed results before reporting completion,
+even if the host settled the submission while its watch was disconnected. If the
 host connection itself closes, the TUI reports that live updates stopped.
 Reconnect the TUI to resume, connections are not automatically redialed.
 A newly attached view loads the newest history page and any live partial text.
@@ -751,7 +755,9 @@ conversation's run and are only aborted with `includeBackground`. Phases
 starting with `__` are reserved. An initial state may carry a `WakeAt` timer
 so a task starts parked (a reminder). `TaskDefinition.Retry` and `Cleanup`
 add retries with persisted deadlines and compensation; `TaskScheduler.CatchUp`
-selects how overdue periodic timers behave after downtime.
+selects how overdue periodic timers behave after downtime. A scheduler only
+reports idle after collecting finished invocations and checking for follow-up
+work, so recovery does not stop between committed phases.
 
 Documents are typed JSON values registered in a `DocumentRegistry`. Reads
 migrate older versions in memory and return `ErrDocumentBlocked` if no
