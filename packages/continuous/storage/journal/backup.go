@@ -27,6 +27,76 @@ func Backup(ctx context.Context, source, destination string, opts Options) (Veri
 	return backup(ctx, source, destination, opts, nil)
 }
 
+// Backup archives the committed prefix of this open store without stopping
+// its writer. The boundary is captured under the store lock; committed bytes
+// are append-only, so the prefix stays stable while it is copied. The archive
+// has the same format as the offline Backup and passes VerifyBackup.
+func (s *Store) Backup(ctx context.Context, destination string, opts Options) (Verification, error) {
+	if err := ctx.Err(); err != nil {
+		return Verification{}, err
+	}
+	mode, err := archiveDurability(opts)
+	if err != nil {
+		return Verification{}, err
+	}
+	if err := outsideStore(s.path, destination); err != nil {
+		return Verification{}, err
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return Verification{}, storage.ErrClosed
+	}
+	marker := boundaryMarker(s.revision, s.end)
+	end := s.end
+	segs, err := openSegments(s.path, true)
+	s.mu.Unlock()
+	if err != nil {
+		return Verification{}, err
+	}
+	defer segs.close()
+	if err := segs.validate(end); err != nil {
+		return Verification{}, fmt.Errorf("%w: %v", storage.ErrCorrupt, err)
+	}
+	data := io.NewSectionReader(segs, 0, end)
+	report, err := scanFrames(ctx, data, end, marker, nil)
+	if err != nil {
+		return Verification{}, err
+	}
+	dst, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return Verification{}, err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			dst.Close()
+			os.Remove(destination)
+		}
+	}()
+	hash := sha256.New()
+	out := io.MultiWriter(dst, hash)
+	if err := writeAll(out, append(append([]byte(nil), backupMagic[:]...), marker...)); err != nil {
+		return Verification{}, err
+	}
+	if err := copyContext(ctx, out, io.NewSectionReader(segs, 0, report.CommittedBytes), report.CommittedBytes); err != nil {
+		return Verification{}, err
+	}
+	if err := writeAll(dst, hash.Sum(nil)); err != nil {
+		return Verification{}, err
+	}
+	if err := syncArchive(ctx, dst, filepath.Dir(destination), mode, nil, "backup"); err != nil {
+		return Verification{}, err
+	}
+	if err := dst.Close(); err != nil {
+		return Verification{}, err
+	}
+	ok = true
+	report.Scope = "journal-backup"
+	report.UnacknowledgedTailBytes = 0
+	return report, nil
+}
+
 func backup(ctx context.Context, source, destination string, opts Options, hook faultHook) (Verification, error) {
 	if err := ctx.Err(); err != nil {
 		return Verification{}, err
