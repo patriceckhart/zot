@@ -49,7 +49,9 @@ type Renderer struct {
 
 	// History uses a separate alternate-screen renderer so browsing does not
 	// overwrite the main screen or its native scrollback and diff state.
-	history *Renderer
+	history           *Renderer
+	historyBottomRows int
+	mouseSelection    *mouseSelection
 
 	// keepScrollback is true when we must NOT emit \x1b[3J
 	// (erase-in-display 3, "clear scrollback").
@@ -125,6 +127,7 @@ func (r *Renderer) Resize(cols, rows int) {
 		r.history.Invalidate()
 	}
 	if cols != r.cols || rows != r.rows {
+		r.ClearMouseSelection()
 		r.cols = cols
 		r.rows = rows
 		r.prev = nil
@@ -163,6 +166,7 @@ func (r *Renderer) Resize(cols, rows int) {
 // expand/collapse), because terminal scrollback cannot be edited
 // reliably once printed.
 func (r *Renderer) Clear() {
+	r.ClearMouseSelection()
 	if r.history != nil {
 		r.history.Invalidate()
 		return
@@ -435,6 +439,9 @@ func (r *Renderer) Draw(lines []string, cursorRow, cursorCol int) {
 // DrawHistory displays a bounded history frame without modifying native
 // scrollback. Cursor coordinates are relative to bottom, as in DrawLog.
 func (r *Renderer) DrawHistory(chat, bottom []string, cursorBottomRow, cursorCol int) {
+	if r.mouseSelection != nil {
+		return
+	}
 	if r.history == nil {
 		_, _ = io.WriteString(r.out, SeqAltScreenOn)
 		r.history = &Renderer{out: r.out, cols: r.cols, rows: r.rows, theme: r.theme}
@@ -445,6 +452,16 @@ func (r *Renderer) DrawHistory(chat, bottom []string, cursorBottomRow, cursorCol
 		cursorRow += len(chat)
 	}
 	r.history.Draw(frame, cursorRow, cursorCol)
+	r.historyBottomRows = len(bottom)
+}
+
+// BottomScreenRow returns the zero-based screen row for a bottom-band row
+// after DrawLog or DrawHistory. It can be negative when the band is clipped.
+func (r *Renderer) BottomScreenRow(row int) int {
+	if r.history != nil {
+		return r.rows - r.historyBottomRows + row
+	}
+	return len(r.logChat) + row - r.logViewportTop
 }
 
 // CloseHistory restores the main screen, including its saved cursor. Call on
@@ -461,6 +478,9 @@ func (r *Renderer) CloseHistory() {
 // native scrollback and the bottom block is redrawn in place at the end.
 // Cursor coordinates are relative to bottom, not the full frame.
 func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int) {
+	if r.mouseSelection != nil {
+		return
+	}
 	r.CloseHistory()
 	if r.cols == 0 || r.rows == 0 {
 		return

@@ -835,6 +835,58 @@ func (e *Editor) Render(width int) (lines []string, visualRow, visualCol int) {
 	return lines, visualRow, visualCol
 }
 
+// MoveCursorToVisual moves to a zero-based cell in the most recently rendered
+// editor layout. Clicks in the prompt or beyond text clamp to the row's ends.
+// Rows outside the editor are ignored.
+func (e *Editor) MoveCursorToVisual(row, col int) bool {
+	if row < 0 || col < 0 || e.lastRenderWidth <= 0 {
+		return false
+	}
+	prompt := stripANSI(e.Prompt)
+	indent := strings.Repeat(" ", visibleWidth(prompt))
+	for logical, line := range e.Lines {
+		bodyLine := line
+		if e.Mask {
+			bodyLine = strings.Repeat("*", runeLen(line))
+		}
+		prefix := indent
+		if logical == 0 {
+			prefix = prompt
+		}
+		wrapped := wrapLine(prefix+bodyLine, e.lastRenderWidth, indent)
+		if row >= len(wrapped) {
+			row -= len(wrapped)
+			continue
+		}
+		seen := 0
+		runes := []rune(bodyLine)
+		for i, text := range wrapped {
+			lead := indent
+			if i == 0 {
+				lead = prefix
+			}
+			body := []rune(strings.TrimPrefix(text, lead))
+			if i == row {
+				want := col - visibleWidth(lead)
+				offset := 0
+				for n := 1; n <= len(body); n++ {
+					if runewidth.StringWidth(string(body[:n])) > want {
+						break
+					}
+					offset = n
+				}
+				e.CursorR, e.CursorC = logical, seen+offset
+				return true
+			}
+			seen += len(body)
+			for seen < len(runes) && runes[seen] == ' ' {
+				seen++
+			}
+		}
+	}
+	return false
+}
+
 // locateCursor finds the wrapped row + visible column corresponding to
 // `targetRunes` rune positions into the logical `line`, given that the
 // wrapped output `wrapped` started with `prefix` on its first row and
@@ -864,8 +916,12 @@ func locateCursor(wrapped []string, prefix, line string, targetRunes int, cont s
 			leadW = contW
 		}
 		bodyRunes := []rune(body)
-		// Could this wrapped row contain the cursor?
-		if targetRunes <= seenRunes+len(bodyRunes) {
+		// At a hard-wrap boundary the next rune starts on the next row.
+		// Keep word-wrap whitespace at the end of this row instead.
+		end := seenRunes + len(bodyRunes)
+		hardBoundary := targetRunes == end && row+1 < len(wrapped) &&
+			end < len(lineRunes) && lineRunes[end] != ' ' && lineRunes[end] != '\t'
+		if targetRunes <= end && !hardBoundary {
 			// Column inside body.
 			inner := targetRunes - seenRunes
 			if inner < 0 {

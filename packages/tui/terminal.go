@@ -117,12 +117,10 @@ const (
 	// modified Enter as CSI 27;<mod>;<code>~.
 	SeqEnhancedKeyboardOn  = "\x1b[>1u\x1b[>4;2m"
 	SeqEnhancedKeyboardOff = "\x1b[<u\x1b[>4m"
-	// Basic mouse tracking + SGR extended coordinates. Used only
-	// when explicitly enabled by the interactive mode (currently VS
-	// Code terminal) so terminals with good native scrolling, like
-	// Ghostty, are left alone.
-	SeqMouseOn         = "\x1b[?1000h\x1b[?1006h"
-	SeqMouseOff        = "\x1b[?1000l\x1b[?1006l"
+	// Button-motion tracking with SGR coordinates supports clicks and drags.
+	// Enabled only by the interactive click-to-position setting.
+	SeqMouseOn         = "\x1b[?1000h\x1b[?1002h\x1b[?1006h"
+	SeqMouseOff        = "\x1b[?1000l\x1b[?1002l\x1b[?1006l"
 	SeqAltScreenOn     = "\x1b[?1049h"
 	SeqAltScreenOff    = "\x1b[?1049l"
 	SeqSynchronizedOn  = "\x1b[?2026h"

@@ -131,6 +131,9 @@ type Config struct {
 	// "plain" (default), "lines", and "block".
 	TUIInputStyle string `json:"tui_input_style,omitempty"`
 
+	// TUIClickToPosition enables mouse reporting for main-input cursor placement.
+	TUIClickToPosition bool `json:"tui_click_to_position,omitempty"`
+
 	// TUIStatusPosition controls whether model, usage, and cwd information
 	// render above or below the main input. Supported values: "above_input"
 	// (default) and "below_input".

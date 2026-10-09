@@ -168,6 +168,15 @@ func (configSettingsStore) SetShowInstructionsAtStartup(enabled bool) error {
 	return SaveConfig(cfg)
 }
 
+func (configSettingsStore) SetTUIClickToPosition(enabled bool) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.TUIClickToPosition = enabled
+	return SaveConfig(cfg)
+}
+
 func (configSettingsStore) SetTUIInputStyle(style string) error {
 	cfg, err := LoadConfig()
 	if err != nil {

@@ -1434,6 +1434,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		ChatTimestampDate:             initialCfg.ChatTimestampDate,
 		ChatTimestampIntervalMinutes:  initialCfg.ChatTimestampIntervalMinutes,
 		TUIInputStyle:                 initialCfg.TUIInputStyle,
+		TUIClickToPosition:            initialCfg.TUIClickToPosition,
 		TUIStatusPosition:             initialCfg.TUIStatusPosition,
 		TUIWorkingPosition:            initialCfg.TUIWorkingPosition,
 		ThemeName:                     initialCfg.Theme,

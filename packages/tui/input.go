@@ -8,13 +8,15 @@ import (
 
 // Key is a parsed keypress.
 type Key struct {
-	Kind  KeyKind
-	Rune  rune   // for KeyRune
-	Paste string // for KeyPaste
-	Ctrl  bool
-	Alt   bool
-	Shift bool
-	Super bool
+	Kind   KeyKind
+	Rune   rune   // for KeyRune
+	Paste  string // for KeyPaste
+	Ctrl   bool
+	Alt    bool
+	Shift  bool
+	Super  bool
+	MouseX int // one-based terminal column
+	MouseY int // one-based terminal row
 }
 
 type KeyKind int
@@ -49,6 +51,9 @@ const (
 	KeyMouseWheelUp
 	KeyMouseWheelDown
 	KeyUnknown
+	KeyMouseLeft
+	KeyMouseDrag
+	KeyMouseRelease
 )
 
 // Reader parses a byte stream into Key events. It understands basic
@@ -248,20 +253,41 @@ func (r *Reader) readCSI() (Key, error) {
 }
 
 func (r *Reader) dispatchCSI(params string, final byte) Key {
-	// SGR mouse mode: CSI < button ; x ; y M/m. Wheel events use
-	// button codes 64 (up) and 65 (down). We ignore coordinates for
-	// now; the chat view only needs scroll direction.
+	// SGR mouse reports carry one-based coordinates. Left-button presses,
+	// drags, and releases support click placement and text selection.
 	if strings.HasPrefix(params, "<") && (final == 'M' || final == 'm') {
 		parts := strings.Split(strings.TrimPrefix(params, "<"), ";")
-		if len(parts) >= 1 {
-			switch parts[0] {
-			case "64":
-				return Key{Kind: KeyMouseWheelUp}
-			case "65":
-				return Key{Kind: KeyMouseWheelDown}
+		if len(parts) != 3 {
+			return Key{Kind: KeyUnknown}
+		}
+		button, errB := strconv.Atoi(parts[0])
+		x, errX := strconv.Atoi(parts[1])
+		y, errY := strconv.Atoi(parts[2])
+		if errB != nil || errX != nil || errY != nil || x < 1 || y < 1 {
+			return Key{Kind: KeyUnknown}
+		}
+		k := Key{Kind: KeyUnknown, MouseX: x, MouseY: y,
+			Shift: button&4 != 0, Alt: button&8 != 0, Ctrl: button&16 != 0}
+		switch button &^ 28 {
+		case 0:
+			k.Kind = KeyMouseLeft
+			if final == 'm' {
+				k.Kind = KeyMouseRelease
+			}
+		case 32:
+			if final == 'M' {
+				k.Kind = KeyMouseDrag
+			}
+		case 64:
+			if final == 'M' {
+				k.Kind = KeyMouseWheelUp
+			}
+		case 65:
+			if final == 'M' {
+				k.Kind = KeyMouseWheelDown
 			}
 		}
-		return Key{Kind: KeyUnknown}
+		return k
 	}
 
 	shift, alt, super := parseCSIModifiers(params)
