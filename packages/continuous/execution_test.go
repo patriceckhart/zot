@@ -226,8 +226,15 @@ func TestExecutionAnswersQueuedInput(t *testing.T) {
 	if cur, _ := h.r.Submission(ctx, s.ID); cur.State != "running" || h.client.requestCount() != 0 {
 		t.Fatalf("admission: %+v requests=%d", cur, h.client.requestCount())
 	}
+	var eventsMu sync.Mutex
 	var events []string
-	h.svc.opts.Sink = func(ev core.AgentEvent) { events = append(events, ev.Type()) }
+	// Each task has its own event gate, so deliveries from different tool
+	// tasks can overlap even though each gate preserves its own event order.
+	h.svc.opts.Sink = func(ev core.AgentEvent) {
+		eventsMu.Lock()
+		defer eventsMu.Unlock()
+		events = append(events, ev.Type())
+	}
 	run, ok, err := h.svc.Step(ctx, c.ID)
 	if err != nil || !ok || run.Phase != "done" || run.Outcome != "completed" || run.Turn != 2 {
 		t.Fatalf("step: %+v %v %v", run, ok, err)
@@ -249,8 +256,11 @@ func TestExecutionAnswersQueuedInput(t *testing.T) {
 	if !strings.Contains(second.System, "Answer briefly.") || second.SessionID != c.ProviderSessionID() || c.ProviderSession == "" || c.ProviderSession == c.ID {
 		t.Fatalf("configuration not applied: %q %q", second.System, second.SessionID)
 	}
-	if !strings.Contains(strings.Join(events, ","), "tool_progress") || !strings.Contains(strings.Join(events, ","), "tool_result") {
-		t.Fatalf("events: %v", events)
+	eventsMu.Lock()
+	observedEvents := append([]string(nil), events...)
+	eventsMu.Unlock()
+	if !strings.Contains(strings.Join(observedEvents, ","), "tool_progress") || !strings.Contains(strings.Join(observedEvents, ","), "tool_result") {
+		t.Fatalf("events: %v", observedEvents)
 	}
 	// Retrying the request ID returns the live, settled submission.
 	again, err := h.r.Submit(ctx, c.ID, "actor", "req-1", "hello")
