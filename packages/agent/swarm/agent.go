@@ -6,14 +6,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/patriceckhart/zot/packages/provider"
 )
 
 // Agent is one supervised task. Public fields are immutable after
 // Spawn; mutable state (status, activity, transcript) lives behind
 // the embedded mutex.
 type Agent struct {
-	ID      string
-	Task    string
+	ID   string
+	Task string
+	// Images is the initial task's copied payload. Resume uses the persisted
+	// transcript rather than resending this input.
+	Images  []provider.ImageBlock
 	Dir     string // always the host's RepoRoot; agents share its cwd.
 	Started time.Time
 

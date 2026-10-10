@@ -2,12 +2,14 @@ package swarm
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -18,9 +20,12 @@ import (
 // control lines) to a running swarm agent.
 //
 // Protocol on the wire: one UTF-8 message per line, newline-
-// terminated. Three message kinds:
+// terminated. Multiline user input uses an additive user-json frame with a
+// JSON string payload. Listener decodes it before dispatch. Message kinds:
 //
-//	user <text>...  — append <text> as the next user turn
+//	user <text>...  - append <text> as the next user turn
+//	user-json <JSON string>  - multiline user input, decoded as one user message
+//	user-prompt <JSON Prompt> - user input with images, validated by the runner
 //	cancel          — cancel the agent's in-flight turn
 //	shutdown        — graceful exit; child will write a final
 //	                  EvTurnEnd-equivalent JSON event and quit
@@ -66,6 +71,16 @@ func (b *Inbox) Path() string { return b.path }
 // ErrNotReady so the TUI can retry or report "agent not listening
 // yet" rather than crashing.
 func (b *Inbox) SendInput(msg string) error {
+	if strings.ContainsAny(msg, "\r\n") {
+		if !strings.HasPrefix(msg, "user ") {
+			return fmt.Errorf("swarm: control messages must be a single line")
+		}
+		payload, err := json.Marshal(strings.TrimPrefix(msg, "user "))
+		if err != nil {
+			return fmt.Errorf("swarm: encode user input: %w", err)
+		}
+		msg = "user-json " + string(payload)
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.conn == nil {
@@ -251,8 +266,18 @@ func (l *Listener) readLoop(c net.Conn) {
 	for {
 		line, err := br.ReadString('\n')
 		if line != "" {
+			msg := trimRightNL(line)
+			if strings.HasPrefix(msg, "user-json ") {
+				var text *string
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(msg, "user-json ")), &text); err != nil || text == nil {
+					// Report invalid framing without exposing its payload.
+					msg = "invalid supervisor message"
+				} else {
+					msg = "user " + *text
+				}
+			}
 			select {
-			case l.out <- trimRightNL(line):
+			case l.out <- msg:
 			case <-l.done:
 				_ = c.Close()
 				return

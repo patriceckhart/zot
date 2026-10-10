@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"sync"
@@ -37,18 +36,9 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 	if args.SwarmAgent == "" {
 		return fmt.Errorf("--swarm-agent requires a socket path")
 	}
-	if os.Getenv("ZOT_SWARM_CREDENTIAL_STDIN") == "1" {
-		var inherited swarm.Credential
-		dec := json.NewDecoder(io.LimitReader(os.Stdin, 1<<20))
-		if err := dec.Decode(&inherited); err != nil {
-			return fmt.Errorf("read inherited swarm credential: %w", err)
-		}
-		if inherited.Value == "" || inherited.Method == "" {
-			return fmt.Errorf("read inherited swarm credential: missing value or method")
-		}
-		args.inheritedCredential = inherited.Value
-		args.inheritedAuthMethod = inherited.Method
-		args.inheritedAccountID = inherited.AccountID
+	initial, err := readSwarmStartupInput(os.Stdin, os.Getenv("ZOT_SWARM_CREDENTIAL_STDIN") == "1", os.Getenv("ZOT_SWARM_PROMPT_STDIN") == "1", &args)
+	if err != nil {
+		return err
 	}
 
 	r, err := Resolve(args, true)
@@ -107,7 +97,7 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 		shutdown = make(chan struct{})
 	)
 
-	runOne := func(prompt string) {
+	runOne := func(prompt swarm.Prompt) {
 		mu.Lock()
 		if busyTurn {
 			// Drop concurrent turns rather than queuing. The
@@ -132,7 +122,7 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 		}
 
 		start := len(ag.Messages())
-		err := ag.Prompt(c, prompt, nil, sink)
+		err := ag.Prompt(c, prompt.Text, prompt.Images, sink)
 		WriteNewTranscript(ag, sess, start)
 
 		em.emit("turn_end", map[string]any{
@@ -149,8 +139,8 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 	// Initial task: run before processing the inbox so the agent
 	// "starts working" the moment it boots, matching what users
 	// expect from `/swarm new <task>`.
-	if args.Prompt != "" {
-		go runOne(args.Prompt)
+	if initial.Text != "" || len(initial.Images) > 0 {
+		go runOne(initial)
 	}
 
 	// Inbox loop: one supervisor message at a time. We don't spawn
@@ -179,8 +169,12 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 					cancelFn()
 				}
 				mu.Unlock()
-			case strings.HasPrefix(msg, "user "):
-				prompt := strings.TrimPrefix(msg, "user ")
+			case strings.HasPrefix(msg, "user ") || strings.HasPrefix(msg, "user-prompt "):
+				prompt, err := swarm.DecodePrompt(msg)
+				if err != nil {
+					em.emit("error", map[string]any{"message": err.Error()})
+					continue
+				}
 				go runOne(prompt)
 			default:
 				em.emit("error", map[string]any{

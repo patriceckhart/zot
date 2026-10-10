@@ -169,23 +169,47 @@ func (r *HostRunner) Run(ctx context.Context, sink Sink) error {
 	// Follow-up request IDs are unique per supervisor incarnation: a resumed
 	// agent must not collide with the IDs an earlier incarnation used.
 	incarnation := rand.Text()
-	submit := func(text string) error {
+	requireImages := func(images []provider.ImageBlock) error {
+		if len(images) == 0 {
+			return nil
+		}
+		status, err := client.Call(ctx, "runtime.status", nil)
+		if err != nil {
+			return err
+		}
+		return continuous.RequireAttachmentSupport(status)
+	}
+	submit := func(prompt Prompt) error {
+		if err := requireImages(prompt.Images); err != nil {
+			return err
+		}
 		r.mu.Lock()
 		r.sendSeq++
 		requestID := fmt.Sprintf("swarm/%s/%s/%d", r.agent.ID, incarnation, r.sendSeq)
 		r.mu.Unlock()
 		var sub continuous.Submission
-		if err := client.CallInto(ctx, "conversation.submit", map[string]any{"id": child.ID, "content": text, "request_id": requestID}, &sub); err != nil {
+		params := map[string]any{"id": child.ID, "content": prompt.Text, "request_id": requestID}
+		if len(prompt.Images) > 0 {
+			params["images"] = prompt.Images
+		}
+		if err := client.CallInto(ctx, "conversation.submit", params, &sub); err != nil {
 			return err
 		}
 		sink.Activity("queued")
 		return nil
 	}
-	if !r.agent.Resuming && r.agent.Task != "" {
+	if !r.agent.Resuming && (r.agent.Task != "" || len(r.agent.Images) > 0) {
+		if err := requireImages(r.agent.Images); err != nil {
+			return fmt.Errorf("swarm: task images: %w", err)
+		}
 		// The first submission reuses a stable request ID so a re-run of
 		// the same agent ID does not queue the task twice.
 		var sub continuous.Submission
-		if err := client.CallInto(ctx, "conversation.submit", map[string]any{"id": child.ID, "content": r.agent.Task, "request_id": "swarm/" + r.agent.ID + "/task"}, &sub); err != nil {
+		params := map[string]any{"id": child.ID, "content": r.agent.Task, "request_id": "swarm/" + r.agent.ID + "/task"}
+		if len(r.agent.Images) > 0 {
+			params["images"] = r.agent.Images
+		}
+		if err := client.CallInto(ctx, "conversation.submit", params, &sub); err != nil {
 			return fmt.Errorf("swarm: submit task: %w", err)
 		}
 		sink.Activity("queued")
@@ -222,8 +246,12 @@ func (r *HostRunner) Run(ctx context.Context, sink Sink) error {
 						sink.Transcript("error: cancel: " + err.Error())
 					}
 				}
-			case strings.HasPrefix(msg, "user "):
-				if err := submit(strings.TrimPrefix(msg, "user ")); err != nil {
+			case strings.HasPrefix(msg, "user ") || strings.HasPrefix(msg, "user-prompt "):
+				prompt, err := DecodePrompt(msg)
+				if err == nil {
+					err = submit(prompt)
+				}
+				if err != nil {
 					sink.Transcript("error: submit: " + err.Error())
 					emit("error", map[string]any{"message": "submit: " + err.Error()})
 				}
@@ -320,7 +348,11 @@ func (r *HostRunner) mirrorEntries(entries []continuous.Entry, sink Sink, seen m
 func emitEntry(emit func(string, map[string]any), e continuous.Entry) {
 	switch e.Type {
 	case "user", "steer":
-		emit("user_message", map[string]any{"content": []map[string]any{{"type": "text", "text": e.Content}}, "time": e.Time})
+		content := []map[string]any{{"type": "text", "text": e.Content}}
+		for _, image := range e.Images {
+			content = append(content, map[string]any{"type": "image", "mime_type": image.MimeType, "bytes": len(image.Data)})
+		}
+		emit("user_message", map[string]any{"content": content, "time": e.Time})
 	case "assistant":
 		msg, err := core.DecodeMessage(e.Message)
 		if err != nil {

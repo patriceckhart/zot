@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/patriceckhart/zot/packages/agent/swarm"
+	"github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/tui"
 )
 
@@ -70,6 +71,14 @@ func (i *Interactive) runSwarm(ctx context.Context, args []string) {
 	// wants a different model for the next swarm agent, they pick it
 	// via /model first (globally), or, while inside the spawn
 	// editor, by typing /model on its own line to pop the picker.
+	i.swarmDialog.spawnWithImages = func(task, model, provider string, images []provider.ImageBlock) error {
+		_, err := i.cfg.Swarm.SpawnReq(ctx, swarm.SpawnRequest{Task: task, Model: model, Provider: provider, Images: images})
+		return err
+	}
+	i.swarmDialog.sendWithImages = i.cfg.Swarm.SendUserTurnWithImages
+	i.swarmDialog.fileContext = ctx
+	i.swarmDialog.sandbox = i.cfg.Sandbox
+	i.swarmDialog.transferFiles = i.hasPromptDriver()
 	i.swarmDialog.SetCompactMode(i.compactModeEnabled())
 	i.swarmDialog.SetLineInput(tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines)
 	i.swarmDialog.SetCurrentModel(i.cfg.Model, i.cfg.Provider)

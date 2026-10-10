@@ -34,6 +34,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/patriceckhart/zot/packages/provider"
 )
 
 // Status is the high-level lifecycle state of an Agent.
@@ -189,6 +191,7 @@ func (f *Swarm) agentStateDir(id string) string {
 // child argv as --model / --provider so the agent runs against the
 // chosen model regardless of the parent's current selection.
 type SpawnRequest struct {
+	Images   []provider.ImageBlock // optional initial image attachments
 	Task     string
 	Model    string // optional override; child resolves default if empty
 	Provider string // optional override; usually paired with Model
@@ -214,8 +217,12 @@ func (f *Swarm) Spawn(ctx context.Context, task string) (*Agent, error) {
 // no isolation. The user explicitly opted out of the worktree flow.
 func (f *Swarm) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, error) {
 	task := strings.TrimSpace(req.Task)
-	if task == "" {
+	if task == "" && len(req.Images) == 0 {
 		return nil, errors.New("swarm: empty task")
+	}
+	prompt, err := PreparePrompt(task, req.Images)
+	if err != nil {
+		return nil, fmt.Errorf("swarm: task attachments: %w", err)
 	}
 	id := newAgentID(task, f.cfg.Now())
 	dir := f.cfg.RepoRoot
@@ -244,6 +251,7 @@ func (f *Swarm) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, error) 
 	a := &Agent{
 		ID:           id,
 		Task:         task,
+		Images:       prompt.Images,
 		Dir:          dir,
 		Started:      f.cfg.Now(),
 		Model:        strings.TrimSpace(req.Model),
@@ -303,6 +311,19 @@ func (f *Swarm) SendInput(id, msg string) error {
 // expected to have already trimmed and expanded the text.
 func (f *Swarm) SendUserTurn(id, text string) error {
 	return f.SendInput(id, "user "+text)
+}
+
+// SendUserTurnWithImages transfers image bytes rather than filesystem paths.
+// Text-only callers retain the legacy transport and its compatibility.
+func (f *Swarm) SendUserTurnWithImages(id, text string, images []provider.ImageBlock) error {
+	if len(images) == 0 {
+		return f.SendUserTurn(id, text)
+	}
+	msg, err := EncodePrompt(text, images)
+	if err != nil {
+		return err
+	}
+	return f.SendInput(id, msg)
 }
 
 func (f *Swarm) run(a *Agent) {

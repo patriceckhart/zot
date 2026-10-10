@@ -85,7 +85,7 @@ type swarmAgentArgsOpts struct {
 // messages — which is exactly the bug this helper fixes.
 func defaultChildArgs(exe string, a *Agent, sessionPath, inboxPath string) []string {
 	task := a.Task
-	if a.Resuming {
+	if a.Resuming || len(a.Images) > 0 {
 		task = ""
 	}
 	return swarmAgentArgs(swarmAgentArgsOpts{
@@ -172,23 +172,37 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = r.agent.Dir
-	cmd.Env = append(os.Environ(),
-		"ZOT_SWARM_AGENT_ID="+r.agent.ID,
-		"ZOT_SWARM_EVENT_LOG="+logPath,
-	)
+	for _, env := range os.Environ() {
+		if !strings.HasPrefix(env, "ZOT_SWARM_CREDENTIAL_STDIN=") && !strings.HasPrefix(env, "ZOT_SWARM_PROMPT_STDIN=") {
+			cmd.Env = append(cmd.Env, env)
+		}
+	}
+	cmd.Env = append(cmd.Env, "ZOT_SWARM_AGENT_ID="+r.agent.ID, "ZOT_SWARM_EVENT_LOG="+logPath)
+	var startup StartupInput
+	if !r.agent.Resuming && len(r.agent.Images) > 0 {
+		prompt, err := PreparePrompt(r.agent.Task, r.agent.Images)
+		if err != nil {
+			return fmt.Errorf("swarm task attachments: %w", err)
+		}
+		startup.Prompt = &prompt
+		cmd.Env = append(cmd.Env, "ZOT_SWARM_PROMPT_STDIN=1")
+	}
 	if r.resolveCredential != nil {
 		credential, resolveErr := r.resolveCredential(ctx, r.agent.Provider)
 		if resolveErr != nil {
 			return fmt.Errorf("resolve swarm credential for %s: %w", r.agent.Provider, resolveErr)
 		}
 		if credential.Value != "" {
-			encoded, encodeErr := json.Marshal(credential)
-			if encodeErr != nil {
-				return fmt.Errorf("encode swarm credential: %w", encodeErr)
-			}
-			cmd.Stdin = bytes.NewReader(encoded)
+			startup.Credential = credential
 			cmd.Env = append(cmd.Env, "ZOT_SWARM_CREDENTIAL_STDIN=1")
 		}
+	}
+	if startup.Prompt != nil || startup.Credential.Value != "" {
+		encoded, err := json.Marshal(startup)
+		if err != nil || len(encoded) > MaxPromptWireBytes {
+			return fmt.Errorf("swarm: startup input cannot be encoded within %d bytes", MaxPromptWireBytes)
+		}
+		cmd.Stdin = bytes.NewReader(encoded)
 	}
 
 	stdout, err := cmd.StdoutPipe()

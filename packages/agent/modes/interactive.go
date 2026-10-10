@@ -1626,10 +1626,11 @@ func (i *Interactive) redraw() {
 	// in flight. Shown directly above the status bar so they're close
 	// to the editor but don't push the chat around.
 	var queue []string
-	queued := queuedPromptLabels(i.queued)
+	var queued []string
 	if i.agent != nil {
-		queued = append(queued, i.agent.PendingQueuedMessages()...)
+		queued = i.agent.PendingQueuedMessages()
 	}
+	queued = append(queued, queuedPromptLabels(i.queued)...)
 	if len(queued) > 0 {
 		queue = append(queue, "")
 		for _, q := range queued {
@@ -2163,18 +2164,6 @@ func (i *Interactive) ctrlCExitArmed() bool {
 	t := i.lastCtrlC
 	i.mu.Unlock()
 	return !t.IsZero() && time.Since(t) <= ctrlCExitWindow
-}
-
-// clearFileSuggestQuery strips the filter the user typed after the
-// last "@", leaving the bare "@" so the picker stays open. Called when
-// navigating between directory levels (Right/Left): the filter applied
-// to the level the user was on, not the one being entered, so carrying
-// it forward would wrongly hide the new directory's contents.
-func (i *Interactive) clearFileSuggestQuery() {
-	val := i.ed.Value()
-	if idx := strings.LastIndex(val, "@"); idx >= 0 {
-		i.ed.SetValue(val[:idx+1])
-	}
 }
 
 // setToolExpansion updates long tool result expansion and replays the
@@ -2761,20 +2750,18 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		// the keypress falls through to the normal scroll behavior.
 		if k.Alt {
 			i.mu.Lock()
+			if n := len(i.queued); n > 0 {
+				q := i.queued[n-1]
+				i.queued = i.queued[:n-1]
+				i.mu.Unlock()
+				i.restoreQueuedPrompt(q)
+				i.inputHistoryIndex = -1
+				i.invalidate()
+				return false
+			}
 			var text string
 			if i.agent != nil {
 				text, _ = i.agent.PopQueuedMessage()
-			}
-			if text == "" {
-				if n := len(i.queued); n > 0 {
-					q := i.queued[n-1]
-					i.queued = i.queued[:n-1]
-					i.mu.Unlock()
-					i.restoreQueuedPrompt(q)
-					i.inputHistoryIndex = -1
-					i.invalidate()
-					return false
-				}
 			}
 			i.mu.Unlock()
 			if text != "" {
@@ -2865,56 +2852,14 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 	}
 
-	// File suggestions: intercept up/down/tab/enter when the @-popup is visible.
-	if i.fileSuggest.Active(i.ed.Value()) {
-		switch k.Kind {
-		case tui.KeyUp:
-			i.fileSuggest.Up()
-			return false
-		case tui.KeyDown:
-			i.fileSuggest.Down()
-			return false
-		case tui.KeyRight:
-			// Open selected directory. The filter the user typed picked
-			// that directory at the current level; once we descend it no
-			// longer applies to the directory's contents, so clear it.
-			// Otherwise typing "@eda" then right would re-filter inside
-			// eda/ by "eda" and show nothing.
-			if i.fileSuggest.Right() {
-				i.clearFileSuggestQuery()
-			}
-			return false
-		case tui.KeyLeft:
-			// Go back to parent directory. Clear the filter for the same
-			// reason as Right: it was scoped to the level we just left.
-			if i.fileSuggest.Left() {
-				i.clearFileSuggestQuery()
-			}
-			return false
-		case tui.KeyEnter:
-			if entry, ok := i.fileSuggest.SelectedEntry(i.ed.Value()); ok {
-				var chip string
-				if entry.isDir {
-					chip = "[dir:" + entry.rel + "/]"
-				} else {
-					chip = "[file:" + entry.rel + "]"
-				}
-				val := i.ed.Value()
-				if idx := strings.LastIndex(val, "@"); idx >= 0 {
-					val = val[:idx]
-				}
-				i.ed.SetValue(val + chip + " ")
-				i.fileSuggest.Reset()
-			}
-			return false
-		case tui.KeyEsc:
-			val := i.ed.Value()
-			if idx := strings.LastIndex(val, "@"); idx >= 0 {
-				i.ed.SetValue(val[:idx])
-			}
-			i.fileSuggest.Reset()
-			return false
+	if handled, errMsg := handleFilePickerKey(i.ed, i.fileSuggest, k); handled {
+		if errMsg != "" {
+			i.mu.Lock()
+			i.statusErr = errMsg
+			i.statusOK = ""
+			i.mu.Unlock()
 		}
+		return false
 	}
 
 	// Repeated-Tab path choices use the same transient popup interaction as
@@ -3041,36 +2986,12 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if i.telegramBridge != nil && i.telegramBridge.Active() {
 			go i.telegramBridge.OnUserTyped(text)
 		}
-		// If a turn is already in flight, queue this prompt inside the
-		// agent loop so it is delivered at the next safe model-call
-		// boundary instead of waiting for the whole run to finish.
+		// Queue text at the next safe boundary, images after the active turn.
 		i.mu.Lock()
 		busy := i.busy
-		compacting := i.compacting
-		ag := i.agent
 		i.mu.Unlock()
 		if busy {
-			if i.hasPromptDriver() {
-				i.mu.Lock()
-				i.queued = append(i.queued, newQueuedPrompt(text, images))
-				i.mu.Unlock()
-				i.invalidate()
-				return false
-			}
-			if len(images) > 0 {
-				i.mu.Lock()
-				i.statusErr = "can't queue clipboard images while a turn is running; wait for the current turn to finish"
-				i.mu.Unlock()
-				i.invalidate()
-				return false
-			}
-			if ag != nil && !compacting {
-				ag.QueueMessage(text)
-			} else {
-				i.mu.Lock()
-				i.queued = append(i.queued, newQueuedPrompt(text, nil))
-				i.mu.Unlock()
-			}
+			i.queueFollowUp(text, images)
 			i.invalidate()
 			return false
 		}
@@ -3471,8 +3392,8 @@ func (i *Interactive) SubmitSlash(text string) {
 // appends it to the pending queue if a turn is already in flight.
 // Used by the telegram bridge (and by the editor submit path) so
 // both input sources share the same "queue behind an active turn"
-// semantics. Attached prompts retain image bytes in the follow-up queue.
-// Embedded runs keep their existing text-only queue behavior.
+// semantics. Image prompts retain their bytes in the follow-up queue,
+// including local runs.
 func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 	if i.rejectAttachedImagePrompt(images) {
 		return
@@ -3489,25 +3410,8 @@ func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 		return
 	}
 	if i.busy {
-		if i.hasPromptDriver() {
-			i.queued = append(i.queued, newQueuedPrompt(text, images))
-			i.mu.Unlock()
-			i.invalidate()
-			return
-		}
-		// Queue text only for embedded runs. Compaction
-		// uses the host queue because it has no active agent loop to drain
-		// Agent.QueueMessage entries.
-		ag := i.agent
-		compacting := i.compacting
 		i.mu.Unlock()
-		if ag != nil && !compacting {
-			ag.QueueMessage(text)
-		} else {
-			i.mu.Lock()
-			i.queued = append(i.queued, newQueuedPrompt(text, nil))
-			i.mu.Unlock()
-		}
+		i.queueFollowUp(text, images)
 		i.invalidate()
 		return
 	}
@@ -5038,17 +4942,9 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		studyPrompt := buildStudyPrompt(strings.TrimSpace(strings.TrimPrefix(cmd, parts[0])), i.cfg.CWD)
 		i.mu.Lock()
 		busy := i.busy
-		compacting := i.compacting
-		ag := i.agent
 		i.mu.Unlock()
 		if busy {
-			if ag != nil && !compacting && !i.hasPromptDriver() {
-				ag.QueueMessage(studyPrompt)
-			} else {
-				i.mu.Lock()
-				i.queued = append(i.queued, newQueuedPrompt(studyPrompt, nil))
-				i.mu.Unlock()
-			}
+			i.queueFollowUp(studyPrompt, nil)
 			i.invalidate()
 			break
 		}
@@ -5560,6 +5456,10 @@ func (i *Interactive) openBtwDialog(args []string) {
 		return
 	}
 	seed := strings.TrimSpace(strings.Join(args, " "))
+	i.btwDialog.mu.Lock()
+	i.btwDialog.sandbox = i.cfg.Sandbox
+	i.btwDialog.fileContext = i.runCtx
+	i.btwDialog.mu.Unlock()
 	i.btwDialog.Open(i.cfg.Theme, i.agent, i.agent.System, i.cfg.Model, i.cfg.CWD, seed, i.compactModeEnabled(), i.cfg.FlatTools, tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines, i.invalidate)
 	i.invalidate()
 }
@@ -5576,18 +5476,10 @@ func (i *Interactive) submitOrQueuePrompt(ctx context.Context, prompt string) {
 		return
 	}
 	busy := i.busy
-	compacting := i.compacting
-	ag := i.agent
 	i.mu.Unlock()
 
 	if busy {
-		if !compacting && !i.hasPromptDriver() {
-			ag.QueueMessage(prompt)
-		} else {
-			i.mu.Lock()
-			i.queued = append(i.queued, newQueuedPrompt(prompt, nil))
-			i.mu.Unlock()
-		}
+		i.queueFollowUp(prompt, nil)
 		i.invalidate()
 		return
 	}
@@ -6170,7 +6062,7 @@ func shellEscapeCommand(text string) (string, bool) {
 // path rather than running an empty shell.
 func ShellEscapeCommand(text string) (string, bool) {
 	trimmed := strings.TrimLeft(text, " \t")
-	if !strings.HasPrefix(trimmed, "!") {
+	if !strings.HasPrefix(trimmed, "!") || strings.HasPrefix(trimmed, "!@") {
 		return "", false
 	}
 	cmd := strings.TrimSpace(strings.TrimPrefix(trimmed, "!"))

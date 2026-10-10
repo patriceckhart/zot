@@ -91,10 +91,13 @@ provider credentials or local model execution.
 ### File and image attachments
 
 The attached TUI sends clipboard images and explicitly selected local files
-with the prompt. Select files through the `@` picker or drag them into the
-editor as file chips. UTF-8 files are included as labelled `<file>` context,
-PNG, JPEG, GIF, and WebP files are sent as inline image blocks. The client
-reads the files, the host does not need access to the client's filesystem.
+with the prompt. Select files through the `@` or `!@` picker in the main chat,
+or drag them into the editor as file chips. Both picker forms include content
+when attached, unlike local chat where ordinary `@` selections remain paths.
+Files are captured on prompt submission, before queueing. UTF-8 files are
+included as labelled `<file>` context, PNG, JPEG, GIF, and WebP files are sent
+as inline image blocks. The client reads the files, the host does not need
+access to the client's filesystem.
 Directory chips and ordinary paths in prose remain references, they do not
 upload directory trees or implicitly read local files.
 
@@ -104,6 +107,13 @@ setting, and file-read or validation failures leave the editor input intact.
 Inputs queued behind an attached turn retain their image bytes. Alt+Up
 restores queued text and images for editing. Closing the view still detaches
 without cancelling admitted work.
+
+Attached Swarm task and follow-up editors also read explicitly selected text
+files and supported images on the client. Both `@` and `!@` include their
+content so remote agents never need the client's filesystem to read those
+selections. Image bytes are submitted to the host and persist in the owned
+conversation. Resume reattaches without resubmitting initial images. A
+vision-capable model is required to interpret images.
 
 The CLI accepts repeated `--file` flags, including an attachment-only prompt:
 

@@ -1,12 +1,15 @@
 package modes
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/patriceckhart/zot/packages/agent/swarm"
+	"github.com/patriceckhart/zot/packages/agent/tools"
+	"github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/tui"
 )
 
@@ -43,8 +46,12 @@ type swarmDialog struct {
 	// adapter forwards these to swarm.Swarm.SpawnReq.
 	spawn func(task, model, provider string) error
 	// send delivers a follow-up user turn to a running agent's inbox.
-	// Wired by Open(); when nil the inline 'p' shortcut is disabled.
+	// Wired by Open(), when nil the inline 'p' shortcut is disabled.
 	send func(id, text string) error
+	// Optional image-aware adapters preserve compatibility with text-only
+	// dialog embedders. Unsupported image input is refused without clearing it.
+	spawnWithImages func(task, model, provider string, images []provider.ImageBlock) error
+	sendWithImages  func(id, text string, images []provider.ImageBlock) error
 	// resume restarts a detached or terminated agent on its existing
 	// session. Wired by Open(); when nil the inline 'R' shortcut is
 	// disabled.
@@ -66,10 +73,13 @@ type swarmDialog struct {
 	// dialog captures keys into a real tui.Editor so swarm-new has the
 	// same editing, paste, drag-drop file chips, and visual style as
 	// the default input and /btw input.
-	spawning    bool
-	newTaskEd   *tui.Editor
-	fileSuggest *fileSuggester
-	cwd         string
+	spawning      bool
+	newTaskEd     *tui.Editor
+	fileSuggest   *fileSuggester
+	cwd           string
+	fileContext   context.Context
+	sandbox       *tools.Sandbox
+	transferFiles bool
 
 	// pendingModel / pendingProvider are the model + provider every
 	// freshly-spawned agent will be pinned to. They're seeded from
@@ -755,43 +765,8 @@ func (d *swarmDialog) handlePromptKey(k tui.Key) (closed bool, msg, errMsg strin
 		fs.SetCWD(d.cwd)
 	}
 
-	// File suggestions: same keys and chip shape as the default input.
-	if fs != nil && fs.Active(ed.Value()) {
-		switch k.Kind {
-		case tui.KeyUp:
-			fs.Up()
-			return false, "", ""
-		case tui.KeyDown:
-			fs.Down()
-			return false, "", ""
-		case tui.KeyRight:
-			fs.Right()
-			return false, "", ""
-		case tui.KeyLeft:
-			fs.Left()
-			return false, "", ""
-		case tui.KeyEnter:
-			if entry, ok := fs.SelectedEntry(ed.Value()); ok {
-				chip := "[file:" + entry.rel + "]"
-				if entry.isDir {
-					chip = "[dir:" + entry.rel + "/]"
-				}
-				val := ed.Value()
-				if idx := strings.LastIndex(val, "@"); idx >= 0 {
-					val = val[:idx]
-				}
-				ed.SetValue(val + chip + " ")
-				fs.Reset()
-			}
-			return false, "", ""
-		case tui.KeyEsc:
-			val := ed.Value()
-			if idx := strings.LastIndex(val, "@"); idx >= 0 {
-				ed.SetValue(val[:idx])
-			}
-			fs.Reset()
-			return false, "", ""
-		}
+	if handled, errMsg := handleFilePickerKey(ed, fs, k); handled {
+		return false, "", errMsg
 	}
 
 	// Esc cancels the prompt editor when the file picker isn't active.
@@ -810,15 +785,17 @@ func (d *swarmDialog) handlePromptKey(k tui.Key) (closed bool, msg, errMsg strin
 	}
 
 	if submitted := ed.HandleKey(k); submitted {
-		text := strings.TrimRight(ed.SubmitValue(), "\n")
-		text = expandFileChips(text, d.cwd)
+		text, images, err := d.prepareFilePrompt(ed, strings.TrimRight(ed.SubmitValue(), "\n"))
+		if err != nil {
+			return false, "", "attachment: " + err.Error()
+		}
 		text = strings.TrimSpace(text)
 		targetID := d.promptTargetID
 
 		// Empty submit: nothing to send. If we're in transcript
 		// view (always-on editor), just clear and stay; otherwise
 		// (list-view-p flow) close the modal.
-		if text == "" {
+		if text == "" && len(images) == 0 {
 			if d.viewing {
 				ed.Clear()
 				return false, "", ""
@@ -826,10 +803,7 @@ func (d *swarmDialog) handlePromptKey(k tui.Key) (closed bool, msg, errMsg strin
 			d.closePromptEditor()
 			return false, "", ""
 		}
-		if d.send == nil {
-			if !d.viewing {
-				d.closePromptEditor()
-			}
+		if len(images) == 0 && d.send == nil {
 			return false, "", "send not wired"
 		}
 		if targetID == "" {
@@ -838,10 +812,15 @@ func (d *swarmDialog) handlePromptKey(k tui.Key) (closed bool, msg, errMsg strin
 			}
 			return false, "", "send: no target agent"
 		}
-		if err := d.send(targetID, text); err != nil {
-			if !d.viewing {
-				d.closePromptEditor()
+		if len(images) > 0 {
+			if d.sendWithImages == nil {
+				return false, "", "image prompts are not supported by this Swarm adapter"
 			}
+			err = d.sendWithImages(targetID, text, images)
+		} else {
+			err = d.send(targetID, text)
+		}
+		if err != nil {
 			return false, "", friendlySendErr(targetID, err)
 		}
 
@@ -869,6 +848,14 @@ func (d *swarmDialog) closePromptEditor() {
 	d.promptTargetID = ""
 }
 
+func (d *swarmDialog) prepareFilePrompt(ed *tui.Editor, raw string) (string, []provider.ImageBlock, error) {
+	ctx := d.fileContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return prepareFilePrompt(ctx, d.cwd, raw, nil, selectedFilePaths(ed, raw, d.transferFiles), d.sandbox)
+}
+
 // handleSpawnKey owns the keystrokes while the inline new-agent editor
 // is open. It mirrors the normal input's @ file-picker path and submit
 // expansion, then asks the host to spawn.
@@ -882,43 +869,8 @@ func (d *swarmDialog) handleSpawnKey(k tui.Key) (closed bool, msg, errMsg string
 		fs.SetCWD(d.cwd)
 	}
 
-	// File suggestions: same keys and chip shape as the default input.
-	if fs != nil && fs.Active(ed.Value()) {
-		switch k.Kind {
-		case tui.KeyUp:
-			fs.Up()
-			return false, "", ""
-		case tui.KeyDown:
-			fs.Down()
-			return false, "", ""
-		case tui.KeyRight:
-			fs.Right()
-			return false, "", ""
-		case tui.KeyLeft:
-			fs.Left()
-			return false, "", ""
-		case tui.KeyEnter:
-			if entry, ok := fs.SelectedEntry(ed.Value()); ok {
-				chip := "[file:" + entry.rel + "]"
-				if entry.isDir {
-					chip = "[dir:" + entry.rel + "/]"
-				}
-				val := ed.Value()
-				if idx := strings.LastIndex(val, "@"); idx >= 0 {
-					val = val[:idx]
-				}
-				ed.SetValue(val + chip + " ")
-				fs.Reset()
-			}
-			return false, "", ""
-		case tui.KeyEsc:
-			val := ed.Value()
-			if idx := strings.LastIndex(val, "@"); idx >= 0 {
-				ed.SetValue(val[:idx])
-			}
-			fs.Reset()
-			return false, "", ""
-		}
+	if handled, errMsg := handleFilePickerKey(ed, fs, k); handled {
+		return false, "", errMsg
 	}
 
 	// Esc cancels the spawn prompt when the file picker isn't active.
@@ -953,24 +905,37 @@ func (d *swarmDialog) handleSpawnKey(k tui.Key) (closed bool, msg, errMsg string
 			return false, "", ""
 		}
 
-		task := expandFileChips(raw, d.cwd)
+		task, images, err := d.prepareFilePrompt(ed, raw)
+		if err != nil {
+			return false, "", "attachment: " + err.Error()
+		}
 		task = strings.TrimSpace(task)
 		model := d.pendingModel
 		provider := d.pendingProvider
+		if task != "" || len(images) > 0 {
+			if len(images) > 0 {
+				if d.spawnWithImages == nil {
+					return false, "", "image prompts are not supported by this Swarm adapter"
+				}
+				err = d.spawnWithImages(task, model, provider, images)
+			} else {
+				if d.spawn == nil {
+					return false, "", "spawn not wired"
+				}
+				err = d.spawn(task, model, provider)
+			}
+			if err != nil {
+				return false, "", "spawn: " + err.Error()
+			}
+		}
 		d.spawning = false
 		d.newTaskEd = nil
 		d.fileSuggest = nil
 		d.spawnDraft = ""
 		d.pendingModel = ""
 		d.pendingProvider = ""
-		if task == "" {
+		if task == "" && len(images) == 0 {
 			return false, "", ""
-		}
-		if d.spawn == nil {
-			return false, "", "spawn not wired"
-		}
-		if err := d.spawn(task, model, provider); err != nil {
-			return false, "", "spawn: " + err.Error()
 		}
 		if model != "" {
 			return false, "spawned (model " + model + ")", ""
@@ -1050,7 +1015,7 @@ func (d *swarmDialog) Render(th tui.Theme, width int) []string {
 		// Matching blank row below before the hint, mirroring the
 		// main input's editor breathing room.
 		out = append(out, "")
-		out = append(out, "  "+th.FG256(th.Muted, "enter spawn, /model pick model, @ file/dir picker, paste/drop paths become [file:] / [dir:] chips, esc cancel"))
+		out = append(out, "  "+th.FG256(th.Muted, "enter spawn, /model pick model, @ file/dir picker, !@ content, esc cancel"))
 		out = append(out, frameRule(th, width))
 		return out
 	}
@@ -1209,7 +1174,7 @@ func (d *swarmDialog) appendTranscriptEditor(out []string, th tui.Theme, width i
 		out = append(out, "  "+l)
 	}
 	out = append(out, "")
-	out = append(out, "  "+th.FG256(th.Muted, "enter send, @ file/dir picker, esc back"))
+	out = append(out, "  "+th.FG256(th.Muted, "enter send, @ file/dir picker, !@ content, esc back"))
 	return out
 }
 
@@ -1361,7 +1326,7 @@ func (d *swarmDialog) renderPromptEditor(th tui.Theme, width int, out []string) 
 	}
 	// Matching blank row below before the hint.
 	out = append(out, "")
-	out = append(out, "  "+th.FG256(th.Muted, "enter send, @ file/dir picker, esc cancel"))
+	out = append(out, "  "+th.FG256(th.Muted, "enter send, @ file/dir picker, !@ content, esc cancel"))
 	out = append(out, frameRule(th, width))
 	return out
 }

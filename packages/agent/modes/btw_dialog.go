@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/tui"
@@ -61,7 +62,11 @@ type btwDialog struct {
 	// chat editor. Set by Open() from the host's cwd so the same
 	// path-completion that works in the main editor also works
 	// here.
-	cwd string
+	cwd         string
+	fileSuggest *fileSuggester
+	fileContext context.Context
+	sandbox     *tools.Sandbox
+	inputErr    string
 }
 
 func newBtwDialog() *btwDialog {
@@ -145,6 +150,9 @@ func (d *btwDialog) Open(th tui.Theme, agent *core.Agent, system, model, cwd, se
 	d.editor = tui.NewEditor(prompt)
 	d.sideAgent = newBtwAgent(agent, system, model)
 	d.cwd = cwd
+	d.fileSuggest = newFileSuggester()
+	d.fileSuggest.SetCWD(cwd)
+	d.inputErr = ""
 	d.mu.Unlock()
 
 	if seed = strings.TrimSpace(seed); seed != "" {
@@ -159,6 +167,8 @@ func (d *btwDialog) Close() {
 	d.active = false
 	d.turns = nil
 	d.editor = nil
+	d.fileSuggest = nil
+	d.inputErr = ""
 	d.loading = false
 	cancel := d.cancel
 	d.cancel = nil
@@ -178,6 +188,18 @@ func (d *btwDialog) HandleKey(k tui.Key, invalidate func()) (closed bool) {
 	if !d.Active() {
 		return false
 	}
+	d.mu.Lock()
+	if d.editor != nil {
+		if handled, errMsg := handleFilePickerKey(d.editor, d.fileSuggest, k); handled {
+			d.inputErr = errMsg
+			d.mu.Unlock()
+			if invalidate != nil {
+				invalidate()
+			}
+			return false
+		}
+	}
+	d.mu.Unlock()
 	switch k.Kind {
 	case tui.KeyEsc:
 		// First esc: cancel an in-flight call. Subsequent esc closes.
@@ -232,11 +254,26 @@ func (d *btwDialog) submit(invalidate func()) {
 		d.mu.Unlock()
 		return
 	}
-	question := strings.TrimSpace(d.editor.Value())
-	if question == "" {
+	raw := strings.TrimSpace(d.editor.SubmitValue())
+	if raw == "" {
 		d.mu.Unlock()
 		return
 	}
+	fileCtx := d.fileContext
+	if fileCtx == nil {
+		fileCtx = context.Background()
+	}
+	question, images, err := prepareFilePrompt(fileCtx, d.cwd, raw, nil, nil, d.sandbox)
+	if err != nil {
+		d.inputErr = "attachment: " + err.Error()
+		d.mu.Unlock()
+		if invalidate != nil {
+			invalidate()
+		}
+		return
+	}
+	d.inputErr = ""
+	d.fileSuggest.Reset()
 	d.editor.Clear()
 	d.loading = true
 	if d.spin == nil {
@@ -254,7 +291,7 @@ func (d *btwDialog) submit(invalidate func()) {
 	d.mu.Unlock()
 
 	go func() {
-		err := agent.Prompt(ctx, question, nil, func(ev core.AgentEvent) {
+		err := agent.Prompt(ctx, question, images, func(ev core.AgentEvent) {
 			d.handleAgentEvent(turnIdx, ev)
 			if invalidate != nil {
 				invalidate()
@@ -422,6 +459,7 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 	}
 
 	out = append(out, "")
+	out = append(out, d.inputPrefixRows(th, width)...)
 	if d.editor != nil {
 		// Render at width-2 to match the two-cell left indent applied
 		// below. CursorPos uses the same width so the reported cursor
@@ -441,6 +479,20 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 	}
 	out = append(out, frameRuleColor(th, width, th.Accent))
 	return out
+}
+
+// inputPrefixRows is shared by rendering and cursor layout so a picker or
+// attachment error cannot shift the editor's reported cursor position.
+// Caller holds d.mu.
+func (d *btwDialog) inputPrefixRows(th tui.Theme, width int) []string {
+	var rows []string
+	if d.inputErr != "" {
+		rows = append(rows, wrapDialogTextRows(th.FG256(th.Error, d.inputErr), width)...)
+	}
+	if d.editor != nil && d.fileSuggest != nil {
+		rows = append(rows, d.fileSuggest.Render(d.editor.Value(), th, width)...)
+	}
+	return rows
 }
 
 // CursorRow / CursorCol report where the dialog wants the terminal
@@ -487,6 +539,7 @@ func (d *btwDialog) CursorPos(width int) (row, col int) {
 		editorOffset++ // spinner line
 	}
 	editorOffset++ // pre-editor blank
+	editorOffset += len(d.inputPrefixRows(d.theme, width))
 	d.editor.Prompt = d.theme.AccentBar(d.theme.Accent)
 	if d.lineInput {
 		d.editor.Prompt = ""

@@ -419,7 +419,7 @@ Each question runs an isolated agent turn against `system + main transcript + si
 /btw does PUT replace the whole resource?
 ```
 
-Inside the overlay: `enter` sends, `esc` cancels an in-flight call (or closes the overlay if idle), `ctrl+c` closes immediately. Side-chat exchanges never touch the transcript and aren't persisted to the session file.
+Inside the overlay: `enter` sends, `esc` cancels an in-flight call (or closes the overlay if idle), `ctrl+c` closes immediately. Use `@` for file references or `!@` to include text file content or supported images. Escape closes an active file picker before cancelling or closing the chat. Side-chat exchanges never touch the transcript and aren't persisted to the session file.
 
 ### `/swarm`
 
@@ -1195,13 +1195,20 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | Key | Action |
 |---|---|
 | `@` | Open the file picker (type after a space or at the start of input). |
+| `!@` | Select a file to include its content in the main chat, `/btw`, or Swarm task/follow-up prompts. |
 | `up`, `down` | Navigate the file list. |
 | `right` | Open the selected directory. |
 | `left` | Go back to the parent directory. |
 | `enter` | Select the file or directory and insert it as a chip (`[file:name]` or `[dir:name/]`). |
 | `esc` | Close the file picker. |
 
-Type `@` followed by a filter string to narrow the list (e.g. `@read` shows only entries containing "read"). Selected files are inserted as compact chips that expand to the full path on submit. Dragged-and-dropped files and directories also collapse to chips automatically.
+Type `@` followed by a filter string to narrow the list (e.g. `@read` shows only entries containing "read"). Selected files are inserted as compact chips that expand to the full path on submit in local chat. Dragged-and-dropped files and directories also collapse to chips automatically. When attached to a continuous host, selected files include their content instead, see [file and image attachments](docs/continuous.md#file-and-image-attachments).
+
+Use `!@` with the same picker to explicitly include file content in the main chat, `/btw`, or Swarm task/follow-up editors, for example `!@read`, then Enter to select. The picker inserts a `[content:name]` chip. Files are read when you submit the prompt, before it is queued, so later edits or deletion do not change the queued content. UTF-8 text is included as labelled `<file>` context. In the main chat, `/btw`, and Swarm task/follow-up editors, PNG, JPEG, GIF, and WebP files become image attachments. Use a vision-capable model to interpret them. Ordinary local `@` selections remain path references. In attached Swarm editors, both `@` and `!@` transfer selected text files and images to the host, without requiring access to the client's filesystem.
+
+Content inclusion accepts at most 16 attachments and 1 MiB of combined file and image data per prompt, honors jail restrictions, and reports read or validation errors without clearing your input. Directories cannot be included, use Right to browse them and select individual files. Text-only local Swarm spawning remains subject to operating-system command-line size limits. Initial tasks with images travel through stdin instead of argv, and image follow-ups use a JSON inbox frame. Images persist in the child session or host conversation and are not resubmitted on resume. Multiline text follow-ups use safe JSON-string framing. Older running child agents must be restarted with the updated binary to receive multiline or image follow-ups. `!@` is not expanded inside slash-command arguments, shell commands, or noninteractive modes. Extension-defined completion triggers are not supported.
+
+In the main chat, image prompts (clipboard or `!@` selections) can be queued during an active turn. Their bytes are copied and retained until the turn finishes. Later prompts stay behind them in submission order. Alt+Up restores the newest queued prompt and its images for editing. Cancelling the active turn or a terminal error discards pending prompts. The `/btw` side chat still accepts one turn at a time.
 
 ### Editor line navigation
 

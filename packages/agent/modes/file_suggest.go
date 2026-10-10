@@ -306,7 +306,11 @@ func extractAtQuery(input string) (string, bool) {
 	if idx < 0 {
 		return "", false
 	}
-	if idx > 0 && input[idx-1] != ' ' {
+	start := idx
+	if start > 0 && input[start-1] == '!' {
+		start--
+	}
+	if start > 0 && !strings.ContainsRune(" \t\n", rune(input[start-1])) {
 		return "", false
 	}
 	query := input[idx+1:]
@@ -511,6 +515,59 @@ func (s *fileSuggester) Render(input string, th tui.Theme, width int) []string {
 	out = append(out, th.FG256(th.Muted, hint))
 	out = append(out, "")
 	return out
+}
+
+// handleFilePickerKey shares selection and browsing across chat editors.
+// Content mode selects individual files, directories remain browsable.
+func handleFilePickerKey(ed *tui.Editor, fs *fileSuggester, k tui.Key) (handled bool, errMsg string) {
+	if fs == nil {
+		return false, ""
+	}
+	val := ed.Value()
+	_, query := extractAtQuery(val)
+	if !fs.Active(val) && !(query && (k.Kind == tui.KeyEsc || k.Kind == tui.KeyLeft)) {
+		return false, ""
+	}
+	idx := strings.LastIndex(val, "@")
+	start := idx
+	content := start > 0 && val[start-1] == '!'
+	if content {
+		start--
+	}
+	switch k.Kind {
+	case tui.KeyUp:
+		fs.Up()
+	case tui.KeyDown:
+		fs.Down()
+	case tui.KeyRight:
+		if fs.Right() {
+			ed.SetValue(val[:idx+1])
+		}
+	case tui.KeyLeft:
+		if fs.Left() {
+			ed.SetValue(val[:idx+1])
+		}
+	case tui.KeyEnter:
+		if entry, ok := fs.SelectedEntry(val); ok {
+			chip := "[file:" + entry.rel + "]"
+			if content {
+				if entry.isDir {
+					return true, "content selection requires a file, use right to browse the directory"
+				}
+				chip = "[content:" + entry.rel + "]"
+			} else if entry.isDir {
+				chip = "[dir:" + entry.rel + "/]"
+			}
+			ed.SetValue(val[:start] + chip + " ")
+			fs.Reset()
+		}
+	case tui.KeyEsc:
+		ed.SetValue(val[:start])
+		fs.Reset()
+	default:
+		return false, ""
+	}
+	return true, ""
 }
 
 // fileChipRE matches @-picker chips inserted by modes:

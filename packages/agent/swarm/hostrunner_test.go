@@ -28,12 +28,17 @@ func (echoHostClient) Stream(ctx context.Context, req provider.Request) (<-chan 
 
 func newHostFixture(t *testing.T) (*continuous.HostServer, *continuous.Runtime, func(context.Context) (*continuous.Client, error)) {
 	t.Helper()
+	return newHostFixtureWithClient(t, echoHostClient{})
+}
+
+func newHostFixtureWithClient(t *testing.T, client provider.Client) (*continuous.HostServer, *continuous.Runtime, func(context.Context) (*continuous.Client, error)) {
+	t.Helper()
 	rt, err := continuous.New(memory.Open())
 	if err != nil {
 		t.Fatal(err)
 	}
 	engine := continuous.EngineFunc(func(ctx context.Context, c continuous.Conversation) (*core.Agent, error) {
-		a := core.NewAgent(echoHostClient{}, "echo", "", core.NewRegistry())
+		a := core.NewAgent(client, "echo", "", core.NewRegistry())
 		a.MaxRetries = 0
 		return a, nil
 	})

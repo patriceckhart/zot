@@ -20,6 +20,21 @@ func newQueuedPrompt(text string, images []provider.ImageBlock) queuedPrompt {
 	return q
 }
 
+// queueFollowUp keeps local text at agent-loop boundaries until an image
+// prompt needs the follow-up queue. Later prompts use that same queue so they
+// cannot overtake the image. Image prompts run after the current turn ends.
+func (i *Interactive) queueFollowUp(text string, images []provider.ImageBlock) {
+	i.mu.Lock()
+	ag := i.agent
+	if i.hasPromptDriver() || i.compacting || ag == nil || len(images) > 0 || len(i.queued) > 0 {
+		i.queued = append(i.queued, newQueuedPrompt(text, images))
+		i.mu.Unlock()
+		return
+	}
+	i.mu.Unlock()
+	ag.QueueMessage(text)
+}
+
 func queuedPromptLabels(queue []queuedPrompt) []string {
 	var labels []string
 	for _, q := range queue {
