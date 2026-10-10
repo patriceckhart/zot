@@ -682,7 +682,7 @@ every connection is admin, which is only acceptable on a private local socket.
 
 | Role | Methods |
 |---|---|
-| read | `hello`, `runtime.status`, `conversation.list`, `conversation.snapshot`, `conversation.watch`, `watch.cancel`, `conversation.search`, `submission.get`, `submission.wait`, `usage.get`, `recovery.preview`, `approval.get`, `approval.list`, `task.get`, `task.list`, `task.view`, `document.read`, `budget.get`, `memo.get`, `prompt.records`, `prompt.section`, `partial.get` |
+| read | `hello`, `runtime.status`, `model.list`, `conversation.list`, `conversation.snapshot`, `conversation.watch`, `watch.cancel`, `conversation.search`, `submission.get`, `submission.wait`, `usage.get`, `recovery.preview`, `approval.get`, `approval.list`, `task.get`, `task.list`, `task.view`, `document.read`, `budget.get`, `memo.get`, `prompt.records`, `prompt.section`, `partial.get` |
 | submit | read plus `conversation.create`, `conversation.submit`, `conversation.configure`, `conversation.compact`, `conversation.reset`, `conversation.fork`, `document.write`, `memo.set` |
 | approve | submit plus `approval.decide` |
 | admin | approve plus `conversation.abort`, `recovery.unblock`, `task.abort`, `task.retry-cleanup`, `budget.set`, `runtime.reload`, `runtime.retain`, `outbox.ack`, `submission.withdraw`, `submission.reorder` |
@@ -703,7 +703,10 @@ user entries as `images`. Text-file bytes become labelled text in `content`.
 Request-ID deduplication includes attachment bytes and file names, changed
 payloads return `duplicate_key`. `runtime.status` advertises
 `capabilities.attachments: true`, clients must check it before sending new
-attachment fields to an older host. These fields are additive, text-only
+attachment fields to an older host. `model.list` (`{provider}`, default the
+host's provider) returns `{provider, models}` from the active catalog, each
+model with `id`, `display_name`, `context_window`, `max_output`, and
+`reasoning`. Hosts that support it advertise `capabilities.models: true`. These fields are additive, text-only
 clients and existing stored submissions continue to work. `document.read` and `document.write` need
 a `Documents` registry on the server, otherwise they return `unsupported`.
 

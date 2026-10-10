@@ -28,6 +28,7 @@ import (
 //
 //	hello            {token}                           -> {role, version}
 //	runtime.status   {}                                -> Status + blocked run IDs
+//	model.list       {provider}                        -> {provider, models}
 //	conversation.create  {workspace, config}           -> Conversation
 //	conversation.list    {after, limit}                -> {conversations, revision, after}
 //	conversation.snapshot {id, limit}                  -> ConversationSnapshot
@@ -71,7 +72,7 @@ func ValidRole(r Role) bool {
 
 func (r Role) allows(method string) bool {
 	switch method {
-	case "hello", "runtime.status", "conversation.list", "conversation.snapshot", "conversation.watch", "submission.get", "submission.wait", "usage.get", "recovery.preview", "watch.cancel", "approval.get", "approval.list", "task.get", "task.list", "task.view", "document.read", "budget.get", "conversation.search", "memo.get", "prompt.records", "prompt.section", "partial.get", "outbox.list":
+	case "hello", "runtime.status", "model.list", "conversation.list", "conversation.snapshot", "conversation.watch", "submission.get", "submission.wait", "usage.get", "recovery.preview", "watch.cancel", "approval.get", "approval.list", "task.get", "task.list", "task.view", "document.read", "budget.get", "conversation.search", "memo.get", "prompt.records", "prompt.section", "partial.get", "outbox.list":
 		return true
 	case "conversation.create", "conversation.submit", "conversation.configure", "conversation.compact", "conversation.reset", "conversation.fork", "document.write", "memo.set":
 		return r == RoleSubmit || r == RoleApprove || r == RoleAdmin
@@ -343,7 +344,19 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"status": status, "blocked_runs": c.server.Host.Blocked(), "metrics": metrics, "version": c.server.Version, "capabilities": map[string]bool{"attachments": true}}, nil
+		return map[string]any{"status": status, "blocked_runs": c.server.Host.Blocked(), "metrics": metrics, "version": c.server.Version, "capabilities": map[string]bool{"attachments": true, "models": true}}, nil
+	case "model.list":
+		var p struct {
+			// Provider defaults to the host's default provider.
+			Provider string `json:"provider"`
+		}
+		if err := params(&p); err != nil {
+			return nil, err
+		}
+		if p.Provider == "" {
+			p.Provider = c.server.DefaultConfig.Provider
+		}
+		return map[string]any{"provider": p.Provider, "models": hostModels(p.Provider)}, nil
 	case "conversation.create":
 		var p struct {
 			Workspace string       `json:"workspace"`
@@ -983,4 +996,25 @@ func EventRow(ev core.AgentEvent) (map[string]any, bool) {
 		return map[string]any{"type": "gap", "dropped": e.Dropped}, true
 	}
 	return nil, false
+}
+
+// HostModel is one catalog entry returned by model.list.
+type HostModel struct {
+	ID            string `json:"id"`
+	DisplayName   string `json:"display_name,omitempty"`
+	ContextWindow int    `json:"context_window,omitempty"`
+	MaxOutput     int    `json:"max_output,omitempty"`
+	Reasoning     bool   `json:"reasoning"`
+}
+
+// hostModels lists the active catalog models of one provider.
+func hostModels(providerID string) []HostModel {
+	out := []HostModel{}
+	if providerID == "" {
+		return out
+	}
+	for _, m := range provider.ModelsForProvider(providerID) {
+		out = append(out, HostModel{ID: m.ID, DisplayName: m.DisplayName, ContextWindow: m.ContextWindow, MaxOutput: m.MaxOutput, Reasoning: m.Reasoning})
+	}
+	return out
 }
