@@ -82,7 +82,13 @@ func TestNativeVerticalSlice(t *testing.T) {
 			}, tool)
 			c := h.nativeRoot(t)
 			var events []string
-			h.svc.opts.Sink = func(ev core.AgentEvent) { events = append(events, ev.Type()) }
+			var eventsMu sync.Mutex
+			h.svc.opts.Sink = func(ev core.AgentEvent) {
+				// Independent tool tasks can deliver events concurrently.
+				eventsMu.Lock()
+				defer eventsMu.Unlock()
+				events = append(events, ev.Type())
+			}
 			sub, err := h.r.Submit(ctx, c.ID, "actor", "req-1", "hello")
 			if err != nil || sub.State != "running" {
 				t.Fatalf("admission must start the generation in the same commit: %+v %v", sub, err)
@@ -113,8 +119,11 @@ func TestNativeVerticalSlice(t *testing.T) {
 			if len(second.Messages) != 3 || second.Messages[2].Role != provider.RoleTool || len(second.Messages[2].Content) != 2 || second.SessionID != c.ProviderSessionID() {
 				t.Fatalf("second request: %+v", second.Messages)
 			}
-			if !strings.Contains(strings.Join(events, ","), "tool_result") {
-				t.Fatalf("events: %v", events)
+			eventsMu.Lock()
+			observedEvents := append([]string(nil), events...)
+			eventsMu.Unlock()
+			if !strings.Contains(strings.Join(observedEvents, ","), "tool_result") {
+				t.Fatalf("events: %v", observedEvents)
 			}
 			if _, ok, _ := h.r.Chain(ctx, c.ID); ok {
 				t.Fatal("chain survived settlement")
