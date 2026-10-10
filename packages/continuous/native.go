@@ -2289,6 +2289,12 @@ func (s *Service) stepTasks(ctx context.Context, conversationID string) (Run, bo
 		if err != nil {
 			return last, true, err
 		}
+		// An invocation cancelled with ctx leaves its task running and
+		// unclaimed, which looks like a chain that cannot progress. Report
+		// the caller's cancellation instead; the run stays recoverable.
+		if err := ctx.Err(); err != nil {
+			return last, true, err
+		}
 		if n > 0 {
 			continue
 		}
