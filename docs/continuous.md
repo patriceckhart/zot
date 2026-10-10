@@ -732,6 +732,30 @@ remote clients rejected; `--socket` and `--continuous` accept either the store
 path or the pipe name. `continuous.ListenLocal` and `DialLocal` are the
 platform-neutral Go surface. Clients connect with `--tls-ca` (`attach`),
 `--continuous-tls-ca` (TUI), or `continuous.DialTLS`.
+
+`--web host:port` adds a WebSocket endpoint for browser clients next to the
+local socket. Each text message carries one protocol frame, a JSON object
+without the trailing newline; requests, responses, watches, and roles are
+the same as on the socket. The endpoint always requires `hello` with a
+token: the `--token-file` tokens when given, otherwise one generated admin
+token stored in `<store>/web-token` (mode `0600`, reused across restarts,
+delete it to rotate). Startup logs show only the file path, not the token.
+Read the file locally to retrieve the token. The socket keeps its own
+authentication. A non-loopback `--web` address requires `--tls-cert` and
+`--tls-key`. To reach a host remotely, keep `--web` on loopback and put a
+TLS tunnel in front of it, for example
+`tailscale serve --bg --https=443 http://127.0.0.1:7787` or
+`cloudflared tunnel --url http://127.0.0.1:7787`, and connect with `wss://`.
+Repeat `--web-origin https://app.example` to restrict the browser `Origin`
+header. That is a defense against other web pages, not authentication:
+non-browser clients can send any origin, so the token is the access check.
+The endpoint accepts text messages up to 1 MiB, rejects binary and unmasked
+frames, and supports no WebSocket extensions or subprotocols. Go servers use
+`HostServer.WebSocketHandler`.
+
+```sh
+zot continuous serve --store ~/.zot-store --web 127.0.0.1:7787
+```
 `zot continuous attach` is the reference client: `--socket` or `--address`,
 `--token` or `--token-file`, `--workspace <id>` or `--conversation <id>`, a
 prompt and/or `--follow`, and `--json`. `zot --continuous <address>` attaches

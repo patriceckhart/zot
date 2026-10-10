@@ -31,6 +31,8 @@ type continuousServeOptions struct {
 	durability  journal.Options
 	socket      string
 	listen      string
+	web         string
+	webOrigins  []string
 	tokenFile   string
 	tlsCert     string
 	tlsKey      string
@@ -88,6 +90,18 @@ func parseContinuousServeArgs(args []string) (continuousServeOptions, error) {
 				return opts, err
 			}
 			opts.listen = v
+		case "--web":
+			v, err := value()
+			if err != nil {
+				return opts, err
+			}
+			opts.web = v
+		case "--web-origin":
+			v, err := value()
+			if err != nil {
+				return opts, err
+			}
+			opts.webOrigins = append(opts.webOrigins, v)
 		case "--token-file":
 			v, err := value()
 			if err != nil {
@@ -153,8 +167,23 @@ func parseContinuousServeArgs(args []string) (continuousServeOptions, error) {
 	if (opts.tlsCert == "") != (opts.tlsKey == "") {
 		return opts, fmt.Errorf("--tls-cert and --tls-key must be given together")
 	}
-	if opts.tlsCert != "" && opts.listen == "" {
-		return opts, fmt.Errorf("--tls-cert applies to --listen")
+	if opts.tlsCert != "" && opts.listen == "" && opts.web == "" {
+		return opts, fmt.Errorf("--tls-cert applies to --listen or --web")
+	}
+	if len(opts.webOrigins) > 0 && opts.web == "" {
+		return opts, fmt.Errorf("--web-origin requires --web")
+	}
+	if opts.web != "" {
+		host, _, err := net.SplitHostPort(opts.web)
+		if err != nil {
+			return opts, fmt.Errorf("--web requires host:port: %w", err)
+		}
+		if !isLoopbackHost(host) && opts.tlsCert == "" {
+			return opts, fmt.Errorf("--web on a non-loopback address requires --tls-cert and --tls-key; to reach it remotely, keep it on loopback behind a TLS tunnel such as tailscale serve or cloudflared")
+		}
+		if opts.listen != "" && opts.listen == opts.web {
+			return opts, fmt.Errorf("--web and --listen need different addresses")
+		}
 	}
 	if opts.tlsClientCA != "" && opts.tlsCert == "" {
 		return opts, fmt.Errorf("--tls-client-ca requires --tls-cert and --tls-key")
@@ -164,9 +193,7 @@ func parseContinuousServeArgs(args []string) (continuousServeOptions, error) {
 		if err != nil {
 			return opts, fmt.Errorf("--listen requires host:port: %w", err)
 		}
-		ip := net.ParseIP(host)
-		loopback := host == "localhost" || (ip != nil && ip.IsLoopback())
-		if !loopback && opts.tlsCert == "" {
+		if !isLoopbackHost(host) && opts.tlsCert == "" {
 			return opts, fmt.Errorf("--listen on a non-loopback address requires --tls-cert and --tls-key; remote access is encrypted and authenticated or not offered")
 		}
 		if opts.tokenFile == "" {
@@ -179,6 +206,11 @@ func parseContinuousServeArgs(args []string) (continuousServeOptions, error) {
 		opts.socket = filepath.Join(opts.store, "host.sock")
 	}
 	return opts, nil
+}
+
+func isLoopbackHost(host string) bool {
+	ip := net.ParseIP(host)
+	return host == "localhost" || (ip != nil && ip.IsLoopback())
 }
 
 // serverTLSConfig builds a TLS 1.3 configuration for remote listeners. When
@@ -366,7 +398,15 @@ func runContinuousServe(ctx context.Context, args []string, out io.Writer) (retE
 	}
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
+	waits := 2
+	if opts.web != "" {
+		if err := startContinuousWeb(serveCtx, opts, server, tokens, errCh); err != nil {
+			ln.Close()
+			return err
+		}
+		waits++
+	}
 	go func() { errCh <- host.Run(serveCtx) }()
 	go func() { errCh <- server.Serve(serveCtx, ln) }()
 	stopReload := onReloadSignal(serveCtx, func() {
@@ -381,7 +421,9 @@ func runContinuousServe(ctx context.Context, args []string, out io.Writer) (retE
 	err = <-errCh
 	cancel()
 	stopReload()
-	<-errCh
+	for i := 1; i < waits; i++ {
+		<-errCh
+	}
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}

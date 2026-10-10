@@ -23,6 +23,7 @@ Usage:
   zot continuous run --resume --store <directory> [zot flags]
   zot continuous serve --store <directory> [--backend journal|sqlite] [--socket <path>] [--token-file <file>] [--recover safe|all|none] [zot flags]
   zot continuous serve --store <directory> --listen <host:port> --token-file <file> [--tls-cert <pem> --tls-key <pem> [--tls-client-ca <pem>]]
+  zot continuous serve --store <directory> --web <host:port> [--web-origin <url>]... [--token-file <file>] [--tls-cert <pem> --tls-key <pem>]
   zot continuous attach "<prompt>" --socket <path>|--address <host:port> [--tls-ca <pem>] --workspace <id> [--token-file <file>] [--file <path>] [--follow] [--json]
   zot continuous worker --root [name=]<directory>... [--ledger <file>] [--environment <name>] [--token <t>]
                                Serve the remote worker protocol on stdin/stdout. Calls carry
@@ -73,7 +74,12 @@ executes queued work for every conversation, and serves a newline-JSON protocol 
 that path, accepted by --socket and --continuous). --listen needs --token-file; loopback may be
 plaintext, any other address requires --tls-cert and --tls-key (TLS 1.3), optionally
 --tls-client-ca for mutual TLS. Tokens map to roles read, submit, approve, admin; without a
-token file every local socket connection is admin. SIGHUP (or runtime.reload) reloads
+token file every local socket connection is admin. --web adds a WebSocket endpoint for
+browser clients, one text message per protocol frame. It always requires a token: the
+--token-file tokens, or a generated admin token kept in <store>/web-token (mode 0600).
+Startup logs show only its path. Read that file locally to retrieve the token.
+Non-loopback --web addresses require --tls-cert and --tls-key. Otherwise keep it on
+loopback behind a TLS tunnel. --web-origin restricts browser origins. SIGHUP (or runtime.reload) reloads
 extensions into a new engine generation without stopping the host.
 attach connects to a host, submits to the workspace root conversation, prints the answer, and
 with --follow streams committed entries. Repeat --file to transfer local UTF-8 files or images
