@@ -233,7 +233,7 @@ Treat questions and discussions as requests for explanation. Do not edit files o
 
 ## Changelog on update
 
-The first time you launch a newer zot binary, the TUI shows the GitHub release notes once in a dismissible overlay. Press any key to close. The version is recorded in `config.json`'s `last_changelog_shown` so the same release notes never reappear. Fresh installs don't see a changelog (no upgrade has happened yet). The fetch is best-effort: a network failure or a missing release page silently skips, with another attempt on the next launch.
+The first time you launch a newer zot binary, the TUI shows the GitHub release notes for all published releases newer than the last dismissed version, up to the running version. Notes are grouped by version, newest first, so upgrading across multiple versions includes the intervening changes. Use up/down or page up/down to scroll, and any other key to close. The running version is recorded in `config.json`'s `last_changelog_shown` when you dismiss the overlay. Fresh installs don't see a changelog (no upgrade has happened yet). Local builds (`0.0.0`) show only the latest release. The fetch is best-effort with a four-second overall deadline: a network failure, incomplete pagination, or a missing running release silently skips the overlay, with another attempt on the next launch.
 
 ## Usage
 

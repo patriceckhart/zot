@@ -1335,7 +1335,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		if !ShouldShowChangelog(version, cfg) {
 			return
 		}
-		info := <-FetchChangelogAsync(version)
+		info := <-FetchChangelogSinceAsync(version, cfg.LastChangelogShown)
 		if info.Body == "" {
 			return
 		}

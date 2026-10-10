@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -35,7 +36,13 @@ func semverOnly(v string) string {
 	return v
 }
 
+const changelogReleasesAPI = "https://api.github.com/repos/patriceckhart/zot/releases"
+
 func FetchChangelog(ctx context.Context, version string) (ChangelogInfo, error) {
+	return fetchChangelog(ctx, version, changelogReleasesAPI)
+}
+
+func fetchChangelog(ctx context.Context, version, endpoint string) (ChangelogInfo, error) {
 	version = semverOnly(version)
 	if version == "" || version == "dev" {
 		return ChangelogInfo{}, nil
@@ -45,13 +52,13 @@ func FetchChangelog(ctx context.Context, version string) (ChangelogInfo, error) 
 	// of a tagged one so developers always see the newest changelog.
 	var url string
 	if version == "0.0.0" {
-		url = "https://api.github.com/repos/patriceckhart/zot/releases/latest"
+		url = endpoint + "/latest"
 	} else {
 		tag := version
 		if !strings.HasPrefix(tag, "v") {
 			tag = "v" + tag
 		}
-		url = fmt.Sprintf("https://api.github.com/repos/patriceckhart/zot/releases/tags/%s", tag)
+		url = fmt.Sprintf("%s/tags/%s", endpoint, tag)
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -143,18 +150,128 @@ func extractChangelog(body string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
-// FetchChangelogAsync runs FetchChangelog on a goroutine and delivers
-// the result on the returned channel. Channel always closes.
-func FetchChangelogAsync(version string) <-chan ChangelogInfo {
+// FetchChangelogSince returns notes for releases newer than previousVersion
+// through version, newest first. Empty baselines and local builds retain the
+// single-release behavior of FetchChangelog.
+func FetchChangelogSince(ctx context.Context, version, previousVersion string) (ChangelogInfo, error) {
+	return fetchChangelogSince(ctx, version, previousVersion, changelogReleasesAPI)
+}
+
+type changelogRelease struct {
+	TagName string `json:"tag_name"`
+	HTMLURL string `json:"html_url"`
+	Body    string `json:"body"`
+	Draft   bool   `json:"draft"`
+}
+
+func fetchChangelogSince(ctx context.Context, version, previousVersion, endpoint string) (ChangelogInfo, error) {
+	version = semverOnly(version)
+	previousVersion = semverOnly(previousVersion)
+	if version == "" || version == "dev" {
+		return ChangelogInfo{}, nil
+	}
+	if previousVersion == "" || version == "0.0.0" {
+		return fetchChangelog(ctx, version, endpoint)
+	}
+	comparison, err := compareVersions(previousVersion, version)
+	if err != nil {
+		return ChangelogInfo{}, err
+	}
+	if comparison >= 0 {
+		return ChangelogInfo{}, nil
+	}
+
+	var releases []changelogRelease
+	var current *changelogRelease
+	client := &http.Client{Timeout: 4 * time.Second}
+	for page := 1; ; page++ {
+		req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s?per_page=100&page=%d", endpoint, page), nil)
+		if err != nil {
+			return ChangelogInfo{}, err
+		}
+		req.Header.Set("accept", "application/vnd.github+json")
+		req.Header.Set("x-github-api-version", "2022-11-28")
+		if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+			req.Header.Set("authorization", "Bearer "+tok)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return ChangelogInfo{}, err
+		}
+		var batch []changelogRelease
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return ChangelogInfo{}, fmt.Errorf("github api %d", resp.StatusCode)
+		}
+		err = json.NewDecoder(resp.Body).Decode(&batch)
+		resp.Body.Close()
+		if err != nil {
+			return ChangelogInfo{}, err
+		}
+		for _, release := range batch {
+			if release.Draft {
+				continue
+			}
+			cmp, err := compareVersions(release.TagName, version)
+			if err != nil || cmp > 0 {
+				continue
+			}
+			if cmp == 0 {
+				r := release
+				current = &r
+			}
+			if versionLess(previousVersion, release.TagName) {
+				releases = append(releases, release)
+			}
+		}
+		// Follow pagination without trusting a response-provided URL with
+		// the user's authorization header. Release dates need not follow
+		// version order, so do not stop at the first older release.
+		if !strings.Contains(resp.Header.Get("Link"), `rel="next"`) {
+			break
+		}
+	}
+	if current == nil {
+		return ChangelogInfo{}, fmt.Errorf("release %s not found", version)
+	}
+	sort.Slice(releases, func(i, j int) bool {
+		return versionLess(releases[j].TagName, releases[i].TagName)
+	})
+	var sections []string
+	for _, release := range releases {
+		body := extractChangelog(release.Body)
+		if body != "" {
+			sections = append(sections, "\x00H:zot "+strings.TrimPrefix(release.TagName, "v")+"\n\n"+body)
+		}
+	}
+	if len(sections) == 0 {
+		return ChangelogInfo{}, nil
+	}
+	return ChangelogInfo{
+		Version: strings.TrimPrefix(current.TagName, "v"),
+		URL:     current.HTMLURL,
+		Body:    strings.Join(sections, "\n\n"),
+	}, nil
+}
+
+// FetchChangelogSinceAsync fetches cumulative notes with one overall startup
+// deadline. Failures deliver empty notes so the next launch can retry.
+func FetchChangelogSinceAsync(version, previousVersion string) <-chan ChangelogInfo {
 	ch := make(chan ChangelogInfo, 1)
 	go func() {
 		defer close(ch)
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
-		info, _ := FetchChangelog(ctx, version)
+		info, _ := FetchChangelogSince(ctx, version, previousVersion)
 		ch <- info
 	}()
 	return ch
+}
+
+// FetchChangelogAsync runs FetchChangelog on a goroutine and delivers
+// the result on the returned channel. Channel always closes.
+func FetchChangelogAsync(version string) <-chan ChangelogInfo {
+	return FetchChangelogSinceAsync(version, "")
 }
 
 // ShouldShowChangelog reports whether the running binary version
