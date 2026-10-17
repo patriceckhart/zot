@@ -119,6 +119,36 @@ func TestHandleSetupAddSerplyGlobal(t *testing.T) {
 	}
 }
 
+func TestHandleSetupAddCohesivityGlobal(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("ZOT_HOME", tmp)
+
+	out, err := handleSetup([]string{"add", "cohesivity"}, tmp)
+	if err != nil {
+		t.Fatalf("handleSetup add cohesivity: %v", err)
+	}
+	if out == "" {
+		t.Fatal("expected setup output")
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmp, "mcp.json"))
+	if err != nil {
+		t.Fatalf("read mcp.json: %v", err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse mcp.json: %v", err)
+	}
+	coh := cfg.MCPServers["cohesivity"]
+	if coh.Transport != "streamable-http" || coh.URL != "https://cohesivity.ai/mcp" {
+		t.Fatalf("unexpected cohesivity config: %+v", coh)
+	}
+	// Keyless template: the only header is the User-Agent; no credential is written.
+	if len(coh.Headers) != 1 || coh.Headers["User-Agent"] != "zot-mcp-bridge" {
+		t.Fatalf("unexpected cohesivity headers: %+v", coh.Headers)
+	}
+}
+
 func TestHandleSetupDuplicate(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("ZOT_HOME", tmp)

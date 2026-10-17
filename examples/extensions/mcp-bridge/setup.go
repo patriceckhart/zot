@@ -83,6 +83,17 @@ func setupTemplates() map[string]serverTemplate {
 				}
 			},
 		},
+		"cohesivity": {
+			Name:        "cohesivity",
+			Description: "Backend services for the app being built via the keyless Cohesivity MCP server: Postgres, Redis, object storage, hosting, login, and an email inbox.",
+			Config: func(cwd string) ServerConfig {
+				return ServerConfig{
+					Transport: "streamable-http",
+					URL:       "https://cohesivity.ai/mcp",
+					Headers:   map[string]string{"User-Agent": "zot-mcp-bridge"},
+				}
+			},
+		},
 	}
 }
 

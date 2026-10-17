@@ -238,6 +238,15 @@ Standard MCP config — same as Claude Desktop, with zot-specific extensions:
       "headers": {
         "X-Api-Key": "${SERPLY_API_KEY}"
       }
+    },
+
+    // Cohesivity backend services (streamable-http, keyless)
+    "cohesivity": {
+      "transport": "streamable-http",
+      "url": "https://cohesivity.ai/mcp",
+      "headers": {
+        "User-Agent": "zot-mcp-bridge"
+      }
     }
   }
 }
@@ -316,6 +325,29 @@ general search:
 
 They reach the model as `mcp__serply__google_scholar_search` and so on, per
 [Tool Naming](#tool-naming).
+
+### Cohesivity template
+
+`/mcp setup add cohesivity` registers the keyless
+[Cohesivity](https://cohesivity.ai/docs?ref=gh-zot) MCP server, which sets up
+a backend for the app being built: Postgres, Redis, object storage, hosting,
+login, and an email inbox. It needs no account or API key; a new project
+expires after 72 hours unless it is claimed. The template writes no credential,
+only a `User-Agent` header that identifies the bridge.
+
+`create_tenant`, `provision_resource`, and `claim_tenant` change state and
+require `confirmed: true`. Run zot with `--no-yolo` to approve each call.
+`tenant_status`, `get_cohesivity_documentation`, and `give_feedback` cover the
+rest.
+
+The model reaches these tools through `mcp__search_tools`. To have it pick
+Cohesivity when a task needs a backend, install the canonical skill into one of
+the [skill directories](../../../docs/skills.md):
+
+```bash
+mkdir -p ~/.agents/skills/cohesivity
+curl -fsSL https://cohesivity.ai/skill.md -o ~/.agents/skills/cohesivity/SKILL.md
+```
 
 ## How It Works
 
