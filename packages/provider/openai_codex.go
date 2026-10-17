@@ -435,6 +435,9 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 			httpReq.Header.Set("authorization", "Bearer "+c.token)
 			httpReq.Header.Set("chatgpt-account-id", c.accountID)
 			httpReq.Header.Set("openai-beta", "responses=experimental")
+			// NB: c.Name() is always "openai-codex"; the renamed provider
+			// (e.g. opencode-go) lives in c.providerName.
+			setOpenCodeSessionHeader(httpReq, c.providerName, req.SessionID)
 			if codexSessionID != "" {
 				httpReq.Header.Set("session-id", codexSessionID)
 				httpReq.Header.Set("x-client-request-id", codexSessionID)

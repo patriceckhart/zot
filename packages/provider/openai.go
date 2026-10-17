@@ -19,6 +19,21 @@ const openaiDefaultBaseURL = "https://api.openai.com"
 // "/v1" or Z.AI's "/v4".
 var versionSegmentSuffix = regexp.MustCompile(`/v\d+$`)
 
+// openCodeSessionHeader is the routing/caching header OpenCode Go requires.
+// See https://opencode.ai/docs/go/#where-can-i-use-it
+const openCodeSessionHeader = "x-opencode-session"
+
+// setOpenCodeSessionHeader stamps the conversation id onto requests for
+// providers that require it (currently opencode-go). Other providers ignore
+// req.SessionID here, mirroring how buildRequest only forwards it to
+// OpenRouter. Empty session ids send nothing.
+func setOpenCodeSessionHeader(httpReq *http.Request, providerName, sessionID string) {
+	if providerName != "opencode-go" || sessionID == "" {
+		return
+	}
+	httpReq.Header.Set(openCodeSessionHeader, sessionID)
+}
+
 // chatCompletionsURL builds the chat-completions endpoint for an
 // OpenAI-compatible base URL. A base that already carries an API
 // version segment gets "/chat/completions" appended directly; a bare
@@ -619,6 +634,7 @@ func (c *openaiClient) Stream(ctx context.Context, req Request) (<-chan Event, e
 		for k, v := range c.headers {
 			httpReq.Header.Set(k, v)
 		}
+		setOpenCodeSessionHeader(httpReq, c.Name(), req.SessionID)
 		return httpReq, nil
 	}
 

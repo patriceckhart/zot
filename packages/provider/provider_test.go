@@ -721,7 +721,7 @@ func TestOpenCodeGoCatalog(t *testing.T) {
 		cacheRead float64
 	}{
 		{"gpt-5.6-luna", 1050000, 128000, 0.2, 1.2, 0.02},
-		{"grok-4.5", 500000, 500000, 2, 6, 0.3},
+		{"grok-4.6", 500000, 500000, 2, 6, 0.5},
 		{"kimi-k3", 1048576, 131072, 3, 15, 0.3},
 	}
 	for _, tc := range cases {

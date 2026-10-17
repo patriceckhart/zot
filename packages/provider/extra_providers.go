@@ -137,13 +137,30 @@ func NewOpenCode(apiKey, baseURL string) Client {
 }
 
 // NewOpenCodeGo routes each model through the wire API exposed by OpenCode Go.
+// Chat-completions models use baseURL as-is; Responses models share it via
+// the Responses client; Anthropic-messages models (claude, minimax, qwen)
+// target the sibling /anthropic tree documented at
+// https://opencode.ai/v2/docs/console/go/. The session header is stamped
+// per-request on both OpenAI wires; the Anthropic client sends none (Go
+// recognizes the native Anthropic session headers instead).
 func NewOpenCodeGo(apiKey, baseURL string) Client {
 	const defaultBaseURL = "https://opencode.ai/zen/go/v1"
+	root := firstNonEmptyString(baseURL, defaultBaseURL)
 	return NewModelRouter("opencode-go",
 		NewOpenAICompat("opencode-go", apiKey, baseURL, defaultBaseURL),
 		map[string]Client{
-			APIResponses: NewOpenAIResponsesNamed(apiKey, firstNonEmptyString(baseURL, defaultBaseURL), "opencode-go"),
+			APIResponses:         NewOpenAIResponsesNamed(apiKey, root, "opencode-go"),
+			APIAnthropicMessages: NewAnthropicCompat("opencode-go", apiKey, anthropicGoBase(root)),
 		})
+}
+
+// anthropicGoBase maps an opencode-go OpenAI base URL to its sibling
+// Anthropic-messages tree (…/go/anthropic serves /v1/messages).
+func anthropicGoBase(openaiBase string) string {
+	if strings.HasSuffix(openaiBase, "/zen/go/v1") {
+		return strings.TrimSuffix(openaiBase, "/zen/go/v1") + "/inference/go/anthropic"
+	}
+	return strings.TrimSuffix(openaiBase, "/") + "/anthropic"
 }
 
 // NewMinimaxOpenAI is the OpenAI-completions flavor of MiniMax, in case
