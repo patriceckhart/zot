@@ -630,7 +630,9 @@ in `models.json`. The `/models` wire format is assumed to be OpenAI style
 
 `/model` also lists custom providers with a configured base URL and no key.
 `--list-models` prints the catalog before the background refresh completes,
-so discovered models may be missing there.
+so discovered models may be missing there. `--list-models-json` prints the same
+set `/models` offers, as a JSON array of `provider`, `id`, `name`, `reasoning`,
+`context_window`, `max_output`, and `source` fields.
 
 ## Credential resolution
 

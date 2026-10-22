@@ -126,10 +126,11 @@ type Args struct {
 	// are still written for modes other than bash ask.
 	Yes bool
 
-	ListModels bool
-	Help       bool
-	Version    bool
-	StatsPath  string // write print-mode generation statistics as JSON
+	ListModels     bool
+	ListModelsJSON bool // print the /models-visible catalogue as JSON and exit
+	Help           bool
+	Version        bool
+	StatsPath      string // write print-mode generation statistics as JSON
 
 	Prompt string // concatenated positional args
 
@@ -225,6 +226,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.CodemodeMode = "only"
 		case "--list-models":
 			a.ListModels = true
+		case "--list-models-json":
+			a.ListModelsJSON = true
 		case "--experimental-oauth":
 			// deprecated: subscription login is always available.
 			// accepted silently for backwards compatibility.
@@ -534,6 +537,7 @@ func printHelp(out *os.File, version string) {
 	section("misc",
 		row{"--max-steps N", "agent loop iteration cap (default: unlimited)"},
 		row{"--list-models", "print known models and exit"},
+		row{"--list-models-json", "print the /models-visible catalogue as JSON and exit"},
 		row{"-h, --help", "show this help"},
 		row{"-v, --version", "show version info"},
 	)

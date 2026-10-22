@@ -280,6 +280,9 @@ func runWithArgsRaw(rawArgs []string, version string) error {
 		printModels()
 		return nil
 	}
+	if args.ListModelsJSON {
+		return printModelCatalogJSON(os.Stdout)
+	}
 
 	return runWithArgs(args, version)
 }
