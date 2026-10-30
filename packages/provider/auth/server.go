@@ -138,7 +138,7 @@ func APIKeyProviders() []string {
 	return []string{
 		"anthropic", "openai", "kimi", "deepseek", "google", "llama.cpp", "lmstudio",
 		"moonshotai", "moonshotai-cn", "groq", "cerebras", "xai", "together",
-		"huggingface", "openrouter", "gondola", "yolo-auto", "cheaperinference", "opper", "runcrate", "mistral", "zai",
+		"huggingface", "openrouter", "gondola", "yolo-auto", "cheaperinference", "opper", "runcrate", "cloudgpu", "mistral", "zai",
 		"xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp",
 		"minimax", "minimax-cn", "fireworks", "vercel-ai-gateway",
 		"opencode", "opencode-go", "amazon-bedrock", "google-vertex", "azure-openai-responses",

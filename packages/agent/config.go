@@ -508,6 +508,10 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 		if v := os.Getenv("RUNCRATE_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
+	case "cloudgpu":
+		if v := os.Getenv("CLOUDGPU_API_KEY"); v != "" {
+			return v, "apikey", "", nil
+		}
 	case "mistral":
 		if v := os.Getenv("MISTRAL_API_KEY"); v != "" {
 			return v, "apikey", "", nil

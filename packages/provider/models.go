@@ -339,6 +339,20 @@ var Catalog = []Model{
 		BaseURL: runcrateDefaultBaseURL,
 	},
 
+	// ---- CloudGPU ----
+	// Seed entry only: deepseek-v4-flash is the default returned by
+	// defaultModelForProvider so it resolves offline. CloudGPU is an
+	// OpenAI-compatible inference API. The public catalog at
+	// https://cloudgpu.app/v1/models (2026-10-29) does not publish context
+	// or output limits, so this entry uses the conservative window.
+	{
+		Provider: "cloudgpu", ID: "deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash (CloudGPU)",
+		Input:         []string{"text"},
+		ContextWindow: 32768, MaxOutput: 4096,
+		PriceInput: 0.27, PriceOutput: 1.08, PriceCacheRead: 0.027,
+		BaseURL: cloudgpuDefaultBaseURL,
+	},
+
 	// ---- Anthropic / newer families ----
 	{
 		Provider: "anthropic", ID: "claude-opus-4-5", DisplayName: "Claude Opus 4.5 (latest)",

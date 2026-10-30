@@ -193,6 +193,7 @@ show instructions and should be configured with environment variables.
 | Cheaper Inference | `CHEAPER_INFERENCE_API_KEY` | `cheaperinference` |
 | Opper | `OPPER_API_KEY` | `opper` |
 | Runcrate | `RUNCRATE_API_KEY` | `runcrate` |
+| CloudGPU | `CLOUDGPU_API_KEY` | `cloudgpu` |
 | Mistral | `MISTRAL_API_KEY` | `mistral` |
 | ZAI | `ZAI_API_KEY` | `zai` |
 | Xiaomi MiMo | `XIAOMI_API_KEY` | `xiaomi` |
@@ -326,6 +327,30 @@ https://www.runcrate.ai/dashboard/api-keys.
 ```bash
 export RUNCRATE_API_KEY=...
 zot --provider runcrate --model zai-org/GLM-5.3
+```
+
+## CloudGPU
+
+Use `CLOUDGPU_API_KEY` or `/login` with provider `cloudgpu`. CloudGPU is an
+OpenAI-compatible inference API at `https://cloudgpu.app/v1`. The offline
+default is `deepseek-v4-flash`.
+
+CloudGPU's model list is public. When a CloudGPU key is configured, catalog
+discovery adds its chat models to `/model`. If the shared catalog cache has
+no CloudGPU models, discovery runs even while that cache is fresh. The
+`auto` alias and image, speech, and transcription models are excluded. The
+list does not publish context, output, vision, or reasoning metadata, so
+discovered models use a conservative 32,768-token context window, a
+4,096-token output limit, and text input. The key probe uses the same list,
+so a mistyped key is reported by the first request rather than by `/login`.
+
+Explicit and saved model IDs are preserved before discovery finishes and are
+validated by the API. Without catalog metadata, requests use a conservative
+4,096-token output limit. Keys come from https://cloudgpu.app/api/console.
+
+```bash
+export CLOUDGPU_API_KEY=...
+zot --provider cloudgpu --model glm-5.2
 ```
 
 ## Local LM Studio server
