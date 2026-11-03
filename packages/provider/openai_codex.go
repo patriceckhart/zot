@@ -446,6 +446,9 @@ func (c *codexClient) Stream(ctx context.Context, req Request) (<-chan Event, er
 			// NB: c.Name() is always "openai-codex"; the renamed provider
 			// (e.g. opencode-go) lives in c.providerName.
 			setOpenCodeSessionHeader(httpReq, c.providerName, req.SessionID)
+			if isOpenRouterURL(httpReq.URL) {
+				setOpenRouterAttribution(httpReq)
+			}
 			if codexSessionID != "" {
 				httpReq.Header.Set("session-id", codexSessionID)
 				httpReq.Header.Set("x-client-request-id", codexSessionID)

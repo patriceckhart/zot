@@ -256,6 +256,30 @@ models and conservative limits instead of retaining the previous key's live
 metadata. Create a key at https://yolo-auto.com and see
 https://yolo-auto.com/docs for the API reference.
 
+## OpenRouter
+
+OpenRouter is one of the API-key gateways in the table above. Its model list
+comes from the six-hour public catalog and is optionally refreshed with your
+key's presets. Every request zot sends to OpenRouter — chat, image generation,
+model and preset discovery, and `/login` key validation — carries the
+app-attribution headers OpenRouter documents at
+https://openrouter.ai/docs/app-attribution:
+
+| Header | Value |
+| --- | --- |
+| `HTTP-Referer` | `https://www.zot.sh` |
+| `X-OpenRouter-Title` | `zot` |
+| `X-Title` | `zot` |
+| `X-OpenRouter-Categories` | `cli-agent` |
+
+Requests are attributed when the provider is `openrouter` or when the request
+targets `openrouter.ai` (including subdomains), so a custom or `models.json`
+provider pointed at OpenRouter is attributed too. Other gateways never receive
+these headers. Attribution is metadata only; it never affects whether a
+request succeeds.
+
+- https://openrouter.ai/apps
+
 Example:
 
 ```bash

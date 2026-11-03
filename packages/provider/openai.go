@@ -34,6 +34,16 @@ func setOpenCodeSessionHeader(httpReq *http.Request, providerName, sessionID str
 	httpReq.Header.Set(openCodeSessionHeader, sessionID)
 }
 
+// setAttributionHeaders identifies zot to gateways that rank or classify
+// calling apps. Only OpenRouter documents support for these headers, so they
+// are sent when either the provider name or the endpoint itself is OpenRouter.
+func (c *openaiClient) setAttributionHeaders(httpReq *http.Request) {
+	if c.Name() != "openrouter" && !isOpenRouterURL(httpReq.URL) {
+		return
+	}
+	setOpenRouterAttribution(httpReq)
+}
+
 // chatCompletionsURL builds the chat-completions endpoint for an
 // OpenAI-compatible base URL. A base that already carries an API
 // version segment gets "/chat/completions" appended directly; a bare
@@ -648,6 +658,7 @@ func (c *openaiClient) Stream(ctx context.Context, req Request) (<-chan Event, e
 			httpReq.Header.Set(k, v)
 		}
 		setOpenCodeSessionHeader(httpReq, c.Name(), req.SessionID)
+		c.setAttributionHeaders(httpReq)
 		return httpReq, nil
 	}
 
