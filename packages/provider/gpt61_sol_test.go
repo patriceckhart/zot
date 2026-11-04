@@ -12,7 +12,11 @@ func TestGPT61SolCatalog(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if m.API != APIResponses || m.ContextWindow != 272000 || m.MaxOutput != 128000 || !m.Reasoning {
+			wantContext := 272000
+			if name == "openai-codex" {
+				wantContext = 500000
+			}
+			if m.API != APIResponses || m.ContextWindow != wantContext || m.MaxOutput != 128000 || !m.Reasoning {
 				t.Fatalf("model metadata: %+v", m)
 			}
 			if m.PriceInput != 2 || m.PriceOutput != 10 || m.PriceCacheRead != 0.1 || m.PriceCacheWrite != 2.5 ||

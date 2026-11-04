@@ -47,6 +47,18 @@ var supplementCatalog = []Model{
 		PriceInput: 1.25, PriceOutput: 2.5, PriceCacheRead: 0.2,
 		BaseURL: "https://api.x.ai/v1"},
 
+	// ----- GPT-6.1 Terra Responses endpoints -----
+	{Provider: "azure-openai-responses", ID: "gpt-6.1-terra", DisplayName: "GPT-6.1 Terra", API: APIResponses,
+		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 1, PriceOutput: 5, PriceCacheRead: 0.05, PriceCacheWrite: 1.25,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      2, PriceOutputAbove: 7.5, PriceCacheReadAbove: 0.1, PriceCacheWriteAbove: 2.5},
+	{Provider: "openai-responses", ID: "gpt-6.1-terra", DisplayName: "GPT-6.1 Terra (Responses)", API: APIResponses,
+		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 1, PriceOutput: 5, PriceCacheRead: 0.05, PriceCacheWrite: 1.25,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      2, PriceOutputAbove: 7.5, PriceCacheReadAbove: 0.1, PriceCacheWriteAbove: 2.5},
+
 	// ----- openai-responses (public OpenAI Responses API) -----
 	{Provider: "openai-responses", ID: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol (Responses)", API: APIResponses,
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
