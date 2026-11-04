@@ -149,6 +149,11 @@ func NewRuncrate(apiKey, baseURL string) Client {
 	return NewOpenAICompat("runcrate", apiKey, baseURL, runcrateDefaultBaseURL)
 }
 
+// NewCloudGPU: CloudGPU, an OpenAI Chat Completions-compatible inference API.
+func NewCloudGPU(apiKey, baseURL string) Client {
+	return NewOpenAICompat("cloudgpu", apiKey, baseURL, cloudgpuDefaultBaseURL)
+}
+
 // NewOpenCode routes Zen models through Chat Completions or Responses.
 func NewOpenCode(apiKey, baseURL string) Client {
 	const defaultBaseURL = "https://opencode.ai/zen/v1"

@@ -49,6 +49,8 @@ func ProviderLabel(id string) string {
 		return "Opper"
 	case "runcrate":
 		return "Runcrate"
+	case "cloudgpu":
+		return "CloudGPU"
 	case "mistral":
 		return "Mistral"
 	case "zai":

@@ -49,7 +49,7 @@ func MergeCatalog(live []Model) []Model {
 		if s, ok := staticIndex[k]; ok {
 			// These gateways report authoritative metadata. Their seed
 			// entries are only offline fallbacks.
-			if l.Provider == "yolo-auto" || l.Provider == "cheaperinference" || l.Provider == "opper" || l.Provider == "runcrate" {
+			if l.Provider == "yolo-auto" || l.Provider == "cheaperinference" || l.Provider == "opper" || l.Provider == "runcrate" || l.Provider == "cloudgpu" {
 				staticIndex[k] = l
 				continue
 			}

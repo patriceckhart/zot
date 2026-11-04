@@ -3,6 +3,7 @@ package mcp
 import (
 	"errors"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -229,18 +230,25 @@ func exposureOf(c ServerConfig) string {
 	return c.Exposure
 }
 
+// Match explicit HTTP status labels, never numeric fragments of URLs or ports.
+var failureHTTPStatus = regexp.MustCompile(`\b(?:status(?: code)?[: ]+|http(?:/[0-9.]+)? +)(401|403|404)\b`)
+
 // describeFailure maps a connection error to a short, credential-free hint.
 // Raw transport errors can contain URLs, headers, or arguments.
 func describeFailure(err error) string {
 	text := strings.ToLower(err.Error())
+	status := ""
+	if match := failureHTTPStatus.FindStringSubmatch(text); match != nil {
+		status = match[1]
+	}
 	switch {
 	case strings.Contains(text, "legacy sse"):
 		return "endpoint rejected streamable HTTP, try transport sse or check the URL"
-	case strings.Contains(text, "401") || strings.Contains(text, "unauthorized") || strings.Contains(text, "authorization required"):
+	case status == "401" || strings.Contains(text, "unauthorized") || strings.Contains(text, "authorization required"):
 		return "server rejected the credentials (401)"
-	case strings.Contains(text, "403") || strings.Contains(text, "forbidden"):
+	case status == "403" || strings.Contains(text, "forbidden"):
 		return "access forbidden (403)"
-	case strings.Contains(text, "404"):
+	case status == "404":
 		return "endpoint not found (404)"
 	case strings.Contains(text, "chdir"):
 		return "working directory not found"

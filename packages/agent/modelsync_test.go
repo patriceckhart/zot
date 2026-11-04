@@ -26,7 +26,7 @@ func TestRefreshModelsBedrockWithDefaultCLIProfile(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
 	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
-	for _, name := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "KIMI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "GONDOLA_API_KEY", "YOLO_AUTO_API_KEY", "CHEAPER_INFERENCE_API_KEY", "OPPER_API_KEY", "RUNCRATE_API_KEY"} {
+	for _, name := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "KIMI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "GONDOLA_API_KEY", "YOLO_AUTO_API_KEY", "CHEAPER_INFERENCE_API_KEY", "OPPER_API_KEY", "RUNCRATE_API_KEY", "CLOUDGPU_API_KEY"} {
 		t.Setenv(name, "")
 	}
 	bin := t.TempDir()
