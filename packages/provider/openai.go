@@ -224,22 +224,30 @@ type oaiRequest struct {
 
 // ---- request building ----
 
-func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
-	// The OpenAI wire client is shared by many providers, so prefer its own
-	// provider namespace before falling back to a provider-agnostic lookup.
-	m, err := FindModel(c.Name(), req.Model)
-	if err != nil {
-		m, err = FindModel("", req.Model)
+// modelMetadata keeps request building and stream parsing on the same catalog
+// entry, including when provider discovery has not completed yet.
+func (c *openaiClient) modelMetadata(id string) Model {
+	if m, err := FindModel(c.Name(), id); err == nil {
+		return m
 	}
-	if err != nil {
-		// Unknown model: use sensible defaults so local/custom
-		// models still work without a catalog entry.
-		m = Model{
-			ID:            req.Model,
-			ContextWindow: 32768,
-			MaxOutput:     8192,
+	if c.Name() == "cloudgpu" {
+		// Bare CloudGPU IDs can collide with other providers. Their metadata
+		// does not describe this endpoint's supported wire fields or limits.
+		return Model{
+			Provider: c.Name(), ID: id,
+			ContextWindow: customDiscoveryContextWindow,
+			MaxOutput:     customDiscoveryMaxOutput,
 		}
 	}
+	if m, err := FindModel("", id); err == nil {
+		return m
+	}
+	// Unknown local/custom models retain the shared client's defaults.
+	return Model{ID: id, ContextWindow: 32768, MaxOutput: 8192}
+}
+
+func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
+	m := c.modelMetadata(req.Model)
 	reasoning := ClampReasoningForModel(m, req.Reasoning)
 	out := &oaiRequest{
 		Model:         req.Model,
@@ -696,10 +704,7 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 	defer close(out)
 	defer resp.Body.Close()
 
-	model, err := FindModel(c.Name(), req.Model)
-	if err != nil {
-		model, _ = FindModel("", req.Model)
-	}
+	model := c.modelMetadata(req.Model)
 	grammar := grammarTools(req.Tools, supportsGrammarTools(model, c.Name(), false))
 	out <- EventStart{Model: req.Model, Provider: c.Name()}
 
