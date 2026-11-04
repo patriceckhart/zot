@@ -176,7 +176,7 @@ zot keeps both configuration and runtime state under `$ZOT_HOME`, even when that
 - `models.json` optionally defines model metadata and provider endpoints (`baseUrl`). Adding a model here does not select it as the default. See [Custom models](#custom-models).
 - `auth.json` stores credentials, not model definitions. Prefer `/login` for supported providers, and keep secrets out of `config.json` and `models.json`.
 
-Neither `config.json` nor `models.json` is required to start zot with an explicit provider and model. Without a saved or explicit provider, zot defaults to Anthropic and may offer login if no usable credentials are available. Ollama needs no login. See [Local models with ollama](#local-models-with-ollama) for minimal configuration and remote-server examples.
+Neither `config.json` nor `models.json` is required to start zot with an explicit provider and model. Without a saved or explicit provider, zot defaults to Anthropic and may offer login if no usable credentials are available. Without a saved or explicit model, Anthropic uses `claude-sonnet-5-5`. Ollama needs no login. See [Local models with ollama](#local-models-with-ollama) for minimal configuration and remote-server examples.
 
 ### HTTP proxy
 
@@ -310,6 +310,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `-c`, `--continue` | Resume the latest session for this cwd. |
 | `-r`, `--resume` | Pick a session to resume. |
 | `--session <path>` | Resume a specific session file. |
+| `-s`, `--session-name <name>` | Create or resume a session by its readable alias in this cwd. |
 | `--no-session` | Don't read or write session files. |
 | `--cwd <path>` | Use `<path>` as the working directory. |
 | `--no-tools` | Disable all tools. |
@@ -435,6 +436,8 @@ After a shell command finishes, `up` / `down` input history recalls it with the 
 
 ### `/sessions`
 
+New sessions show a readable alias such as `[chatty-lake]` beside their title or first prompt. The alias is a stable lookup name, separate from the editable display title.
+
 Shows previous sessions for the current working directory, newest first, with timestamp, model, message count, cost, and the first user prompt. Pick one with `up`/`down`, `enter` to resume, `r` to rename, `d` to delete, or `esc` to cancel. Deletion requires confirmation and permanently removes the session file; the currently active session cannot be deleted. zot swaps the current session file for the selected one and replays the full transcript (including tool calls) into the agent. Sessions remember the model they ended on, so resuming picks up on that exact model even if your global default changed.
 
 ### `/session`
@@ -504,7 +507,7 @@ Background subagents that run alongside your main session. Each one is a separat
 | `r` | Remove the selected agent entirely (session + meta gone). |
 | `esc` | Close the dashboard. |
 
-**Inside an agent's transcript** — a chat overlay with an always-on inline composer at the bottom. The conversation flows above it; type and `enter` to send a follow-up. The view auto-follows streaming output and shows an inline spinner with the agent's current activity (`thinking`, `tool: edit_file`, etc.) while it's busy. `esc` returns to the dashboard.
+**Inside an agent's transcript:** a chat overlay with an always-on inline composer at the bottom. The conversation flows above it. Type and `enter` to send a follow-up. The view shows tool calls with their arguments and text results alongside the conversation, including when reopening a saved agent. Tool output is displayed literally, with non-text results represented by type labels. The view auto-follows output and shows an inline spinner with the agent's current activity (`thinking`, `tool: bash`, etc.) while it's busy. Commands remain busy until their tool results arrive. Subprocess agents persist transcript messages as they are appended, rather than waiting for the entire prompt to finish. Older continuous-host event logs may lack tool arguments and results that were not mirrored at the time. `esc` returns to the dashboard.
 
 **Switching the spawn model from inside the editor** — while composing a task in the `n`-prompt, type `/model` on its own line and `enter`. The standard `/model` picker pops up; pick a model, the picker closes, and the editor reopens with your typed task intact and the new model pinned for the spawn.
 
@@ -600,6 +603,16 @@ This is a guardrail against accidents, not a hard security boundary. If you need
 ## Sessions
 
 Every interactive or print/json run (unless `--no-session`) writes a JSONL transcript under `$ZOT_HOME/sessions/<cwd-hash>/`. Resume any of them with `--continue`, `--resume`, `--session <path>`, or interactively via `/sessions` inside the TUI. In interactive mode, `/new` persists the current conversation and starts an empty session while preserving the working directory, model, tools, extensions, and runtime settings. It does not make a model call, and the previous conversation remains available through `/sessions`. `/new` is hidden from autocomplete and `/help` with `--no-session`, and invoking it directly reports that sessions are disabled. Empty sessions (the user exited without prompting) are deleted on close so the list stays tidy.
+
+### Readable session names
+
+New sessions in the local session store receive aliases such as `chatty-lake`. Resume one with `zot -s chatty-lake`, or start a session with a chosen alias using `zot -s my_session`. The long form is `--session-name`. Aliases are case-insensitive and normalized to lowercase, start with an ASCII letter or digit, and contain at most 64 ASCII letters, digits, hyphens, or underscores. Names are unique within the current working directory and named-agent session namespace, not across all directories.
+
+UUIDs remain the internal identity. `/sessions` displays aliases separately from editable titles, and renaming a title does not change the alias. Forks and imports receive fresh aliases. Existing transcripts remain readable without migration. Explicit `--session PATH` files keep their existing path-based behavior and do not automatically receive aliases. Empty sessions, including explicitly named ones, are still removed on close.
+
+A second writer to an aliased transcript is rejected, whether opened by name, path, or the picker. Writer locks are released when zot closes or exits, including after a crash. Small `.lock` sidecar files remain intentionally and must not be removed while zot is running. These locks coordinate cooperating zot processes on local filesystems, not arbitrary external editors or older zot versions. Read-only session inspection and export remain available during execution.
+
+`--session-name` cannot be combined with `--session`, `--continue`, `--resume`, or `--no-session`. Naming through this flag is not available in RPC mode or on a continuous host, whose conversations retain their separate title API.
 
 Use `zot sessions prune` outside the TUI to find sessions whose recorded working directories no longer exist. The command groups sessions by directory, shows the number and human-readable total size of stored sessions, lets you select groups, and requires confirmation before permanently deleting files. It preserves sessions when a directory check fails with an error other than "not found" and rechecks each selected directory immediately before deletion. A deleted directory and a path hidden by some unmounted filesystems are indistinguishable, so review the selection and ensure remote filesystems are mounted before deleting missing-directory groups.
 
@@ -842,13 +855,21 @@ Claude Opus 5.5 is available through Anthropic (`--provider anthropic --model cl
 
 Copilot's dollar display is an API-equivalent estimate, not a GitHub invoice or remaining quota. Its built-in token prices are sourced from the `github-copilot` catalog at [models.dev](https://models.dev/api.json), including cache prices and supported long-context tiers. Prices are bundled with zot, not fetched automatically at runtime. Sonnet 5 uses $2 input, $10 output, $0.20 cache reads, and $2.50 cache writes per million tokens. Previously recorded session costs are not recalculated when catalog prices change.
 
-Claude Sonnet 5.5 is available through Anthropic (`--provider anthropic --model claude-sonnet-5-5`). It supports a 1,000,000-token context window and up to 128,000 output tokens. Adaptive thinking is always on with the same `low` through `max` effort levels as Opus 5.5, and `off` or `minimum` requests use `low`. Temperature is not sent. Catalog prices per million tokens are $2 input, $10 output, $0.20 cache reads, and $2.50 cache writes.
+Claude Sonnet 5.5 is the default for direct Anthropic when no model is selected (`--provider anthropic --model claude-sonnet-5-5`). It supports a 1,000,000-token context window and up to 128,000 output tokens. Adaptive thinking is always on with the same `low` through `max` effort levels as Opus 5.5, and `off` or `minimum` requests use `low`. Temperature is not sent. Catalog prices per million tokens are $2 input, $10 output, $0.20 cache reads, and $2.50 cache writes.
+
+The direct Anthropic catalog omits retired Opus 4/4.1, Sonnet 4, Sonnet 3.5/3.7, Haiku 3.5, and Opus 3 entries. A saved selection of a removed model follows the normal recovery path: zot warns, selects Sonnet 5.5, and repairs the saved model. An unavailable explicit `--model` selection also falls back with a warning, but does not overwrite the saved selection. Sonnet 4.5 is still explicitly selectable, but is no longer the default. Anthropic schedules its retirement for November 30, 2026. Partner-provider catalogs and defaults are unchanged because their retirement schedules can differ. See [Anthropic model deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations).
+
+Claude Haiku 5.5 is available directly through Anthropic (`--provider anthropic --model claude-haiku-5-5`) with a 1,000,000-token context window and up to 128,000 output tokens. It supports adaptive thinking from `low` through `max`, while `off` explicitly disables thinking. Temperature is not sent. Catalog prices per million tokens are $0.10 input, $0.50 output, $0.01 cache reads, and $0.125 cache writes. Above 100,000 input tokens, these rates become $0.50, $2.50, $0.05, and $0.625 respectively.
 
 On Amazon Bedrock, Claude Sonnet 5.5 (`anthropic.claude-sonnet-5-5`) has `us.`, `eu.`, and `global.` inference profiles. Claude Haiku 5.5 (`anthropic.claude-haiku-5-5`) also has `au.` and `jp.` profiles. Bare IDs are selection aliases, not in-region Converse endpoints. Zot automatically selects US profiles in US commercial and Canadian regions, EU profiles in European regions, and Haiku's AU/JP profiles in Sydney/Melbourne and Tokyo/Osaka respectively. In other regions, select an explicit supported inference profile. Zot does not automatically fall back to `global.`, which permits worldwide routing. Both models support a 1,000,000-token context window and up to 128,000 output tokens. Sonnet 5.5 follows the same always-on adaptive thinking rules as above. Haiku 5.5 uses adaptive thinking with `low` through `max` effort, and `off` disables thinking. Catalog prices per million tokens are $2 input, $10 output, $0.10 cache reads, and $2.50 cache writes for Sonnet 5.5. For Haiku 5.5 they are $0.10 input, $0.50 output, $0.01 cache reads, and $0.125 cache writes. Bedrock Opus 5.5 is priced at $4 input, $20 output, $0.20 cache reads, and $5 cache writes. Cache-write prices reflect zot's default 5-minute cache checkpoints, not the higher-priced 1-hour option. Profile availability remains subject to AWS region and account access.
 
 GPT-6 Sol and GPT-6 Luna are available through OpenAI API keys, OpenAI Codex subscriptions, and GitHub Copilot. Select `gpt-6-sol` or `gpt-6-luna` with `--provider openai`, `openai-responses`, `openai-codex`, or `github-copilot`. Both use the Responses API, support up to 128,000 output tokens, and expose `low` through `max` reasoning. OpenAI and Codex entries use a 272,000-token context window, while Copilot entries use 1,000,000 tokens. Access through subscription providers depends on account availability and organization policy.
 
-GPT-6.1 Sol (`gpt-6.1-sol`) is available with `--provider openai`, `openai-responses`, or `openai-codex`, subject to account access. It uses the Responses API and supports `low` through `max` reasoning. Zot currently uses a 272,000-token context window and 128,000-token output limit for this model. It is not included in the GitHub Copilot catalog.
+GPT-6.1 Sol (`gpt-6.1-sol`) is available with `--provider openai`, `openai-responses`, or `openai-codex`, subject to account access. It uses the Responses API and supports `low` through `max` reasoning. The context window is 272,000 tokens for API-key providers and 500,000 tokens for Codex, with a 128,000-token output limit. It is not included in the GitHub Copilot catalog.
+
+GPT-6.1 Terra (`gpt-6.1-terra`) is available with `--provider openai`, `openai-responses`, `openai-codex`, or `azure-openai-responses`, subject to account and deployment access. It uses the Responses API with the same context and output limits as GPT-6.1 Sol. It supports `off` (sent as reasoning effort `none`) and `low` through `max`. Catalog prices per million tokens are $1 input, $5 output, $0.05 cache reads, and $1.25 cache writes. Above 272,000 input tokens, these rates become $2, $7.50, $0.10, and $2.50 respectively.
+
+GPT-5.6 catalog prices for OpenAI, Codex, and Azure are $0.20 input / $1.20 output for Luna, $4 / $20 for Sol, and $2 / $12 for Terra per million tokens. Cache-read and cache-write rates are respectively $0.02 / $0.25, $0.40 / $5, and $0.20 / $2.50. Above 272,000 input tokens, input and cache rates double and output rates increase by 50%. Subscription-provider costs are API-equivalent estimates, not invoices. Previously recorded session costs are not recalculated.
 
 You can add additional Gemini model IDs to `models.json` under the `google` provider.
 

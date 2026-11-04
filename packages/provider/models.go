@@ -62,12 +62,21 @@ type Model struct {
 	Source string
 }
 
+// DefaultModel is used when the user does not specify one.
+// Keep the choice explicit rather than depending on catalog order.
+var DefaultModel = Model{
+	Provider: "anthropic", ID: "claude-sonnet-5-5", DisplayName: "Claude Sonnet 5.5",
+	ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true,
+	PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.2, PriceCacheWrite: 2.5,
+}
+
 // Catalog is the hardcoded, read-only list of supported models.
 // Prices are USD per 1M tokens. The list is curated to what zot's
 // clients (Anthropic Messages + OpenAI Chat Completions) can actually
 // talk to; models that are only reachable through the OpenAI Responses
 // API (o1-pro, o3-pro, gpt-5-pro) are omitted.
 var Catalog = []Model{
+	DefaultModel,
 	// ---- Anthropic / Claude 4.x ----
 	{
 		Provider: "anthropic", ID: "claude-sonnet-4-5", DisplayName: "Claude Sonnet 4.5 (latest)",
@@ -75,46 +84,9 @@ var Catalog = []Model{
 		PriceInput: 3, PriceOutput: 15, PriceCacheRead: 0.3, PriceCacheWrite: 3.75,
 	},
 	{
-		Provider: "anthropic", ID: "claude-opus-4-1", DisplayName: "Claude Opus 4.1 (latest)",
-		ContextWindow: 200000, MaxOutput: 32000, Reasoning: true,
-		PriceInput: 15, PriceOutput: 75, PriceCacheRead: 1.5, PriceCacheWrite: 18.75,
-	},
-	{
-		Provider: "anthropic", ID: "claude-opus-4-0", DisplayName: "Claude Opus 4 (latest)",
-		ContextWindow: 200000, MaxOutput: 32000, Reasoning: true,
-		PriceInput: 15, PriceOutput: 75, PriceCacheRead: 1.5, PriceCacheWrite: 18.75,
-	},
-	{
-		Provider: "anthropic", ID: "claude-sonnet-4-0", DisplayName: "Claude Sonnet 4 (latest)",
-		ContextWindow: 200000, MaxOutput: 64000, Reasoning: true,
-		PriceInput: 3, PriceOutput: 15, PriceCacheRead: 0.3, PriceCacheWrite: 3.75,
-	},
-	{
 		Provider: "anthropic", ID: "claude-haiku-4-5", DisplayName: "Claude Haiku 4.5 (latest)",
 		ContextWindow: 200000, MaxOutput: 64000, Reasoning: true,
 		PriceInput: 1, PriceOutput: 5, PriceCacheRead: 0.1, PriceCacheWrite: 1.25,
-	},
-
-	// ---- Anthropic / Claude 3.x (legacy) ----
-	{
-		Provider: "anthropic", ID: "claude-3-7-sonnet-20250219", DisplayName: "Claude Sonnet 3.7",
-		ContextWindow: 200000, MaxOutput: 64000, Reasoning: true,
-		PriceInput: 3, PriceOutput: 15, PriceCacheRead: 0.3, PriceCacheWrite: 3.75,
-	},
-	{
-		Provider: "anthropic", ID: "claude-3-5-sonnet-20241022", DisplayName: "Claude Sonnet 3.5 v2",
-		ContextWindow: 200000, MaxOutput: 8192, Reasoning: false,
-		PriceInput: 3, PriceOutput: 15, PriceCacheRead: 0.3, PriceCacheWrite: 3.75,
-	},
-	{
-		Provider: "anthropic", ID: "claude-3-5-haiku-latest", DisplayName: "Claude Haiku 3.5 (latest)",
-		ContextWindow: 200000, MaxOutput: 8192, Reasoning: false,
-		PriceInput: 0.8, PriceOutput: 4, PriceCacheRead: 0.08, PriceCacheWrite: 1,
-	},
-	{
-		Provider: "anthropic", ID: "claude-3-opus-20240229", DisplayName: "Claude Opus 3",
-		ContextWindow: 200000, MaxOutput: 4096, Reasoning: false,
-		PriceInput: 15, PriceOutput: 75, PriceCacheRead: 1.5, PriceCacheWrite: 18.75,
 	},
 
 	// ---- DeepSeek ----
@@ -355,6 +327,13 @@ var Catalog = []Model{
 
 	// ---- Anthropic / newer families ----
 	{
+		Provider: "anthropic", ID: "claude-haiku-5-5", DisplayName: "Claude Haiku 5.5",
+		ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true,
+		PriceInput: 0.1, PriceOutput: 0.5, PriceCacheRead: 0.01, PriceCacheWrite: 0.125,
+		PriceTierInputTokens: 100000,
+		PriceInputAbove:      0.5, PriceOutputAbove: 2.5, PriceCacheReadAbove: 0.05, PriceCacheWriteAbove: 0.625,
+	},
+	{
 		Provider: "anthropic", ID: "claude-opus-4-5", DisplayName: "Claude Opus 4.5 (latest)",
 		ContextWindow: 200000, MaxOutput: 64000, Reasoning: true,
 		PriceInput: 5, PriceOutput: 25, PriceCacheRead: 0.5, PriceCacheWrite: 6.25,
@@ -396,11 +375,6 @@ var Catalog = []Model{
 	},
 	{
 		Provider: "anthropic", ID: "claude-sonnet-5", DisplayName: "Claude Sonnet 5",
-		ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true,
-		PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.2, PriceCacheWrite: 2.5,
-	},
-	{
-		Provider: "anthropic", ID: "claude-sonnet-5-5", DisplayName: "Claude Sonnet 5.5",
 		ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true,
 		PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.2, PriceCacheWrite: 2.5,
 	},
@@ -451,23 +425,36 @@ var Catalog = []Model{
 	{
 		Provider: "openai", ID: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna", API: APIResponses,
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
-		PriceInput: 1, PriceOutput: 6, PriceCacheRead: 0.1, PriceCacheWrite: 1.25,
+		PriceInput: 0.2, PriceOutput: 1.2, PriceCacheRead: 0.02, PriceCacheWrite: 0.25,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      0.4, PriceOutputAbove: 1.8, PriceCacheReadAbove: 0.04, PriceCacheWriteAbove: 0.5,
 		Speculative: true,
 	},
 	{
 		Provider: "openai", ID: "gpt-5.6-sol", DisplayName: "GPT-5.6 Sol", API: APIResponses,
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
-		PriceInput: 5, PriceOutput: 30, PriceCacheRead: 0.5, PriceCacheWrite: 6.25,
+		PriceInput: 4, PriceOutput: 20, PriceCacheRead: 0.4, PriceCacheWrite: 5,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      8, PriceOutputAbove: 30, PriceCacheReadAbove: 0.8, PriceCacheWriteAbove: 10,
 		Speculative: true,
 	},
 	{
 		Provider: "openai", ID: "gpt-5.6-terra", DisplayName: "GPT-5.6 Terra", API: APIResponses,
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
-		PriceInput: 2.5, PriceOutput: 15, PriceCacheRead: 0.25, PriceCacheWrite: 3.125,
+		PriceInput: 2, PriceOutput: 12, PriceCacheRead: 0.2, PriceCacheWrite: 2.5,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      4, PriceOutputAbove: 18, PriceCacheReadAbove: 0.4, PriceCacheWriteAbove: 5,
 		Speculative: true,
 	},
 
 	// ---- OpenAI / GPT-6 ----
+	{
+		Provider: "openai", ID: "gpt-6.1-terra", DisplayName: "GPT-6.1 Terra", API: APIResponses,
+		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 1, PriceOutput: 5, PriceCacheRead: 0.05, PriceCacheWrite: 1.25,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      2, PriceOutputAbove: 7.5, PriceCacheReadAbove: 0.1, PriceCacheWriteAbove: 2.5,
+	},
 	{
 		Provider: "openai", ID: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol", API: APIResponses,
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
@@ -527,24 +514,37 @@ var Catalog = []Model{
 	{
 		Provider: "openai-codex", ID: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna",
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
-		PriceInput: 1, PriceOutput: 6, PriceCacheRead: 0.1, PriceCacheWrite: 1.25,
+		PriceInput: 0.2, PriceOutput: 1.2, PriceCacheRead: 0.02, PriceCacheWrite: 0.25,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      0.4, PriceOutputAbove: 1.8, PriceCacheReadAbove: 0.04, PriceCacheWriteAbove: 0.5,
 		Speculative: true,
 	},
 	{
 		Provider: "openai-codex", ID: "gpt-5.6-sol", DisplayName: "GPT-5.6 Sol",
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
-		PriceInput: 5, PriceOutput: 30, PriceCacheRead: 0.5, PriceCacheWrite: 6.25,
+		PriceInput: 4, PriceOutput: 20, PriceCacheRead: 0.4, PriceCacheWrite: 5,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      8, PriceOutputAbove: 30, PriceCacheReadAbove: 0.8, PriceCacheWriteAbove: 10,
 		Speculative: true,
 	},
 	{
 		Provider: "openai-codex", ID: "gpt-5.6-terra", DisplayName: "GPT-5.6 Terra",
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
-		PriceInput: 2.5, PriceOutput: 15, PriceCacheRead: 0.25, PriceCacheWrite: 3.125,
+		PriceInput: 2, PriceOutput: 12, PriceCacheRead: 0.2, PriceCacheWrite: 2.5,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      4, PriceOutputAbove: 18, PriceCacheReadAbove: 0.4, PriceCacheWriteAbove: 5,
 		Speculative: true,
 	},
 	{
+		Provider: "openai-codex", ID: "gpt-6.1-terra", DisplayName: "GPT-6.1 Terra", API: APIResponses,
+		ContextWindow: 500000, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 1, PriceOutput: 5, PriceCacheRead: 0.05, PriceCacheWrite: 1.25,
+		PriceTierInputTokens: 272000,
+		PriceInputAbove:      2, PriceOutputAbove: 7.5, PriceCacheReadAbove: 0.1, PriceCacheWriteAbove: 2.5,
+	},
+	{
 		Provider: "openai-codex", ID: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol", API: APIResponses,
-		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,
+		ContextWindow: 500000, MaxOutput: 128000, Reasoning: true,
 		PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.1, PriceCacheWrite: 2.5,
 		PriceTierInputTokens: 272000,
 		PriceInputAbove:      4, PriceOutputAbove: 15, PriceCacheReadAbove: 0.2, PriceCacheWriteAbove: 5,
@@ -571,9 +571,6 @@ var Catalog = []Model{
 		PriceInputAbove:      0.2, PriceOutputAbove: 0.75, PriceCacheReadAbove: 0.02, PriceCacheWriteAbove: 0.25,
 	},
 }
-
-// DefaultModel is used when the user does not specify one.
-var DefaultModel = Catalog[0] // claude-sonnet-4-5
 
 // ----- active (merged) catalog -----
 //

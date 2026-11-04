@@ -201,7 +201,7 @@ func usesAdaptiveThinking(m Model) bool {
 		return true
 	}
 	id := strings.ToLower(m.ID)
-	for _, marker := range []string{"opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8", "opus-5", "opus.5", "sonnet-5", "fable-5"} {
+	for _, marker := range []string{"opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8", "opus-5", "opus.5", "sonnet-5", "haiku-5-5", "haiku-5.5", "fable-5"} {
 		if strings.Contains(id, marker) {
 			return true
 		}
@@ -318,9 +318,14 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 		}
 	}
 
+	// Haiku 5.5 defaults to adaptive thinking unless explicitly disabled.
+	if reasoning == "" && c.Name() == "anthropic" && m.ID == "claude-haiku-5-5" {
+		out.Thinking = &anthThinking{Type: "disabled"}
+	}
+
 	// Newer Claude models default to omitted thinking text even with high
 	// effort. Do not send this Anthropic option to compatible third parties.
-	if req.StreamReasoning && c.Name() == "anthropic" && out.Thinking != nil {
+	if req.StreamReasoning && c.Name() == "anthropic" && out.Thinking != nil && out.Thinking.Type != "disabled" {
 		out.Thinking.Display = "summarized"
 	}
 

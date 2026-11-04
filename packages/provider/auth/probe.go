@@ -102,6 +102,14 @@ func probeAPIKey(ctx context.Context, provider, key string, c *http.Client) erro
 			return err
 		}
 		req.Header.Set("authorization", "Bearer "+key)
+		// Same app-attribution headers the inference client sends. The auth
+		// package cannot import provider (that would be an import cycle), so
+		// the values are duplicated here; keep them in sync with
+		// setOpenRouterAttribution in packages/provider.
+		req.Header.Set("HTTP-Referer", "https://www.zot.sh")
+		req.Header.Set("X-OpenRouter-Title", "zot")
+		req.Header.Set("X-Title", "zot")
+		req.Header.Set("X-OpenRouter-Categories", "cli-agent")
 	case "gondola":
 		req, err = http.NewRequestWithContext(ctx, "GET", "https://api.gondola-ai.com/v1/balance", nil)
 		if err != nil {

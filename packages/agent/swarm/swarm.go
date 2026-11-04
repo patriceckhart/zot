@@ -641,7 +641,8 @@ type agentSink struct{ a *Agent }
 
 func (s agentSink) Activity(msg string) { s.a.setActivity(msg) }
 func (s agentSink) Transcript(chunk string) {
-	if strings.HasPrefix(chunk, "stderr: ") || strings.HasPrefix(chunk, "error: ") {
+	if strings.HasPrefix(chunk, "stderr: ") || strings.HasPrefix(chunk, "error: ") ||
+		strings.HasPrefix(chunk, "tool: ") || strings.HasPrefix(chunk, "tool output: ") {
 		s.a.appendTranscript(chunk)
 		return
 	}

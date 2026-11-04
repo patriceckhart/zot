@@ -121,6 +121,11 @@ func (c NonChatClient) post(ctx context.Context, endpoint, key string, payload a
 	if key != "" && key != "local" {
 		request.Header.Set("Authorization", "Bearer "+key)
 	}
+	// OpenRouter also serves non-chat inference (image generation) through
+	// /chat/completions, so it gets the same app-attribution headers.
+	if isOpenRouterURL(request.URL) {
+		setOpenRouterAttribution(request)
+	}
 	client := c.HTTP
 	if client == nil {
 		client = http.DefaultClient

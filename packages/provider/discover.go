@@ -260,6 +260,9 @@ func DiscoverOpenRouter(ctx context.Context, baseURL string) ([]Model, error) {
 	if err != nil {
 		return nil, err
 	}
+	if isOpenRouterURL(req.URL) {
+		setOpenRouterAttribution(req)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -344,6 +347,9 @@ func DiscoverOpenRouterPresets(ctx context.Context, apiKey, baseURL string) ([]M
 		}
 		if apiKey != "" {
 			req.Header.Set("authorization", "Bearer "+apiKey)
+		}
+		if isOpenRouterURL(req.URL) {
+			setOpenRouterAttribution(req)
 		}
 		resp, err := client.Do(req)
 		if err != nil {

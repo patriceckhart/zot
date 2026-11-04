@@ -425,19 +425,29 @@ func applyEventToSink(ev Event, sink Sink) {
 			}
 		}
 		appendMessage(strings.Join(text, "\n"), ev.Type == "assistant_message")
-		if ev.Type == "assistant_message" {
-			sink.Activity("idle")
-		}
 	case "turn_start":
 		sink.Activity("thinking")
-	case "tool_call":
-		if name, _ := ev.Data["name"].(string); name != "" {
+	case "tool_call", "tool_result":
+		sink.Transcript(toolTranscript(ev))
+		if tools, ok := sink.(interface{ toolActivity(Event) }); ok {
+			tools.toolActivity(ev)
+		} else if ev.Type == "tool_call" {
+			name, _ := ev.Data["name"].(string)
 			sink.Activity("tool: " + truncate(name, 60))
+		} else {
+			sink.Activity("thinking")
 		}
-	case "tool_result":
-		sink.Activity("idle")
 	case "turn_end":
-		sink.Activity("idle")
+		// A provider step ends before its tools execute. Only the daemon's
+		// prompt completion (with step), or a non-tool stop, means idle.
+		if _, promptEnd := ev.Data["step"]; !promptEnd && ev.Data["stop"] == "tool_use" {
+			return
+		}
+		if tools, ok := sink.(interface{ toolActivity(Event) }); ok {
+			tools.toolActivity(ev)
+		} else {
+			sink.Activity("idle")
+		}
 	case "agent_ready":
 		sink.Activity("idle")
 	case "agent_stopped":

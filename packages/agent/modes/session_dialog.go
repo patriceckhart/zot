@@ -209,6 +209,9 @@ func formatSessionRowPlain(s core.SessionSummary, maxWidth int) string {
 		summary = "(empty)"
 	}
 	summary = strings.ReplaceAll(summary, "\n", " ")
+	if s.Alias != "" {
+		summary = "[" + s.Alias + "] " + summary
+	}
 	left := fmt.Sprintf("%-14s  %s/%s  %d msgs  $%.4f  ",
 		when, s.Provider, s.Model, s.MessageCount, s.TotalCost)
 	room := maxWidth - len([]rune(left))

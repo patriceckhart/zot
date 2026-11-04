@@ -1215,6 +1215,8 @@ func renderSwarmTranscriptBlocks(lines []string, th tui.Theme, width int, compac
 		kindUser
 		kindStderr
 		kindError
+		kindTool
+		kindToolOutput
 	)
 	type block struct {
 		kind blockKind
@@ -1224,6 +1226,10 @@ func renderSwarmTranscriptBlocks(lines []string, th tui.Theme, width int, compac
 	// classify maps one raw line to its role and the stripped body.
 	classify := func(s string) (blockKind, string) {
 		switch {
+		case strings.HasPrefix(s, "tool: "):
+			return kindTool, strings.TrimPrefix(s, "tool: ")
+		case strings.HasPrefix(s, "tool output: "):
+			return kindToolOutput, strings.TrimPrefix(s, "tool output: ")
 		case strings.HasPrefix(s, "user: "):
 			return kindUser, strings.TrimPrefix(s, "user: ")
 		case strings.HasPrefix(s, "stderr: "):
@@ -1279,6 +1285,14 @@ func renderSwarmTranscriptBlocks(lines []string, th tui.Theme, width int, compac
 		case kindAssistant:
 			text := strings.Join(b.body, "\n")
 			out = append(out, renderDialogMarkdownRows(strings.TrimLeft(text, "\n"), th, width)...)
+		case kindTool, kindToolOutput:
+			// Tool output is literal, never interpreted as assistant markdown.
+			for _, line := range b.body {
+				if b.kind == kindTool {
+					line = "tool  " + line
+				}
+				out = append(out, wrapDialogTextRows(th.FG256(th.Muted, line), width)...)
+			}
 		case kindStderr:
 			for _, line := range b.body {
 				out = append(out, wrapDialogTextRows(th.FG256(th.Muted, "stderr  "+line), width)...)

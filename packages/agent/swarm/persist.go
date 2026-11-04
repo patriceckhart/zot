@@ -292,6 +292,8 @@ func replayEventsIntoAgent(a *Agent, evs []Event) {
 			} else {
 				a.appendUserMessage(message)
 			}
+		case "tool_call", "tool_result":
+			a.appendTranscript(toolTranscript(ev))
 		case "stdout":
 			if txt, _ := ev.Data["text"].(string); txt != "" {
 				a.appendTranscript(txt)

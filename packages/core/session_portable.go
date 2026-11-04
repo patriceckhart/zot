@@ -181,25 +181,21 @@ func ImportSession(srcPath, root, cwd, version string) (string, error) {
 		return "", errors.New("import: first line is not a meta row")
 	}
 
-	// Build the destination inside the current cwd's session dir
-	// with a fresh timestamped name.
-	dir := SessionsDir(root, cwd)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	newID := uuid.NewString()
-	name := fmt.Sprintf("%s-%s.jsonl", time.Now().UTC().Format("20060102-150405"), newID[:8])
-	outPath := filepath.Join(dir, name)
-	dst, err := os.OpenFile(outPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	// Imported aliases are local identities, never copied from the source.
+	dst, lock, alias, err := createAliasedFile(root, cwd, "")
 	if err != nil {
 		return "", fmt.Errorf("import: create dst: %w", err)
 	}
+	defer lock.Close()
 	defer dst.Close()
+	outPath := dst.Name()
+	newID := uuid.NewString()
 	bw := bufio.NewWriter(dst)
 
 	// Write a fresh meta row claiming ownership.
 	importMeta := SessionMeta{
 		ID:       newID,
+		Alias:    alias,
 		CWD:      cwd,
 		Model:    head.Meta.Model,
 		Provider: head.Meta.Provider,
@@ -295,24 +291,21 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 	}
 	parentMeta := *head.Meta
 
-	// Build the destination file.
-	dir := SessionsDir(root, cwd)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	newID := uuid.NewString()
-	name := fmt.Sprintf("%s-%s.jsonl", time.Now().UTC().Format("20060102-150405"), newID[:8])
-	outPath := filepath.Join(dir, name)
-	dst, err := os.OpenFile(outPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	// Branches receive their own alias without changing parent UUID links.
+	dst, lock, alias, err := createAliasedFile(root, cwd, "")
 	if err != nil {
 		return "", fmt.Errorf("branch: create dst: %w", err)
 	}
+	defer lock.Close()
 	defer dst.Close()
+	outPath := dst.Name()
+	newID := uuid.NewString()
 	bw := bufio.NewWriter(dst)
 
 	// Write the branch meta.
 	branchMeta := SessionMeta{
 		ID:               newID,
+		Alias:            alias,
 		CWD:              cwd,
 		Model:            parentMeta.Model,
 		Provider:         parentMeta.Provider,

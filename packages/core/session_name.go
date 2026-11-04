@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-// SessionName returns an explicitly assigned name, never a prompt-derived
+// SessionName returns an explicitly assigned title or alias, never a prompt-derived
 // display title. Legacy top-level rename rows are supported. Legacy branch
 // rename rows are omitted because they may contain generated prompt excerpts.
 func SessionName(path string) (string, error) {
@@ -29,6 +29,9 @@ func SessionName(path string) (string, error) {
 			if json.Unmarshal(line, &row) == nil {
 				branch = row.Meta.Parent != ""
 				name = row.Meta.Title
+				if name == "" {
+					name = row.Meta.Alias
+				}
 			}
 		case "rename":
 			var row struct {

@@ -44,6 +44,38 @@ func TestProbeGondolaAPIKeyUsesAuthenticatedBalanceEndpoint(t *testing.T) {
 	}
 }
 
+func TestProbeOpenRouterAPIKeySendsAttributionHeaders(t *testing.T) {
+	client := &http.Client{Transport: authRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://openrouter.ai/api/v1/models" {
+			t.Fatalf("probe URL = %q", req.URL.String())
+		}
+		if got := req.Header.Get("authorization"); got != "Bearer sk-or-synthetic" {
+			t.Fatalf("authorization = %q", got)
+		}
+		want := map[string]string{
+			"HTTP-Referer":            "https://www.zot.sh",
+			"X-OpenRouter-Title":      "zot",
+			"X-Title":                 "zot",
+			"X-OpenRouter-Categories": "cli-agent",
+		}
+		for name, value := range want {
+			if got := req.Header.Get(name); got != value {
+				t.Errorf("%s = %q; want %q", name, got, value)
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"data":[]}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+
+	if err := probeAPIKey(context.Background(), "openrouter", "sk-or-synthetic", client); err != nil {
+		t.Fatalf("probeAPIKey error = %v", err)
+	}
+}
+
 type authRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f authRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

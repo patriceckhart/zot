@@ -285,7 +285,7 @@ func OpenAICompatAnthropicEffort(level string) string {
 }
 
 // OpenAICodexReasoningEffort maps zot levels onto the Responses API effort
-// enum. GPT-5.6, GPT-6 and GPT-6.1 Sol support native max; other models clamp max to xhigh.
+// enum. GPT-5.6, GPT-6 and GPT-6.1 support native max. Other models clamp max to xhigh.
 func OpenAICodexReasoningEffort(level, model string) string {
 	switch NormalizeReasoning(level) {
 	case "minimum", "low":
@@ -301,12 +301,15 @@ func OpenAICodexReasoningEffort(level, model string) string {
 			return "max"
 		}
 		return "xhigh"
-	default:
-		return ""
+	case "":
+		if strings.EqualFold(model, "gpt-6.1-terra") {
+			return "none"
+		}
 	}
+	return ""
 }
 
 func supportsResponsesMaxEffort(model string) bool {
 	id := strings.ToLower(model)
-	return strings.HasPrefix(id, "gpt-5.6-") || id == "gpt-6-astra" || id == "gpt-6-sol" || id == "gpt-6-luna" || id == "gpt-6.1-sol"
+	return strings.HasPrefix(id, "gpt-5.6-") || id == "gpt-6-astra" || id == "gpt-6-sol" || id == "gpt-6-luna" || id == "gpt-6.1-sol" || id == "gpt-6.1-terra"
 }
