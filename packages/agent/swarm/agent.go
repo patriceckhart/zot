@@ -72,6 +72,7 @@ type Agent struct {
 	mu            sync.Mutex
 	status        Status
 	activity      string
+	activeTools   []activeTool
 	transcript    []string
 	lastAssistant string
 	// Large detached logs are loaded in full only when their transcript is viewed or resumed.

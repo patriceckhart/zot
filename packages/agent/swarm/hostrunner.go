@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -335,32 +336,21 @@ func (r *HostRunner) mirrorEntries(entries []continuous.Entry, sink Sink, seen m
 			}
 			seen[e.ID] = true
 		}
-		switch e.Type {
-		case "user", "steer":
-			if roles, ok := sink.(interface{ userMessage(string) }); ok {
-				roles.userMessage(e.Content)
-			} else {
-				sink.Transcript("user: " + e.Content)
-			}
-			sink.Activity("thinking")
-		case "assistant":
-			msg, err := core.DecodeMessage(e.Message)
+		// Decode the same wire shape used by event-log replay so live and
+		// restored transcripts retain identical tool arguments and results.
+		emitEntry(func(typ string, data map[string]any) {
+			raw, err := json.Marshal(NewEvent(typ, data))
 			if err != nil {
-				continue
+				return
 			}
-			for _, block := range msg.Content {
-				if tc, ok := block.(provider.ToolCallBlock); ok {
-					sink.Activity("tool: " + truncate(tc.Name, 60))
-				}
+			if ev, ok := parseEventLine(string(raw)); ok {
+				applyEventToSink(ev, sink)
 			}
-			if text := core.MessageText(msg); text != "" {
-				if roles, ok := sink.(interface{ assistantMessage(string) }); ok {
-					roles.assistantMessage(text)
-				} else {
-					sink.Transcript(text)
-				}
-			}
-		case "reset":
+		}, e)
+		if e.Type == "user" || e.Type == "steer" {
+			sink.Activity("thinking")
+		}
+		if e.Type == "reset" {
 			sink.Transcript("context reset")
 		}
 	}
@@ -386,12 +376,15 @@ func emitEntry(emit func(string, map[string]any), e continuous.Entry) {
 			switch v := block.(type) {
 			case provider.TextBlock:
 				content = append(content, map[string]any{"type": "text", "text": v.Text})
-			case provider.ToolCallBlock:
-				emit("tool_call", map[string]any{"id": v.ID, "name": v.Name})
 			}
 		}
 		if len(content) > 0 {
 			emit("assistant_message", map[string]any{"content": content, "time": e.Time})
+		}
+		for _, block := range msg.Content {
+			if v, ok := block.(provider.ToolCallBlock); ok {
+				emit("tool_call", map[string]any{"id": v.ID, "name": v.Name, "args": v.Arguments})
+			}
 		}
 	case "tool_result":
 		msg, err := core.DecodeMessage(e.Message)
@@ -400,7 +393,16 @@ func emitEntry(emit func(string, map[string]any), e continuous.Entry) {
 		}
 		for _, block := range msg.Content {
 			if tr, ok := block.(provider.ToolResultBlock); ok {
-				emit("tool_result", map[string]any{"id": tr.CallID, "is_error": tr.IsError})
+				var content []map[string]any
+				for _, block := range tr.Content {
+					switch v := block.(type) {
+					case provider.TextBlock:
+						content = append(content, map[string]any{"type": "text", "text": v.Text})
+					case provider.ImageBlock:
+						content = append(content, map[string]any{"type": "image", "mime_type": v.MimeType, "bytes": len(v.Data)})
+					}
+				}
+				emit("tool_result", map[string]any{"id": tr.CallID, "is_error": tr.IsError, "content": content})
 			}
 		}
 	}

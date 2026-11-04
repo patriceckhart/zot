@@ -504,7 +504,7 @@ Background subagents that run alongside your main session. Each one is a separat
 | `r` | Remove the selected agent entirely (session + meta gone). |
 | `esc` | Close the dashboard. |
 
-**Inside an agent's transcript** — a chat overlay with an always-on inline composer at the bottom. The conversation flows above it; type and `enter` to send a follow-up. The view auto-follows streaming output and shows an inline spinner with the agent's current activity (`thinking`, `tool: edit_file`, etc.) while it's busy. `esc` returns to the dashboard.
+**Inside an agent's transcript:** a chat overlay with an always-on inline composer at the bottom. The conversation flows above it. Type and `enter` to send a follow-up. The view shows tool calls with their arguments and text results alongside the conversation, including when reopening a saved agent. Tool output is displayed literally, with non-text results represented by type labels. The view auto-follows output and shows an inline spinner with the agent's current activity (`thinking`, `tool: bash`, etc.) while it's busy. Commands remain busy until their tool results arrive. Subprocess agents persist transcript messages as they are appended, rather than waiting for the entire prompt to finish. Older continuous-host event logs may lack tool arguments and results that were not mirrored at the time. `esc` returns to the dashboard.
 
 **Switching the spawn model from inside the editor** — while composing a task in the `n`-prompt, type `/model` on its own line and `enter`. The standard `/model` picker pops up; pick a model, the picker closes, and the editor reopens with your typed task intact and the new model pinned for the spawn.
 

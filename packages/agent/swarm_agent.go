@@ -52,6 +52,7 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 	sess, _ := openOrCreateSession(args, r, ag, version)
 	defer sess.Close()
+	persistSwarmMessages(ag, sess)
 
 	// Open the inbox listener BEFORE emitting agent_ready so the
 	// supervisor can dial through on the very first send. The
@@ -91,7 +92,10 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 		err := ag.Prompt(turnCtx, prompt.Text, prompt.Images, func(ev core.AgentEvent) {
 			em.emit(ev.Type(), modes.EventToJSON(ev))
 		})
-		WriteNewTranscript(ag, sess, start)
+		if sess != nil {
+			cum := ag.Cost()
+			_ = sess.AppendUsage(cum, cum)
+		}
 		messages := ag.Messages()
 		for idx := len(messages) - 1; idx >= start; idx-- {
 			if messages[idx].Role == provider.RoleAssistant {
