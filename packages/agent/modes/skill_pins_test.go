@@ -213,11 +213,10 @@ func TestPinnedSkillsEnterProviderAndPersistedTranscript(t *testing.T) {
 			t.Fatal("message not persisted")
 		}
 	}
-	reopened, messages, err := core.OpenSession(sess.Path)
+	_, messages, err := core.ReadSession(sess.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
 	if len(messages) != 2 || !strings.Contains(messages[0].Content[0].(provider.TextBlock).Text, "Inspect carefully.") {
 		t.Fatalf("messages = %#v", messages)
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/patriceckhart/zot/packages/agent/codemode"
 	"github.com/patriceckhart/zot/packages/agent/tools"
+	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/tui"
 	"golang.org/x/term"
 )
@@ -53,10 +54,11 @@ type Args struct {
 	Reasoning          string
 	Temperature        *float32
 
-	Continue bool
-	Resume   bool
-	Session  string
-	NoSess   bool
+	Continue    bool
+	Resume      bool
+	Session     string
+	SessionName string
+	NoSess      bool
 
 	// Continuous attaches the interactive TUI to a running
 	// `zot continuous serve` host instead of executing in-process. The
@@ -338,6 +340,15 @@ func ParseArgs(in []string) (Args, error) {
 				return a, err
 			}
 			a.StatsPath = v
+		case "-s", "--session-name":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			a.SessionName, err = core.NormalizeSessionAlias(v)
+			if err != nil {
+				return a, err
+			}
 		case "--session":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -390,11 +401,17 @@ func ParseArgs(in []string) (Args, error) {
 		a.Prompt = strings.Join(positional, " ")
 	}
 
+	if a.SessionName != "" && a.Mode == ModeRPC {
+		return a, fmt.Errorf("--session-name is not supported in rpc mode, where the client owns persistence")
+	}
+	if a.SessionName != "" && (a.Session != "" || a.Continue || a.Resume || a.NoSess) {
+		return a, fmt.Errorf("--session-name cannot be combined with --session, --continue, --resume, or --no-session")
+	}
 	if a.Continuous != "" {
 		if a.Mode != ModeInteractive {
 			return a, fmt.Errorf("--continuous attaches the interactive TUI and cannot be combined with print, stream, json, or rpc modes")
 		}
-		if a.Continue || a.Resume || a.Session != "" {
+		if a.Continue || a.Resume || a.Session != "" || a.SessionName != "" {
 			return a, fmt.Errorf("--continuous uses the host's store; session flags do not apply")
 		}
 		if a.ContinuousConversation != "" && a.ContinuousWorkspace != "" {
@@ -544,6 +561,7 @@ func printHelp(out *os.File, version string) {
 		row{"-c, --continue", "continue the most recent session for this cwd"},
 		row{"-r, --resume", "pick a session to resume"},
 		row{"--session PATH", "resume a specific session file"},
+		row{"-s, --session-name NAME", "create or resume a named session for this cwd"},
 		row{"--no-session", "do not read or write a session file"},
 	)
 	section("workspace, tools, skills",

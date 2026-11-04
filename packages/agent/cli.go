@@ -1190,6 +1190,12 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// loadSession replaces the current session with the one at path and
 	// hands its messages to the agent. Used by the /sessions picker.
 	loadSession := func(path string) error {
+		persistMu.Lock()
+		alreadyCurrent := sess != nil && sess.Path == path
+		persistMu.Unlock()
+		if alreadyCurrent {
+			return nil
+		}
 		currentAg := liveInteractiveAgent(iv, ag)
 		if currentAg == nil {
 			return fmt.Errorf("no agent running; log in first")
@@ -1792,6 +1798,8 @@ func openOrCreateSessionState(args Args, r Resolved, ag *core.Agent, version str
 		err  error
 	)
 	switch {
+	case args.SessionName != "":
+		s, msgs, fresh, err = core.OpenNamedSession(sessionsRoot, args.CWD, args.SessionName, r.Provider, r.Model, version)
 	case args.Session != "":
 		s, msgs, err = core.OpenSession(args.Session)
 		fresh = false

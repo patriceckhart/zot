@@ -173,11 +173,10 @@ func flattenSessionFamily(root *core.TreeNode, currentPath string) []sessionTree
 	for _, child := range root.Children {
 		childrenByFork[child.Meta.ForkPoint] = append(childrenByFork[child.Meta.ForkPoint], child)
 	}
-	sess, msgs, err := core.OpenSession(root.Summary.Path)
+	_, msgs, err := core.ReadSession(root.Summary.Path)
 	if err != nil {
 		return nil
 	}
-	_ = sess.Close()
 	items := buildSessionTreeItems(root.Summary.Path, msgs, 0, root.Summary.Path == currentPath)
 	var out []sessionTreeItem
 	for idx, item := range items {
@@ -193,11 +192,10 @@ func flattenSessionFamily(root *core.TreeNode, currentPath string) []sessionTree
 }
 
 func flattenSessionBranch(node *core.TreeNode, currentPath string, depth int) []sessionTreeItem {
-	sess, msgs, err := core.OpenSession(node.Summary.Path)
+	_, msgs, err := core.ReadSession(node.Summary.Path)
 	if err != nil {
 		return nil
 	}
-	_ = sess.Close()
 	start := node.Meta.ForkPoint
 	if start < 0 {
 		start = 0

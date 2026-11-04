@@ -310,6 +310,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `-c`, `--continue` | Resume the latest session for this cwd. |
 | `-r`, `--resume` | Pick a session to resume. |
 | `--session <path>` | Resume a specific session file. |
+| `-s`, `--session-name <name>` | Create or resume a session by its readable alias in this cwd. |
 | `--no-session` | Don't read or write session files. |
 | `--cwd <path>` | Use `<path>` as the working directory. |
 | `--no-tools` | Disable all tools. |
@@ -434,6 +435,8 @@ When the input starts with `!` (except the `!@` file picker), Ctrl+V text paste 
 After a shell command finishes, `up` / `down` input history recalls it with the leading `!`, without its output or exit status. This also works when resuming sessions saved with command metadata. Shell commands from older sessions without that metadata remain excluded from input history.
 
 ### `/sessions`
+
+New sessions show a readable alias such as `[chatty-lake]` beside their title or first prompt. The alias is a stable lookup name, separate from the editable display title.
 
 Shows previous sessions for the current working directory, newest first, with timestamp, model, message count, cost, and the first user prompt. Pick one with `up`/`down`, `enter` to resume, `r` to rename, `d` to delete, or `esc` to cancel. Deletion requires confirmation and permanently removes the session file; the currently active session cannot be deleted. zot swaps the current session file for the selected one and replays the full transcript (including tool calls) into the agent. Sessions remember the model they ended on, so resuming picks up on that exact model even if your global default changed.
 
@@ -600,6 +603,16 @@ This is a guardrail against accidents, not a hard security boundary. If you need
 ## Sessions
 
 Every interactive or print/json run (unless `--no-session`) writes a JSONL transcript under `$ZOT_HOME/sessions/<cwd-hash>/`. Resume any of them with `--continue`, `--resume`, `--session <path>`, or interactively via `/sessions` inside the TUI. In interactive mode, `/new` persists the current conversation and starts an empty session while preserving the working directory, model, tools, extensions, and runtime settings. It does not make a model call, and the previous conversation remains available through `/sessions`. `/new` is hidden from autocomplete and `/help` with `--no-session`, and invoking it directly reports that sessions are disabled. Empty sessions (the user exited without prompting) are deleted on close so the list stays tidy.
+
+### Readable session names
+
+New sessions in the local session store receive aliases such as `chatty-lake`. Resume one with `zot -s chatty-lake`, or start a session with a chosen alias using `zot -s my_session`. The long form is `--session-name`. Aliases are case-insensitive and normalized to lowercase, start with an ASCII letter or digit, and contain at most 64 ASCII letters, digits, hyphens, or underscores. Names are unique within the current working directory and named-agent session namespace, not across all directories.
+
+UUIDs remain the internal identity. `/sessions` displays aliases separately from editable titles, and renaming a title does not change the alias. Forks and imports receive fresh aliases. Existing transcripts remain readable without migration. Explicit `--session PATH` files keep their existing path-based behavior and do not automatically receive aliases. Empty sessions, including explicitly named ones, are still removed on close.
+
+A second writer to an aliased transcript is rejected, whether opened by name, path, or the picker. Writer locks are released when zot closes or exits, including after a crash. Small `.lock` sidecar files remain intentionally and must not be removed while zot is running. These locks coordinate cooperating zot processes on local filesystems, not arbitrary external editors or older zot versions. Read-only session inspection and export remain available during execution.
+
+`--session-name` cannot be combined with `--session`, `--continue`, `--resume`, or `--no-session`. Naming through this flag is not available in RPC mode or on a continuous host, whose conversations retain their separate title API.
 
 Use `zot sessions prune` outside the TUI to find sessions whose recorded working directories no longer exist. The command groups sessions by directory, shows the number and human-readable total size of stored sessions, lets you select groups, and requires confirmation before permanently deleting files. It preserves sessions when a directory check fails with an error other than "not found" and rechecks each selected directory immediately before deletion. A deleted directory and a path hidden by some unmounted filesystems are indistinguishable, so review the selection and ensure remote filesystems are mounted before deleting missing-directory groups.
 
