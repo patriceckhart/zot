@@ -176,6 +176,8 @@ func toolSummariesFromRegistry(reg core.Registry, cached map[string]string) []To
 // error or use whatever the user passed.
 func defaultModelForProvider(prov string) string {
 	switch prov {
+	case "anthropic":
+		return provider.DefaultModel.ID
 	case "openai":
 		return "gpt-5"
 	case "openai-codex":

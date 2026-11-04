@@ -62,12 +62,21 @@ type Model struct {
 	Source string
 }
 
+// DefaultModel is used when the user does not specify one.
+// Keep the choice explicit rather than depending on catalog order.
+var DefaultModel = Model{
+	Provider: "anthropic", ID: "claude-sonnet-5-5", DisplayName: "Claude Sonnet 5.5",
+	ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true,
+	PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.2, PriceCacheWrite: 2.5,
+}
+
 // Catalog is the hardcoded, read-only list of supported models.
 // Prices are USD per 1M tokens. The list is curated to what zot's
 // clients (Anthropic Messages + OpenAI Chat Completions) can actually
 // talk to; models that are only reachable through the OpenAI Responses
 // API (o1-pro, o3-pro, gpt-5-pro) are omitted.
 var Catalog = []Model{
+	DefaultModel,
 	// ---- Anthropic / Claude 4.x ----
 	{
 		Provider: "anthropic", ID: "claude-sonnet-4-5", DisplayName: "Claude Sonnet 4.5 (latest)",
@@ -75,46 +84,9 @@ var Catalog = []Model{
 		PriceInput: 3, PriceOutput: 15, PriceCacheRead: 0.3, PriceCacheWrite: 3.75,
 	},
 	{
-		Provider: "anthropic", ID: "claude-opus-4-1", DisplayName: "Claude Opus 4.1 (latest)",
-		ContextWindow: 200000, MaxOutput: 32000, Reasoning: true,
-		PriceInput: 15, PriceOutput: 75, PriceCacheRead: 1.5, PriceCacheWrite: 18.75,
-	},
-	{
-		Provider: "anthropic", ID: "claude-opus-4-0", DisplayName: "Claude Opus 4 (latest)",
-		ContextWindow: 200000, MaxOutput: 32000, Reasoning: true,
-		PriceInput: 15, PriceOutput: 75, PriceCacheRead: 1.5, PriceCacheWrite: 18.75,
-	},
-	{
-		Provider: "anthropic", ID: "claude-sonnet-4-0", DisplayName: "Claude Sonnet 4 (latest)",
-		ContextWindow: 200000, MaxOutput: 64000, Reasoning: true,
-		PriceInput: 3, PriceOutput: 15, PriceCacheRead: 0.3, PriceCacheWrite: 3.75,
-	},
-	{
 		Provider: "anthropic", ID: "claude-haiku-4-5", DisplayName: "Claude Haiku 4.5 (latest)",
 		ContextWindow: 200000, MaxOutput: 64000, Reasoning: true,
 		PriceInput: 1, PriceOutput: 5, PriceCacheRead: 0.1, PriceCacheWrite: 1.25,
-	},
-
-	// ---- Anthropic / Claude 3.x (legacy) ----
-	{
-		Provider: "anthropic", ID: "claude-3-7-sonnet-20250219", DisplayName: "Claude Sonnet 3.7",
-		ContextWindow: 200000, MaxOutput: 64000, Reasoning: true,
-		PriceInput: 3, PriceOutput: 15, PriceCacheRead: 0.3, PriceCacheWrite: 3.75,
-	},
-	{
-		Provider: "anthropic", ID: "claude-3-5-sonnet-20241022", DisplayName: "Claude Sonnet 3.5 v2",
-		ContextWindow: 200000, MaxOutput: 8192, Reasoning: false,
-		PriceInput: 3, PriceOutput: 15, PriceCacheRead: 0.3, PriceCacheWrite: 3.75,
-	},
-	{
-		Provider: "anthropic", ID: "claude-3-5-haiku-latest", DisplayName: "Claude Haiku 3.5 (latest)",
-		ContextWindow: 200000, MaxOutput: 8192, Reasoning: false,
-		PriceInput: 0.8, PriceOutput: 4, PriceCacheRead: 0.08, PriceCacheWrite: 1,
-	},
-	{
-		Provider: "anthropic", ID: "claude-3-opus-20240229", DisplayName: "Claude Opus 3",
-		ContextWindow: 200000, MaxOutput: 4096, Reasoning: false,
-		PriceInput: 15, PriceOutput: 75, PriceCacheRead: 1.5, PriceCacheWrite: 18.75,
 	},
 
 	// ---- DeepSeek ----
@@ -393,11 +365,6 @@ var Catalog = []Model{
 		PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.2, PriceCacheWrite: 2.5,
 	},
 	{
-		Provider: "anthropic", ID: "claude-sonnet-5-5", DisplayName: "Claude Sonnet 5.5",
-		ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true,
-		PriceInput: 2, PriceOutput: 10, PriceCacheRead: 0.2, PriceCacheWrite: 2.5,
-	},
-	{
 		Provider: "anthropic", ID: "claude-fable-5", DisplayName: "Claude Fable 5",
 		ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true,
 		PriceInput: 10, PriceOutput: 50, PriceCacheRead: 1, PriceCacheWrite: 12.5,
@@ -590,9 +557,6 @@ var Catalog = []Model{
 		PriceInputAbove:      0.2, PriceOutputAbove: 0.75, PriceCacheReadAbove: 0.02, PriceCacheWriteAbove: 0.25,
 	},
 }
-
-// DefaultModel is used when the user does not specify one.
-var DefaultModel = Catalog[0] // claude-sonnet-4-5
 
 // ----- active (merged) catalog -----
 //
