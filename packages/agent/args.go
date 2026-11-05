@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/patriceckhart/zot/packages/agent/codemode"
+	"github.com/patriceckhart/zot/packages/agent/swarm"
 	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/tui"
@@ -40,6 +41,7 @@ type Args struct {
 
 	// inheritedCredential is populated only by swarm-agent mode from
 	// the supervisor's stdin. It is never accepted as a CLI argument.
+	inheritedWIP        *swarm.WIPContext
 	inheritedCredential string
 	inheritedAuthMethod string
 	inheritedAccountID  string
@@ -79,6 +81,8 @@ type Args struct {
 	NoTools          bool
 	Tools            []string
 	MaxSteps         int
+	WIP              bool
+	WIPSettings      *core.WIPSettings
 	Codemode         bool
 	CodemodeMode     string
 	CodemodeSettings *codemode.Settings
@@ -232,6 +236,8 @@ func ParseArgs(in []string) (Args, error) {
 				return a, err
 			}
 			a.ContinuousTLSCA = v
+		case "--wip":
+			a.WIP = true
 		case "--no-tools":
 			a.NoTools = true
 		case "--codemode":
@@ -566,6 +572,7 @@ func printHelp(out *os.File, version string) {
 	)
 	section("workspace, tools, skills",
 		row{"--cwd PATH", "treat PATH as the working directory"},
+		row{"--wip", "start with exploratory draft instructions"},
 		row{"--no-tools", "disable all tools"},
 		row{"--tools csv", "only enable the listed tools"},
 		row{"--codemode", "add JavaScript tool orchestration"},

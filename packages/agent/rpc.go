@@ -41,6 +41,9 @@ import (
 // Auth: if $ZOTCORE_RPC_TOKEN is set, the first command must be
 // {"type":"hello","token":"..."} or the connection is closed.
 func runRPCMode(ctx context.Context, args Args, version string) error {
+	if args.Resume {
+		return fmt.Errorf("RPC mode cannot show a session picker, use --session PATH or --continue")
+	}
 	if args.NoYolo {
 		fmt.Fprintln(os.Stderr, "warning: --no-yolo has no effect in rpc mode (no interactive prompt available); tools will run without confirmation")
 	}
@@ -72,6 +75,16 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 
 	ag := r.NewAgent()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
+	sessionArgs := args
+	sessionArgs.NoSess = args.NoSess || (args.Session == "" && !args.Continue)
+	sess, err := openOrCreateSession(sessionArgs, r, ag, version)
+	if err != nil {
+		return err
+	}
+	if sess != nil {
+		defer sess.Close()
+	}
+	persistSwarmMessages(ag, sess)
 
 	// Rebuild the live tool registry after extension or built-in reloads
 	// so updated tools become callable without restarting the RPC process.
@@ -95,12 +108,20 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 		ctx:      ctx,
 		args:     args,
 		agent:    ag,
+		session:  sess,
 		provider: r.Provider,
 		model:    r.Model,
 		out:      os.Stdout,
 		version:  version,
 	}
 	extHooks.server = server
+	wipHook := ag.OnWIPChanged
+	ag.OnWIPChanged = func(state core.WIPState) {
+		if wipHook != nil {
+			wipHook(state)
+		}
+		server.writeEvent(map[string]any{"type": "wip_changed", "wip": state})
+	}
 	return server.run(os.Stdin)
 }
 
@@ -150,6 +171,7 @@ type rpcServer struct {
 	ctx      context.Context
 	args     Args
 	agent    *core.Agent
+	session  *core.Session
 	provider string
 	model    string
 	out      io.Writer
@@ -227,7 +249,7 @@ func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
 	// execution, or compaction. Do not wait here: this is also the read loop
 	// that must keep accepting abort while an extension or provider is busy.
 	switch cmd {
-	case "clear", "set_model", "set_reasoning":
+	case "clear", "set_model", "set_reasoning", "set_wip":
 		if !s.turnMu.TryLock() {
 			s.writeError(id, cmd, "agent is busy; wait for completion or abort before retrying")
 			return
@@ -282,8 +304,23 @@ func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
 			"messages": messagesToJSON(s.agent.Messages()),
 		})
 
+	case "set_wip":
+		var req struct {
+			Active *bool `json:"active"`
+		}
+		if err := json.Unmarshal(raw, &req); err != nil || req.Active == nil {
+			s.writeError(id, cmd, "active must be a boolean")
+			return
+		}
+		s.agent.SetWIP(*req.Active)
+		s.writeResponse(id, cmd, map[string]any{"wip": s.agent.WIPState()})
+
 	case "clear":
 		s.agent.SetMessages(nil)
+		s.agent.ResetWIP()
+		if s.session != nil {
+			_ = s.session.AppendCompaction(nil)
+		}
 		s.writeResponse(id, cmd, nil)
 
 	case "set_model":
@@ -411,6 +448,7 @@ func (s *rpcServer) runCompact(id string) {
 func (s *rpcServer) snapshotState() map[string]any {
 	cum := s.agent.Cost()
 	return map[string]any{
+		"wip":           s.agent.WIPState(),
 		"provider":      s.provider,
 		"model":         s.model,
 		"reasoning":     s.agent.Reasoning,
@@ -500,6 +538,7 @@ func messagesToJSON(msgs []provider.Message) []map[string]any {
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
 		out = append(out, map[string]any{
+			"wip":     m.WIP,
 			"role":    string(m.Role),
 			"content": modes.ContentToJSON(m.Content),
 			"time":    m.Time,

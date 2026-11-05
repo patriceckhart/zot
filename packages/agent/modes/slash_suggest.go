@@ -55,11 +55,19 @@ var slashCatalog = []slashCommand{
 	{Name: "/unjail", Desc: "allow tools to touch paths outside this directory"},
 	{Name: "/skills", Desc: "list discovered skills (SKILL.md files)"},
 	{Name: "/swarm", Desc: "supervise background agents that share this working directory"},
+	{Name: "/wip", Desc: "open draft mode controls (on, off, status, done)"},
 	{Name: "/reload-ext", Desc: "hot-reload all extensions (re-read manifests and respawn)"},
 	{Name: "/telegram", Desc: "connect, disconnect, or show status of the telegram bridge"},
 	{Name: "/settings", Desc: "open settings"},
 	{Name: "/clear", Desc: "clear the chat transcript"},
 	{Name: "/exit", Desc: "exit zot"},
+}
+
+var wipSlashCommands = []slashCommand{
+	{Name: "/wip on", Desc: "enable draft mode"},
+	{Name: "/wip off", Desc: "disable draft mode"},
+	{Name: "/wip status", Desc: "show draft mode and its start time"},
+	{Name: "/wip done", Desc: "disable draft mode and request cleanup"},
 }
 
 var sessionSlashCommands = []slashCommand{
@@ -201,7 +209,7 @@ func (s *slashSuggester) SetLlamaConfigured(configured bool) { s.llamaConfigured
 func (s *slashSuggester) SetSessionsEnabled(enabled bool) { s.sessionsEnabled = enabled }
 
 // allCatalog groups static and dynamic built-ins before the extensions
-// divider. Dynamic built-ins follow /swarm. Dynamic entries cannot shadow
+// divider. Dynamic built-ins follow /wip. Dynamic entries cannot shadow
 // static built-in names.
 func (s *slashSuggester) allCatalog() []slashCommand {
 	base := s.baseCatalog()
@@ -210,7 +218,7 @@ func (s *slashSuggester) allCatalog() []slashCommand {
 	}
 	at := len(base)
 	for idx, c := range base {
-		if c.Name == "/swarm" {
+		if c.Name == "/wip" {
 			at = idx + 1
 			break
 		}
@@ -354,9 +362,13 @@ func (s *slashSuggester) matches(input string) []slashCommand {
 		return nil
 	}
 	matchPrefix := strings.ToLower(input)
-	if strings.HasPrefix(matchPrefix, "/session ") {
+	if strings.HasPrefix(matchPrefix, "/session ") || strings.HasPrefix(matchPrefix, "/wip ") {
+		commands := sessionSlashCommands
+		if strings.HasPrefix(matchPrefix, "/wip ") {
+			commands = wipSlashCommands
+		}
 		var out []slashCommand
-		for _, c := range sessionSlashCommands {
+		for _, c := range commands {
 			if strings.HasPrefix(strings.ToLower(c.Name), matchPrefix) {
 				out = append(out, c)
 			}

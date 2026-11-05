@@ -38,6 +38,8 @@ import (
 // by encoding/json's permissive decoder when an older meta.json is
 // loaded; we don't need to keep them in the struct.
 type agentMeta struct {
+	WIP *WIPContext `json:"wip,omitempty"`
+
 	ID           string    `json:"id"`
 	Task         string    `json:"task"`
 	Dir          string    `json:"dir"`
@@ -65,6 +67,7 @@ func metaPath(stateDir string) string { return filepath.Join(stateDir, "meta.jso
 // half-parsable file that fails Reload.
 func writeAgentMeta(stateDir string, a *Agent) error {
 	m := agentMeta{
+		WIP:          a.WIP,
 		ID:           a.ID,
 		Task:         a.Task,
 		Dir:          a.Dir,
@@ -208,6 +211,7 @@ func (f *Swarm) buildDetachedAgent(m agentMeta) *Agent {
 		dir = f.cfg.RepoRoot
 	}
 	a := &Agent{
+		WIP:          m.WIP,
 		ID:           m.ID,
 		Task:         m.Task,
 		Dir:          dir,
@@ -386,7 +390,8 @@ func (f *Swarm) Resume(ctx context.Context, id string) (*Agent, error) {
 		return nil, fmt.Errorf("swarm inbox path: %w", err)
 	}
 	m := agentMeta{
-		ID: existing.ID, Task: existing.Task,
+		WIP: existing.WIP,
+		ID:  existing.ID, Task: existing.Task,
 		Dir: existing.Dir, Started: existing.Started,
 		Model: existing.Model, Provider: existing.Provider,
 		InboxPath: inboxPath, EventLogPath: existing.EventLogPath,
@@ -395,6 +400,7 @@ func (f *Swarm) Resume(ctx context.Context, id string) (*Agent, error) {
 	}
 
 	a := &Agent{
+		WIP:          m.WIP,
 		ID:           m.ID,
 		Task:         m.Task,
 		Dir:          m.Dir,

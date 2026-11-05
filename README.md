@@ -29,6 +29,58 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 - portable agents from local directories, `.zot` files, or temporary public GitHub downloads; see [docs/zotfiles.md](docs/zotfiles.md).
 - durable, crash-recoverable runs in a persistent local store via `zot continuous run`, or hosted for multiple clients with `zot continuous serve`, `zot continuous attach`, and `zot --continuous`. Interrupted tools are reported, never silently repeated; approvals, steering, budgets, and tasks are persisted. Stores are a local journal or SQLite file, or optionally an external PostgreSQL server (`--backend postgres`). Experimental, see [docs/continuous.md](docs/continuous.md).
 
+## WIP mode
+
+Use WIP mode while exploring an unfinished solution:
+
+```text
+zot --wip
+/wip status
+/wip done
+```
+
+`/wip` opens a subview showing the current state with on, off, and done actions.
+Use arrow keys to choose, Enter to apply, or Esc to cancel without changing mode.
+`/wip on` and `/wip off` set it directly.
+While active, zot asks the model to replace abandoned attempts cleanly, remove
+unused draft code, and avoid change-history comments or compatibility shims for
+drafts. Existing code still requires normal care. `/wip done` disables the mode
+and submits one visible cleanup request, without intentionally changing behavior.
+Tests remain encouraged throughout the WIP phase.
+
+A warning-colored `WIP` badge marks active sessions. The transcript brackets
+each draft phase with muted `──── wip start ────` and `──── wip end ────` rules,
+with a blank line after each. The end rule appears when WIP is disabled or
+finished, rather than repeating a divider for every prompt.
+Instructions are added only to the latest user message in outgoing requests,
+never to the system prompt or visible user text. Session files retain clean text,
+WIP metadata, the start time, and the baseline turn and Git HEAD when available.
+Resume restores this state.
+`/new` and `/clear` use the configured default, not the initial `--wip` flag.
+Local swarm children inherit the state and instruction settings at spawn time.
+
+Configure `$ZOT_HOME/settings.json`:
+
+```json
+{
+  "wip": {
+    "defaultOn": false,
+    "instruction": "Optional replacement instruction body, without XML tags.",
+    "donePrompt": "Optional replacement cleanup request."
+  }
+}
+```
+
+Omit `instruction` and `donePrompt` to use the built-in text. The same `wip`
+object in `config.json` is supported as a fallback. A `.zot` agent manifest can
+supply a session-specific `wip` object. WIP also works with `-p`, `--json`, and
+RPC (`set_wip`). Continuous-host attachment does not support WIP mode.
+
+WIP is model guidance, not enforcement. It does not commit code, track file
+ownership, change permissions, or alter confirmations. The HEAD baseline also
+includes any pre-existing uncommitted changes as draft, so review the boundary
+before enabling WIP in a dirty repository.
+
 ## Install
 
 ### One-liner (macOS, Linux)

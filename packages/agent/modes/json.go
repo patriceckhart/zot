@@ -52,9 +52,13 @@ func RunJSONWithOptions(ctx context.Context, ag *core.Agent, prompt string, imag
 func EventToJSON(ev core.AgentEvent) map[string]any {
 	m := map[string]any{"type": ev.Type()}
 	switch e := ev.(type) {
+	case core.EvWIPChanged:
+		m["wip"] = e.State
 	case core.EvTurnStart:
 		m["step"] = e.Step
+		m["wip"] = e.WIP
 	case core.EvUserMessage:
+		m["wip"] = e.Message.WIP
 		m["content"] = ContentToJSON(e.Message.Content)
 		m["time"] = e.Message.Time
 	case core.EvAssistantMessage:

@@ -334,6 +334,7 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		return "", fmt.Errorf("branch: rewind parent: %w", err)
 	}
 	var effective []provider.Message
+	branchWIP := parentMeta.WIP
 	var nonCompactedRows [][]byte
 	effectiveCount := 0
 	sawCompaction := false
@@ -343,6 +344,15 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 			return nil
 		}
 		switch h.Type {
+		case "wip":
+			if effectiveCount < upToMessageIdx {
+				var row struct {
+					WIP WIPState `json:"wip"`
+				}
+				if json.Unmarshal(line, &row) == nil {
+					branchWIP = &row.WIP
+				}
+			}
 		case "message":
 			if msg, err := hydrateMessage(line); err == nil && len(msg.Content) > 0 {
 				effective = append(effective, msg)
@@ -395,6 +405,18 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 			if err := bw.WriteByte('\n'); err != nil {
 				return "", err
 			}
+		}
+	}
+	if branchWIP != nil {
+		line, err := json.Marshal(sessionLine{Type: "wip", WIP: branchWIP})
+		if err != nil {
+			return "", err
+		}
+		if _, err := bw.Write(line); err != nil {
+			return "", err
+		}
+		if err := bw.WriteByte('\n'); err != nil {
+			return "", err
 		}
 	}
 	if branchTitle != "" {

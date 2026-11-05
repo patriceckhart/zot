@@ -57,6 +57,7 @@ type LifecycleEvent struct {
 
 // Config configures a Swarm.
 type Config struct {
+	WIPContext func() *WIPContext
 	// OnQueueResult receives durable follow-up outcomes, including recovered
 	// results after Resume. It runs outside supervisor locks. Return false to
 	// retain an undelivered notice, for example while another session is active.
@@ -263,7 +264,12 @@ func (f *Swarm) SpawnReq(ctx context.Context, req SpawnRequest) (*Agent, error) 
 	sessionID := f.activeSession
 	f.mu.Unlock()
 
+	var wip *WIPContext
+	if f.cfg.WIPContext != nil {
+		wip = f.cfg.WIPContext()
+	}
 	a := &Agent{
+		WIP:          wip,
 		ID:           id,
 		Task:         task,
 		Images:       prompt.Images,

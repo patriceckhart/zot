@@ -39,6 +39,15 @@ zot does **not** copy extension themes into `$ZOT_HOME/themes`; extension
 owned themes stay in the extension directory. The settings picker shows
 source info such as `from extension my-theme-extension`.
 
+## WIP badge
+
+The optional `wip` color key sets the active WIP status badge's ANSI-256 color.
+If omitted, the badge uses the theme's `warning` color. For example:
+
+```json
+{"name":"draft","warning":214,"wip":208}
+```
+
 ## Minimal themes
 
 All of these are valid.

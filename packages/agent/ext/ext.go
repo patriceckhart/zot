@@ -94,6 +94,11 @@ type EventResult = extproto.EventResult
 // Notifications are best-effort, not a durable audit log. See docs/extensions.md
 // for payload limits, privacy considerations, and delivery semantics.
 type Event struct {
+	WIP            bool
+	Active         bool
+	Since          string
+	BaselineCommit string
+
 	Name          string
 	AgentRunID    string
 	SessionID     string
@@ -263,6 +268,7 @@ type Panel struct {
 }
 
 type Response struct {
+	Active    *bool
 	Action    string // "prompt", "tool_prompt", "insert", "display", "open_panel", "noop"
 	Prompt    string
 	ToolName  string
@@ -300,6 +306,9 @@ func Insert(text string) Response { return Response{Action: "insert", Insert: te
 // chat without invoking the model. Useful for showing a result without
 // burning tokens.
 func Display(text string) Response { return Response{Action: "display", Display: text} }
+
+// SetWIP toggles draft mode in the current interactive session.
+func SetWIP(active bool) Response { return Response{Action: "set_wip", Active: &active} }
 
 // OpenPanel returns a Response that opens an interactive extension-owned
 // panel inside zot.
@@ -919,6 +928,7 @@ func (e *Extension) Run() error {
 						}
 					}()
 					handler(Event{
+						WIP: ef.WIP, Active: ef.Active, Since: ef.Since, BaselineCommit: ef.BaselineCommit,
 						Name: ef.Event, Step: ef.Step, Stop: ef.Stop,
 						SessionID: ef.SessionID, AgentRunID: ef.AgentRunID, Queued: ef.Queued, ImageCount: ef.ImageCount, CWD: ef.CWD, Sequence: ef.Sequence,
 						Status: ef.Status, Reason: ef.Reason, Source: ef.Source, Decision: ef.Decision, Stage: ef.Stage,
@@ -981,6 +991,7 @@ func (e *Extension) respond(id string, r Response) {
 		Type:      "command_response",
 		ID:        id,
 		Action:    r.Action,
+		Active:    r.Active,
 		Prompt:    r.Prompt,
 		ToolName:  r.ToolName,
 		ToolArgs:  r.ToolArgs,

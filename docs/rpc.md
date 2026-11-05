@@ -23,7 +23,7 @@ You'll see one JSON object per line on stdout: a response acknowledging the prom
 
 ## Flags
 
-`zot rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--reasoning`, `--show-reasoning`, `--max-steps`, `--no-tools`, `--tools`, `--no-context-files`. Sessions are disabled by default in RPC mode; the embedding application owns persistence.
+`zot rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--reasoning`, `--show-reasoning`, `--max-steps`, `--no-tools`, `--tools`, `--no-context-files`. Sessions are disabled by default in RPC mode. Pass `--session PATH` or `--continue` to opt into session persistence, including WIP state. The interactive `--resume` picker is not available over RPC. `--no-session` disables it. `--wip` enables draft guidance at startup, unless a resumed session restores its own state.
 
 ## Extension system prompts
 
@@ -75,6 +75,23 @@ Response:
 ```
 
 Required as the first message when `ZOTCORE_RPC_TOKEN` is set; optional otherwise.
+
+### `set_wip`
+
+```json
+{"id":"wip-1","type":"set_wip","active":true}
+```
+
+`active` is a required boolean. Returns `data.wip` with `active`, `since`
+(an RFC 3339 timestamp), `baselineTurn`, and optional `baselineCommit`.
+`get_state` includes the same `wip` object. `since` is the zero timestamp when
+no WIP phase has started. A transition also emits a `wip_changed` notification
+with a `wip` object. Mutations return a busy error during an active turn.
+
+`clear` resets WIP to the configured default. `get_messages` and `user_message`
+events include a boolean `wip` flag without injected instructions. `turn_start`
+events also include `wip`. To perform cleanup, disable WIP and submit a normal
+`prompt` command with the desired cleanup text.
 
 ### `prompt`
 

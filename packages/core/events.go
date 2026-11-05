@@ -14,6 +14,7 @@ type AgentEvent interface {
 }
 
 type EvTurnStart struct {
+	WIP  bool
 	Step int
 }
 
@@ -22,6 +23,7 @@ func (EvTurnStart) Type() string { return "turn_start" }
 // EvPromptSubmit observes accepted model input before it is appended or queued.
 // Queued input can subsequently be withdrawn without reaching the model.
 type EvPromptSubmit struct {
+	WIP        bool
 	Text       string
 	Queued     bool
 	ImageCount int

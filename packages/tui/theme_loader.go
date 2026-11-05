@@ -90,6 +90,7 @@ type ThemeOverrides struct {
 	Tool              *int                 `json:"tool,omitempty"`
 	ToolOut           *int                 `json:"tool_out,omitempty"`
 	Error             *int                 `json:"error,omitempty"`
+	WIP               *int                 `json:"wip,omitempty"`
 	Warning           *int                 `json:"warning,omitempty"`
 	Spinner           *int                 `json:"spinner,omitempty"`
 	ThinkingMax       *int                 `json:"thinking_max,omitempty"`
@@ -381,6 +382,10 @@ func applyThemeOverrides(th Theme, o ThemeOverrides) Theme {
 	}
 	if o.Warning != nil {
 		th.Warning = *o.Warning
+	}
+	if o.WIP != nil {
+		color := *o.WIP
+		th.WIP = &color
 	}
 	if o.Spinner != nil {
 		th.Spinner = *o.Spinner

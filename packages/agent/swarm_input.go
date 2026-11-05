@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/patriceckhart/zot/packages/agent/swarm"
 )
@@ -13,7 +14,8 @@ import (
 // its original shape, the optional prompt field is additive.
 func readSwarmStartupInput(r io.Reader, credential, prompt bool, args *Args) (swarm.Prompt, error) {
 	initial := swarm.Prompt{Text: args.Prompt}
-	if !credential && !prompt {
+	wip := os.Getenv("ZOT_SWARM_WIP_STDIN") == "1"
+	if !credential && !prompt && !wip {
 		return initial, nil
 	}
 	limit := int64(1 << 20)
@@ -23,6 +25,16 @@ func readSwarmStartupInput(r io.Reader, credential, prompt bool, args *Args) (sw
 	var input swarm.StartupInput
 	if err := json.NewDecoder(io.LimitReader(r, limit)).Decode(&input); err != nil {
 		return swarm.Prompt{}, fmt.Errorf("read swarm startup input: invalid encoding")
+	}
+	if wip {
+		if input.WIP == nil {
+			return swarm.Prompt{}, fmt.Errorf("read swarm startup input: missing WIP state")
+		}
+		if err := input.WIP.Settings.Validate(); err != nil {
+			return swarm.Prompt{}, err
+		}
+		args.inheritedWIP = input.WIP
+		args.WIPSettings = &input.WIP.Settings
 	}
 	if credential {
 		if input.Value == "" || input.Method == "" {

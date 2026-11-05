@@ -50,8 +50,19 @@ func runSwarmAgentMode(ctx context.Context, args Args, version string) error {
 
 	ag := r.NewAgent()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
-	sess, _ := openOrCreateSession(args, r, ag, version)
-	defer sess.Close()
+	sess, fresh, err := openOrCreateSessionState(args, r, ag, version)
+	if err != nil {
+		return err
+	}
+	if fresh && args.inheritedWIP != nil {
+		ag.RestoreWIP(args.inheritedWIP.State)
+		if sess != nil {
+			_ = sess.AppendWIP(ag.WIPState())
+		}
+	}
+	if sess != nil {
+		defer sess.Close()
+	}
 	persistSwarmMessages(ag, sess)
 
 	// Open the inbox listener BEFORE emitting agent_ready so the

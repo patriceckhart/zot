@@ -128,7 +128,7 @@ func (m *Manager) InterceptToolCall(ctx context.Context, toolID, toolName string
 // InterceptTurnStart asks every subscriber whether the upcoming turn
 // may run. Block=true aborts the turn with Reason shown to the user.
 // Rewrites are not supported for this event.
-func (m *Manager) InterceptTurnStart(ctx context.Context, step int) InterceptResult {
+func (m *Manager) InterceptTurnStart(ctx context.Context, step int, wip ...bool) InterceptResult {
 	subs := m.interceptSubsFor("turn_start")
 	if len(subs) == 0 {
 		return InterceptResult{}
@@ -136,6 +136,7 @@ func (m *Manager) InterceptTurnStart(ctx context.Context, step int) InterceptRes
 	for _, ext := range subs {
 		r := m.askIntercept(ctx, ext, extproto.EventInterceptFromHost{
 			Event: "turn_start",
+			WIP:   len(wip) > 0 && wip[0],
 			Step:  step,
 		})
 		if r.Block {

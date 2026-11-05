@@ -129,6 +129,11 @@ type View struct {
 	StreamingActive bool
 	ToolCalls       []ToolCallView // tool calls in flight or completed
 
+	// WIPActive and WIPSince describe the live draft phase. Historical phase
+	// boundaries come from user-message flags and wip_since metadata.
+	WIPActive bool
+	WIPSince  string
+
 	// Startup resource fields list host-loaded inputs before the transcript
 	// without creating provider messages or persisted entries.
 	StartupAgentName      string
@@ -445,8 +450,16 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 	out = append(out, v.renderStartupResources(width)...)
 	anchors := make([]MessageAnchor, 0, len(v.Messages))
 	timestamps := v.messageTimestamps()
-	for idx := range v.Messages {
+	var phase wipPhase
+	active, since := false, ""
+	for idx, message := range v.Messages {
+		if message.Role == provider.RoleUser && message.Meta["shell_escape"] != "true" {
+			active, since = message.WIP, message.Meta["wip_since"]
+		}
 		anchors = append(anchors, MessageAnchor{MessageIdx: idx, Row: len(out)})
+		if idx >= renderFrom {
+			out = v.appendWIPMarkers(out, phase.transition(active, since), width)
+		}
 		out = append(out, rendered[idx]...)
 		// Skip the inter-message blank for messages that rendered
 		// to nothing. An assistant message whose only content is
@@ -507,6 +520,7 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 		out = append(out, v.renderErr(width)...)
 		out = append(out, "")
 	}
+	out = v.appendWIPMarkers(out, phase.transition(v.WIPActive, v.WIPSince), width)
 	return out, anchors
 }
 
@@ -2632,6 +2646,7 @@ type StatusBarParams struct {
 	CWD        string
 	Locked     bool // sandbox on?
 	NoYolo     bool // confirmation mode enabled?
+	WIP        bool
 
 	// Cumulative session usage and cost.
 	Usage provider.Usage
@@ -2682,6 +2697,23 @@ type StatusBarParams struct {
 // The slash-command popup and the queued/sliding-in chips already
 // cover the discoverability of those keybindings.
 func StatusBar(p StatusBarParams) []string {
+	lines := statusBar(p)
+	if !p.WIP || len(lines) == 0 {
+		return lines
+	}
+	color := p.Theme.Warning
+	if p.Theme.WIP != nil {
+		color = *p.Theme.WIP
+	}
+	badge := p.Theme.FG256(color, "WIP")
+	if p.Cols > 0 && visibleWidth(lines[0])+5 > p.Cols {
+		return append([]string{"  " + badge}, lines...)
+	}
+	lines[0] += "  " + badge
+	return lines
+}
+
+func statusBar(p StatusBarParams) []string {
 	th := p.Theme
 
 	// Token stats: only include each segment when non-zero. Keeps

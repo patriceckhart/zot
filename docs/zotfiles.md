@@ -4,6 +4,20 @@ A .zot agent packages behavior into one portable `.zot` file. The manifest versi
 
 The current implementation supports creating, inspecting, verifying, and running local directories and `.zot` archives. It can also run an agent repository or directory directly from any public GitHub repository without keeping a clone. zot has no built-in owner or official collection. Indexed registry distribution, installation, signatures, bundled executable extensions, network permissions, and environment permissions are not implemented yet.
 
+## WIP default
+
+A manifest can supply a `wip` object for sessions launched with `zot run`:
+
+```json
+{"wip":{"defaultOn":true}}
+```
+
+It replaces the global WIP settings for that launch. The optional `instruction`
+and `donePrompt` strings customize the instruction body and cleanup request.
+The instruction must not contain `<wip-mode>` wrapper tags. `--wip` can enable
+WIP even when `defaultOn` is false. Resumed sessions retain their saved state.
+This only guides the model, it does not change the manifest's permissions.
+
 ## Quick start
 
 Create a directory for the agent:

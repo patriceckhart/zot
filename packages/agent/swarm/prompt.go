@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/patriceckhart/zot/packages/continuous"
+	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
@@ -21,9 +22,16 @@ type Prompt struct {
 	Images    []provider.ImageBlock `json:"images,omitempty"`
 }
 
+// WIPContext snapshots the parent's draft boundary and prompt settings.
+type WIPContext struct {
+	State    core.WIPState    `json:"state"`
+	Settings core.WIPSettings `json:"settings"`
+}
+
 // StartupInput shares a single stdin object with credential inheritance.
 // Keeping the prompt off argv also avoids command-line image size limits.
 type StartupInput struct {
+	WIP *WIPContext `json:"wip,omitempty"`
 	Credential
 	Prompt *Prompt `json:"prompt,omitempty"`
 }

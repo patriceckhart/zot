@@ -99,6 +99,7 @@ type ContentBlock struct {
 }
 
 type CommandResponseFromExt struct {
+	Active    *bool           `json:"active,omitempty"`
 	Type      string          `json:"type"`
 	ID        string          `json:"id"`
 	Action    string          `json:"action"`
@@ -250,6 +251,10 @@ type EventResult struct {
 }
 
 type EventFromHost struct {
+	WIP             bool            `json:"wip"`
+	Active          bool            `json:"active"`
+	Since           string          `json:"since,omitempty"`
+	BaselineCommit  string          `json:"baseline_commit,omitempty"`
 	SessionID       string          `json:"session_id,omitempty"`
 	AgentRunID      string          `json:"agent_run_id,omitempty"`
 	Queued          bool            `json:"queued,omitempty"`
@@ -283,6 +288,7 @@ type EventFromHost struct {
 }
 
 type EventInterceptFromHost struct {
+	WIP             bool            `json:"wip"`
 	SystemPrompt    *string         `json:"system_prompt,omitempty"`
 	OriginExtension string          `json:"origin_extension,omitempty"`
 	SessionID       string          `json:"session_id,omitempty"`

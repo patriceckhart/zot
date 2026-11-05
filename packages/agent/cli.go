@@ -179,8 +179,10 @@ func fanoutAgentEvent(mgr *extensions.Manager, ev core.AgentEvent) {
 		return
 	}
 	switch e := ev.(type) {
+	case core.EvWIPChanged:
+		mgr.EmitEvent(extproto.EventFromHost{Event: "wip_changed", Active: e.State.Active, Since: e.State.Since.Format(time.RFC3339), BaselineCommit: e.State.BaselineCommit})
 	case core.EvPromptSubmit:
-		mgr.EmitEvent(extproto.EventFromHost{Event: "user_prompt_submit", Text: e.Text, Queued: e.Queued, ImageCount: e.ImageCount})
+		mgr.EmitEvent(extproto.EventFromHost{Event: "user_prompt_submit", Text: e.Text, Queued: e.Queued, ImageCount: e.ImageCount, WIP: e.WIP})
 	case core.EvToolResult:
 		if e.Executed && e.Status == "blocked" {
 			mgr.EmitEvent(extproto.EventFromHost{Event: "permission_decision", ToolID: e.ID, ToolName: e.Name, Decision: "denied", Source: "policy", Stage: "tool_execution"})
@@ -193,7 +195,7 @@ func fanoutAgentEvent(mgr *extensions.Manager, ev core.AgentEvent) {
 		}
 		mgr.EmitEvent(event)
 	case core.EvTurnStart:
-		mgr.EmitEvent(extproto.EventFromHost{Event: "turn_start", Step: e.Step})
+		mgr.EmitEvent(extproto.EventFromHost{Event: "turn_start", Step: e.Step, WIP: e.WIP})
 	case core.EvToolCall:
 		mgr.EmitEvent(extproto.EventFromHost{
 			Event: "tool_call", ToolID: e.ID, ToolName: e.Name, ToolArgs: e.Args,
@@ -453,7 +455,7 @@ func wireNonInteractiveAgentExtLifecycle(ctx context.Context, ag *core.Agent, ex
 			// Tools changed on servers that cannot announce it apply now.
 			extMgr.RefreshBuiltinTools(turnCtx)
 		}
-		res := extMgr.InterceptTurnStart(turnCtx, step)
+		res := extMgr.InterceptTurnStart(turnCtx, step, ag.WIPState().Active)
 		return !res.Block, res.Reason
 	}
 	ag.BeforeAssistantMessage = func(text string) (bool, string, string) {
@@ -776,6 +778,9 @@ func reloadResourcesAfterStartupPre(ctx context.Context, args Args, extMgr *exte
 // ---- interactive mode: opens the TUI even without credentials ----
 
 func runInteractive(ctx context.Context, args Args, version string) error {
+	if args.Continuous != "" && args.WIP {
+		return fmt.Errorf("--wip is not supported with continuous-host attachment")
+	}
 	// Resolve WITHOUT requiring credentials.
 	r, err := Resolve(args, false)
 	if err != nil {
@@ -852,6 +857,13 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		swarmRunner = swarm.NewHostRunnerFactory(dial, continuousWorkspace(args, r))
 	}
 	swarmMgr = swarm.New(swarm.Config{
+		WIPContext: func() *swarm.WIPContext {
+			if iv == nil || iv.Agent() == nil {
+				return nil
+			}
+			a := iv.Agent()
+			return &swarm.WIPContext{State: a.WIPState(), Settings: a.WIPSettings}
+		},
 		Root:        filepath.Join(ZotHome(), "swarm"),
 		RepoRoot:    r.CWD,
 		NewRunner:   swarmRunner,
@@ -986,7 +998,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 				// Tools changed on servers that cannot announce it apply now.
 				extMgr.RefreshBuiltinTools(turnCtx)
 			}
-			r := extMgr.InterceptTurnStart(turnCtx, step)
+			r := extMgr.InterceptTurnStart(turnCtx, step, a.WIPState().Active)
 			return !r.Block, r.Reason
 		}
 		a.BeforeAssistantMessage = func(text string) (bool, string, string) {
@@ -1147,6 +1159,13 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	wireAgentPersist := func(a *core.Agent) *core.Agent {
 		if a == nil {
 			return a
+		}
+		a.OnWIPChanged = func(state core.WIPState) {
+			persistMu.Lock()
+			defer persistMu.Unlock()
+			if sess != nil {
+				_ = sess.AppendWIP(state)
+			}
 		}
 		a.OnMessageAppended = persistMessage
 		a.OnUsage = persistUsage
@@ -1909,6 +1928,11 @@ func rotateInteractiveSession(root, cwd, providerName, model, version string, ag
 		_ = old.Close()
 	}
 	ag.SetMessages(nil)
+	ag.SessionID = fresh.ID
+	wipHook := ag.OnWIPChanged
+	ag.OnWIPChanged = nil
+	ag.ResetWIP()
+	ag.OnWIPChanged = wipHook
 	ag.DrainQueuedMessages()
 	ag.SeedCost(provider.Usage{})
 	ag.SeedLastTurnUsage(provider.Usage{})
@@ -1932,6 +1956,14 @@ func bindAgentSession(ag *core.Agent, sess *core.Session) {
 	}
 	if sess != nil {
 		ag.SessionID = sess.ID
+		if sess.Meta.WIP != nil {
+			ag.RestoreWIP(*sess.Meta.WIP)
+		} else {
+			_ = sess.AppendWIP(ag.WIPState())
+		}
+		if ag.OnWIPChanged == nil {
+			ag.OnWIPChanged = func(state core.WIPState) { _ = sess.AppendWIP(state) }
+		}
 	} else if ag.SessionID == "" {
 		ag.SessionID = uuid.NewString()
 	}
@@ -1940,6 +1972,9 @@ func bindAgentSession(ag *core.Agent, sess *core.Session) {
 // bindReplacementAgentSession preserves transient conversation identity when
 // login or a model switch rebuilds the agent without a persisted session.
 func bindReplacementAgentSession(ag, current *core.Agent, sess *core.Session) {
+	if ag != nil && current != nil {
+		ag.RestoreWIP(current.WIPState())
+	}
 	if ag != nil && current != nil && sess == nil {
 		ag.SessionID = current.SessionID
 	}

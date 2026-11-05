@@ -173,12 +173,16 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = r.agent.Dir
 	for _, env := range os.Environ() {
-		if !strings.HasPrefix(env, "ZOT_SWARM_CREDENTIAL_STDIN=") && !strings.HasPrefix(env, "ZOT_SWARM_PROMPT_STDIN=") {
+		if !strings.HasPrefix(env, "ZOT_SWARM_CREDENTIAL_STDIN=") && !strings.HasPrefix(env, "ZOT_SWARM_PROMPT_STDIN=") && !strings.HasPrefix(env, "ZOT_SWARM_WIP_STDIN=") {
 			cmd.Env = append(cmd.Env, env)
 		}
 	}
 	cmd.Env = append(cmd.Env, "ZOT_SWARM_AGENT_ID="+r.agent.ID, "ZOT_SWARM_EVENT_LOG="+logPath)
 	var startup StartupInput
+	if r.agent.WIP != nil {
+		startup.WIP = r.agent.WIP
+		cmd.Env = append(cmd.Env, "ZOT_SWARM_WIP_STDIN=1")
+	}
 	if !r.agent.Resuming && len(r.agent.Images) > 0 {
 		prompt, err := PreparePrompt(r.agent.Task, r.agent.Images)
 		if err != nil {
@@ -197,7 +201,7 @@ func (r *execRunner) Run(ctx context.Context, sink Sink) error {
 			cmd.Env = append(cmd.Env, "ZOT_SWARM_CREDENTIAL_STDIN=1")
 		}
 	}
-	if startup.Prompt != nil || startup.Credential.Value != "" {
+	if startup.Prompt != nil || startup.Credential.Value != "" || startup.WIP != nil {
 		encoded, err := json.Marshal(startup)
 		if err != nil || len(encoded) > MaxPromptWireBytes {
 			return fmt.Errorf("swarm: startup input cannot be encoded within %d bytes", MaxPromptWireBytes)

@@ -140,8 +140,11 @@ func TestSlashSuggesterGroupsDynamicBuiltinsWithMainCommands(t *testing.T) {
 	}
 	names := commandNames(s.allCatalog())
 	for idx, name := range names {
-		if name == "/swarm" && (idx+1 >= len(names) || names[idx+1] != "/mcp") {
-			t.Fatalf("/mcp does not follow /swarm: %v", names)
+		if name == "/swarm" && (idx+1 >= len(names) || names[idx+1] != "/wip") {
+			t.Fatalf("/wip does not follow /swarm: %v", names)
+		}
+		if name == "/wip" && (idx+1 >= len(names) || names[idx+1] != "/mcp") {
+			t.Fatalf("/mcp does not follow /wip: %v", names)
 		}
 	}
 	for _, command := range s.matches("/mc") {

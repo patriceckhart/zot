@@ -47,6 +47,7 @@ type Theme struct {
 	Tool         int
 	ToolOut      int
 	Error        int
+	WIP          *int // nil inherits Warning
 	Warning      int
 	Spinner      int // spinner + funny working line
 	ThinkingMax  int // status color for the opt-in max reasoning level

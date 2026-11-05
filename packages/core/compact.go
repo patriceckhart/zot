@@ -53,7 +53,14 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 		return "", fmt.Errorf("nothing to compact: keep-tail covers the whole transcript")
 	}
 
-	summary, tokensBefore, err := a.Summarize(ctx, summarizable, "", sink)
+	extra := ""
+	if state := a.WIPState(); state.Active {
+		extra = fmt.Sprintf("WIP mode is active since %s, starting at user turn %d. Mention the active draft phase in the summary and preserve this boundary.", state.Since.Format(time.RFC3339), state.BaselineTurn)
+		if state.BaselineCommit != "" {
+			extra += " WIP baseline HEAD: " + state.BaselineCommit + "."
+		}
+	}
+	summary, tokensBefore, err := a.Summarize(ctx, summarizable, extra, sink)
 	if err != nil {
 		return "", err
 	}
@@ -84,6 +91,10 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 	for key, value := range toolStateMetadata(readToolState(msgs)) {
 		synthetic.Meta[key] = value
 	}
+
+	a.mu.Lock()
+	a.markWIPLocked(&synthetic)
+	a.mu.Unlock()
 
 	tail := msgs[len(msgs)-keepTail:]
 	// Repair the tail: remove orphaned tool_result blocks whose

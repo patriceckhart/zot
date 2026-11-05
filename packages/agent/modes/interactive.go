@@ -1160,8 +1160,13 @@ func (i *Interactive) chatCacheKeyLocked(cols int) (chatCacheKey, bool) {
 func (i *Interactive) buildChatLocked(cols int) []string {
 	if i.agent != nil {
 		i.view.Messages = filterHiddenTranscriptMessages(i.agent.Messages())
+		state := i.agent.WIPState()
+		i.view.WIPActive = state.Active
+		i.view.WIPSince = state.Since.Format(time.RFC3339Nano)
 	} else {
 		i.view.Messages = nil
+		i.view.WIPActive = false
+		i.view.WIPSince = ""
 	}
 	if i.timeline.Active() {
 		_, rows := i.cfg.Terminal.Size()
@@ -1628,6 +1633,7 @@ func (i *Interactive) redraw() {
 		CWD:            i.cfg.CWD,
 		Locked:         i.cfg.Sandbox.Locked(),
 		NoYolo:         i.cfg.NoYolo,
+		WIP:            i.agent != nil && i.agent.WIPState().Active,
 		Usage:          i.cumUsage,
 		Subscription:   i.cfg.AuthMethod == "oauth",
 		ContextUsed:    i.lastCtxInput,
@@ -3260,6 +3266,18 @@ func (i *Interactive) invokeExtensionCommand(ctx context.Context, name, args str
 // handling can be exercised without a running extension manager.
 func (i *Interactive) applyExtensionCommandResponse(name string, resp extproto.CommandResponseFromExt) {
 	switch resp.Action {
+	case "set_wip":
+		if resp.Active == nil {
+			i.mu.Lock()
+			i.statusErr = "extension /" + name + ": set_wip requires an active boolean"
+			i.mu.Unlock()
+			i.invalidate()
+			return
+		}
+		if i.agent != nil && !i.rejectAttachedAction("set_wip", "WIP mode requires a local session") {
+			i.agent.SetWIP(*resp.Active)
+			i.invalidate()
+		}
 	case "open_panel":
 		if resp.OpenPanel != nil {
 			extName := name
@@ -3980,6 +3998,8 @@ func (i *Interactive) applySettingChange(act settingsAction) {
 	switch {
 	case strings.HasPrefix(act.Key, "quick_model_"):
 		i.applyQuickModelSetting(act.Key, act.StringValue)
+	case act.Key == "wip":
+		i.runWIP(i.runCtx, []string{act.StringValue})
 	case act.Key == "reasoning":
 		i.applyReasoningSetting(act.StringValue)
 	case act.Key == "theme":
@@ -4891,6 +4911,8 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	}
 
 	switch strings.ToLower(parts[0]) {
+	case "/wip":
+		i.runWIP(ctx, parts[1:])
 	case "/exit":
 		return true
 	case "/new":
@@ -4946,6 +4968,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 	case "/clear":
 		if i.agent != nil {
 			i.agent.SetMessages(nil)
+			i.agent.ResetWIP()
 		}
 		i.mu.Lock()
 		i.view.ForgetShellCWD()

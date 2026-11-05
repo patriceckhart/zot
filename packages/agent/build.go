@@ -25,6 +25,8 @@ type ContextFile struct {
 
 // Resolved is the effective configuration after merging CLI, config, defaults.
 type Resolved struct {
+	WIP         core.WIPSettings
+	WIPOn       bool
 	Provider    string
 	Model       string
 	Credential  string // api key or oauth access token
@@ -354,6 +356,17 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		return Resolved{}, err
 	}
 	cfg, _ := LoadConfig()
+	wipSettings, wipErr := loadWIPSettings(cfg.WIP)
+	if wipErr != nil {
+		return Resolved{}, wipErr
+	}
+	cfg.WIP = wipSettings
+	if args.WIPSettings != nil {
+		cfg.WIP = *args.WIPSettings
+	}
+	if err := cfg.WIP.Validate(); err != nil {
+		return Resolved{}, err
+	}
 	if err := cfg.Codemode.Validate(); err != nil {
 		return Resolved{}, err
 	}
@@ -834,6 +847,8 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 	}
 
 	return Resolved{
+		WIP:                   cfg.WIP,
+		WIPOn:                 args.WIP,
 		Provider:              provName,
 		Model:                 model,
 		Credential:            cred,
@@ -1182,6 +1197,7 @@ func (r *Resolved) UseSandbox(s *tools.Sandbox) {
 // NewAgent constructs a core.Agent from r. Requires a credential.
 func (r Resolved) NewAgent() *core.Agent {
 	a := core.NewAgent(r.NewClient(), r.Model, r.SystemPrompt, r.ToolRegistry)
+	configureWIP(a, r)
 	a.MaxSteps = r.MaxSteps
 	a.MaxTokens = r.MaxOutput
 	a.Reasoning = r.Reasoning

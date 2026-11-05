@@ -22,6 +22,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/patriceckhart/zot/packages/agent/tools"
+	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/provider/auth"
 	"github.com/patriceckhart/zot/packages/tui"
@@ -29,6 +30,8 @@ import (
 )
 
 type ZotfileManifest struct {
+	WIP *core.WIPSettings `json:"wip,omitempty"`
+
 	Zotfile     int    `json:"zotfile"`
 	Name        string `json:"name"`
 	Version     string `json:"version"`
@@ -157,6 +160,7 @@ func runLocalZotfile(ref string, args Args, version string) error {
 	default:
 		return fmt.Errorf("read AGENT.md: %w", err)
 	}
+	args.WIPSettings = zf.Manifest.WIP
 	args.StartupPre = strings.TrimSpace(zf.Manifest.Entry.Pre)
 	if args.Prompt == "" && zf.Manifest.Entry.DefaultPrompt != nil {
 		args.Prompt = *zf.Manifest.Entry.DefaultPrompt

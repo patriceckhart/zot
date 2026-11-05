@@ -14,6 +14,7 @@ import (
 // Spawn; mutable state (status, activity, transcript) lives behind
 // the embedded mutex.
 type Agent struct {
+	WIP  *WIPContext
 	ID   string
 	Task string
 	// Images is the initial task's copied payload. Resume uses the persisted

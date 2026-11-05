@@ -16,6 +16,27 @@ Four phases shipped so far:
 - **Theme-only extensions**: ship `theme.json` without launching a
   subprocess. See [themes.md](themes.md).
 
+## WIP mode integration
+
+Subscribe to `wip_changed` to observe draft-mode transitions. Its payload has
+`active` (boolean), `since` (RFC 3339 timestamp), and optional `baseline_commit`.
+`user_prompt_submit` and `turn_start` notifications include `wip` (boolean).
+The `turn_start` interception payload includes it too. Prompt notifications
+contain clean user text, never the ephemeral `<wip-mode>` block. Request-time
+injection happens after extension processing and does not rerun
+`before_agent_start`.
+
+An interactive extension command can return:
+
+```json
+{"type":"command_response","id":"request-id","action":"set_wip","active":true}
+```
+
+`active` is required. The Go SDK helper is `ext.SetWIP(true)` or
+`ext.SetWIP(false)`. SDK event fields are `WIP`, `Active`, `Since`, and
+`BaselineCommit`. This action requires a local interactive session, not a
+continuous-host attachment. It changes no permissions or confirmation behavior.
+
 ## Quick start
 
 The simplest extension is a script that prints a hello frame, reads

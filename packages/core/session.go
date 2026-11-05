@@ -42,6 +42,7 @@ type Session struct {
 
 // SessionMeta is written as the first line of every session file.
 type SessionMeta struct {
+	WIP      *WIPState `json:"wip,omitempty"`
 	ID       string    `json:"id"`
 	CWD      string    `json:"cwd"`
 	Model    string    `json:"model"`
@@ -77,6 +78,7 @@ type sessionLine struct {
 	Messages   []provider.Message `json:"messages,omitempty"`
 	Usage      *provider.Usage    `json:"usage,omitempty"`
 	Cumulative *provider.Usage    `json:"cumulative,omitempty"`
+	WIP        *WIPState          `json:"wip,omitempty"`
 }
 
 type sessionLineHead struct {
@@ -308,6 +310,13 @@ func ReadSession(path string) (SessionMeta, []provider.Message, error) {
 			}
 			if err := json.Unmarshal(line, &row); err == nil {
 				meta = row.Meta
+			}
+		case "wip":
+			var row struct {
+				WIP WIPState `json:"wip"`
+			}
+			if err := json.Unmarshal(line, &row); err == nil {
+				meta.WIP = &row.WIP
 			}
 		case "message":
 			if msg, err := hydrateMessage(line); err == nil && len(msg.Content) > 0 {
@@ -691,6 +700,15 @@ func sessionHasNoMessages(path string) bool {
 			hasMessage = true
 			return io.EOF
 		}
+		if head.Type == "wip" {
+			var row struct {
+				WIP WIPState `json:"wip"`
+			}
+			if json.Unmarshal(line, &row) == nil && !row.WIP.Since.IsZero() {
+				hasMessage = true
+				return io.EOF
+			}
+		}
 		return nil
 	})
 	return !hasMessage
@@ -802,7 +820,7 @@ func (s *Session) Close() error {
 	flushErr := s.buf.Flush()
 	closeErr := s.writer.Close()
 	s.writer = nil
-	if s.freshFile && s.messagesAppended == 0 {
+	if s.freshFile && s.messagesAppended == 0 && (s.Meta.WIP == nil || s.Meta.WIP.Since.IsZero()) {
 		// Best-effort cleanup. We deliberately don't propagate the
 		// remove error: if it fails (file already gone, perms changed)
 		// the worst case is one stale empty file in the listing.
@@ -812,6 +830,18 @@ func (s *Session) Close() error {
 		return flushErr
 	}
 	return closeErr
+}
+
+// AppendWIP records a state transition even when no user turn follows it.
+func (s *Session) AppendWIP(state WIPState) error {
+	if s == nil || s.buf == nil || s.writer == nil {
+		return fmt.Errorf("session is not open")
+	}
+	if err := s.writeLine(sessionLine{Type: "wip", WIP: &state}); err != nil {
+		return err
+	}
+	s.Meta.WIP = &state
+	return nil
 }
 
 func (s *Session) writeLine(row sessionLine) error {
@@ -873,16 +903,19 @@ func DecodeMessage(raw []byte) (provider.Message, error) {
 
 func hydrateMessageObject(rawMessage []byte) (provider.Message, error) {
 	var row struct {
-		Role           provider.Role     `json:"role"`
-		Content        []json.RawMessage `json:"content"`
-		Time           time.Time         `json:"time"`
-		Meta           map[string]string `json:"meta,omitempty"`
-		AddedToolNames []string          `json:"added_tool_names,omitempty"`
+		WIP               bool              `json:"wip,omitempty"`
+		WIPInstruction    string            `json:"wip_instruction,omitempty"`
+		WIPBaselineCommit string            `json:"wip_baseline_commit,omitempty"`
+		Role              provider.Role     `json:"role"`
+		Content           []json.RawMessage `json:"content"`
+		Time              time.Time         `json:"time"`
+		Meta              map[string]string `json:"meta,omitempty"`
+		AddedToolNames    []string          `json:"added_tool_names,omitempty"`
 	}
 	if err := json.Unmarshal(rawMessage, &row); err != nil {
 		return provider.Message{}, err
 	}
-	msg := provider.Message{Role: row.Role, Time: row.Time, Meta: row.Meta, AddedToolNames: row.AddedToolNames}
+	msg := provider.Message{Role: row.Role, Time: row.Time, Meta: row.Meta, AddedToolNames: row.AddedToolNames, WIP: row.WIP, WIPInstruction: row.WIPInstruction, WIPBaselineCommit: row.WIPBaselineCommit}
 	for _, raw := range row.Content {
 		var head struct {
 			Text             string `json:"text"`

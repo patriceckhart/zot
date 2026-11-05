@@ -132,6 +132,11 @@ type Agent struct {
 	startGeneration                                  uint64
 	startBase, startSystem, startModel, startSession string
 
+	WIPSettings  WIPSettings
+	WIPBaseline  func() string
+	OnWIPChanged func(WIPState)
+	wip          WIPState
+
 	streamReasoning bool // request readable summaries independently of effort
 	mu              sync.Mutex
 	messages        []provider.Message
@@ -175,7 +180,7 @@ func (a *Agent) QueueMessage(text string) bool {
 		return false
 	}
 	if a.OnEvent != nil {
-		a.OnEvent(EvPromptSubmit{Text: text, Queued: true})
+		a.OnEvent(EvPromptSubmit{Text: text, Queued: true, WIP: a.WIPState().Active})
 	}
 	a.mu.Lock()
 	a.queued = append(a.queued, text)
@@ -240,6 +245,7 @@ func (a *Agent) appendQueuedAsUser(texts []string, sink func(AgentEvent)) {
 			Time:    time.Now(),
 		}
 		a.mu.Lock()
+		a.markWIPLocked(&msg)
 		a.messages = append(a.messages, msg)
 		a.rev++
 		a.mu.Unlock()
@@ -426,7 +432,7 @@ func (a *Agent) promptWithPrelude(ctx context.Context, text string, images []pro
 	}
 	sink = a.wrapSink(sink)
 	if a.OnEvent != nil {
-		a.OnEvent(EvPromptSubmit{Text: text, ImageCount: len(images)})
+		a.OnEvent(EvPromptSubmit{Text: text, ImageCount: len(images), WIP: a.WIPState().Active})
 	}
 	content := []provider.Content{}
 	if text != "" {
@@ -438,6 +444,7 @@ func (a *Agent) promptWithPrelude(ctx context.Context, text string, images []pro
 	user := provider.Message{Role: provider.RoleUser, Content: content, Time: time.Now()}
 
 	a.mu.Lock()
+	a.markWIPLocked(&user)
 	a.messages = append(a.messages, user)
 	a.rev++
 	a.mu.Unlock()
@@ -532,7 +539,7 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 			a.appendQueuedAsUser(pending, sink)
 		}
 
-		sink(EvTurnStart{Step: step})
+		sink(EvTurnStart{Step: step, WIP: a.WIPState().Active})
 		beforeTurn := a.BeforeTurn
 		if a.BeforeTurnContext != nil {
 			beforeTurn = func(step int) (bool, string) { return a.BeforeTurnContext(ctx, step) }
@@ -776,7 +783,7 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 			// next in-process request is rejected by providers like Anthropic
 			// with "tool_use ids were found without tool_result blocks". The
 			// repair is pure and a no-op on already-valid transcripts.
-			Messages:        repairToolUseResultPairs(withoutToolDisplay(a.messages)),
+			Messages:        withWIP(repairToolUseResultPairs(withoutToolDisplay(a.messages))),
 			Tools:           a.Tools.Specs(),
 			Reasoning:       a.Reasoning,
 			StreamReasoning: a.streamReasoning,
