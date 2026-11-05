@@ -100,6 +100,25 @@ func TestStartupNotesLifecycle(t *testing.T) {
 	}
 }
 
+func TestStartupChangelogHasBottomRule(t *testing.T) {
+	for _, width := range []int{24, 80, 160} {
+		i := NewInteractive(InteractiveConfig{})
+		i.showStartupChangelog(ChangelogPayload{Version: "1.2.3", URL: "https://example.com/release", Body: "Release details"})
+		rows := i.startupBlockLocked(width)
+		if len(rows) < 2 {
+			t.Fatalf("width %d: missing release notes", width)
+		}
+		got := stripANSIBytes(rows[len(rows)-2])
+		want := strings.Repeat("─", width)
+		if got != want {
+			t.Fatalf("width %d: bottom rule = %q, want %q", width, got, want)
+		}
+		if rows[len(rows)-1] != "" {
+			t.Fatalf("width %d: missing spacing after bottom rule", width)
+		}
+	}
+}
+
 func TestStartupChangelogBodyWraps(t *testing.T) {
 	const width = 24
 	rows := renderStartupChangelogBody("\x00H:long release heading with Unicode ä\n\n**Details** with a very long description.", tui.Theme{}, width)

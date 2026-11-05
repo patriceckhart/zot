@@ -40,6 +40,7 @@ func (i *Interactive) startupBlockLocked(cols int) []string {
 			out = append(out, wrapDialogTextRows(i.cfg.Theme.FG256(i.cfg.Theme.Muted, cl.URL), cols)...)
 		}
 		out = append(out, renderStartupChangelogBody(cl.Body, i.cfg.Theme, cols)...)
+		out = append(out, frameRuleColor(i.cfg.Theme, cols, i.cfg.Theme.Accent))
 		out = append(out, "")
 	}
 	out = append(out, i.startupNotes...)
