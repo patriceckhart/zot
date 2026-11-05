@@ -8,9 +8,9 @@ import (
 	"github.com/patriceckhart/zot/packages/continuous/storage"
 )
 
-// Partial is the streamed output of an in-flight model attempt. It is
-// committed in batches so attached clients can render live text and so a
-// crash retains what was streamed as part of the aborted attempt. It is not
+// Partial is the streamed output of an in-flight model attempt. Attached
+// clients can preview it from RAM between persisted checkpoints. A crash
+// retains only the last checkpoint of the aborted attempt. It is not
 // model context: the next request never includes partial output, and the
 // record is removed when the attempt commits its final entry.
 type Partial struct {
@@ -19,6 +19,10 @@ type Partial struct {
 	Turn           int    `json:"turn"`
 	Attempt        int    `json:"attempt"`
 	Text           string `json:"text"`
+	// PreviewAfter is the storage barrier preceding a RAM preview. It is
+	// zero in persisted records and never advances a durable watch cursor.
+	// Views refreshed beyond this revision must ignore the older preview.
+	PreviewAfter uint64 `json:"preview_after,omitempty"`
 	// Reasoning is a bounded readable suffix, separate from model context.
 	Reasoning string `json:"reasoning,omitempty"`
 	// ReasoningBytes counts all reasoning bytes, including discarded prefixes.
@@ -45,6 +49,10 @@ func partialKey(conversationID string) string { return "partial/" + conversation
 // PartialFlushInterval bounds the display delay of streamed text for
 // attached clients. It is a configured delay, not a durability promise.
 const PartialFlushInterval = 100 * time.Millisecond
+
+// PartialPersistInterval is the default delay between partial checkpoints.
+// Final responses are committed immediately, independently of this interval.
+const PartialPersistInterval = time.Second
 
 // Partial returns the live or retained partial output of a conversation.
 func (r *Runtime) Partial(ctx context.Context, conversationID string) (Partial, bool, error) {

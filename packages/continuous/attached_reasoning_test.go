@@ -2,9 +2,11 @@ package continuous
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/patriceckhart/zot/packages/continuous/storage"
 	"github.com/patriceckhart/zot/packages/core"
 )
 
@@ -55,6 +57,17 @@ func TestAttachedReasoningStreamsBeforeAnswerAndRestores(t *testing.T) {
 				}
 			case <-ctx.Done():
 				t.Fatal("attached client did not receive live reasoning", ctx.Err())
+			}
+			// RAM delivery can precede the checkpoint even with a short
+			// persistence interval. Wait for its independent durable write.
+			checkpoint := errors.New("checkpoint observed")
+			if err := r.Watch(ctx, conv.ID, 0, func(cm storage.Commit) error {
+				if _, ok := PartialFromCommit(cm, conv.ID); ok {
+					return checkpoint
+				}
+				return nil
+			}); !errors.Is(err, checkpoint) {
+				t.Fatal("reasoning checkpoint missing", err)
 			}
 			p, ok, err := r.Partial(ctx, conv.ID)
 			if err != nil || !ok || p.Text != "" || p.Reasoning != "live remote reasoning" {

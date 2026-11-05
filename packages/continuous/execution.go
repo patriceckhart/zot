@@ -49,10 +49,11 @@ type ExecutionOptions struct {
 	// Approver, when set, can require a persisted human decision before a
 	// tool call's intent commits. Nil never asks.
 	Approver Approver
-	// PartialFlushInterval batches streamed text into partial records for
-	// attached clients. Zero means PartialFlushInterval. Negative disables
-	// partial persistence; streamed events are then published with the
-	// response commit.
+	// PartialFlushInterval batches streamed text into persisted checkpoints.
+	// Zero means PartialPersistInterval (one second). Attached clients preview
+	// RAM independently at PartialFlushInterval (100 ms). Negative disables
+	// both checkpoints and RAM previews. Engine sink events remain committed
+	// events and are then published with the response commit.
 	PartialFlushInterval time.Duration
 	// Extensions resolves the names in AgentConfig.Extensions. Nil means
 	// no extensions are registered; a conversation selecting one fails.

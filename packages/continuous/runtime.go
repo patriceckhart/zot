@@ -204,6 +204,8 @@ type Runtime struct {
 	// that is claimed belongs to a live invocation of another scheduler of
 	// this runtime and must not be taken over.
 	claims sync.Map
+	// livePartials holds only active model attempts, never transcript history.
+	livePartials sync.Map
 }
 
 // New takes ownership of an already opened store. This initial trusted-local API

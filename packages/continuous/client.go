@@ -143,9 +143,16 @@ func (c *Client) readLoop() {
 			hostResponse
 			WatchID string          `json:"watch_id"`
 			Commit  json.RawMessage `json:"commit"`
+			Partial *Partial        `json:"partial"`
 		}
 		if json.Unmarshal(line, &frame) != nil {
 			continue
+		}
+		if frame.Type == "partial" && frame.Partial != nil {
+			// Internal attached-view transport only. Revision zero never
+			// advances a durable cursor and is not exposed by Watch.
+			frame.Commit, _ = json.Marshal(storage.Commit{Operations: []storage.Operation{record(partialKey(frame.Partial.ConversationID), *frame.Partial)}})
+			frame.Type = "commit"
 		}
 		c.mu.Lock()
 		switch frame.Type {
@@ -295,8 +302,14 @@ func (c *Client) CallInto(ctx context.Context, method string, params any, out an
 // ends or the host ends the watch. A closed channel with ctx still live means
 // the client fell behind or the host dropped the watch: take a new snapshot.
 func (c *Client) Watch(ctx context.Context, conversationID string, after uint64) (<-chan storage.Commit, error) {
+	return c.watch(ctx, conversationID, after, false)
+}
+
+// watch with livePartials includes internal revision-zero preview envelopes.
+// Older hosts ignore the option and continue sending durable checkpoints.
+func (c *Client) watch(ctx context.Context, conversationID string, after uint64, livePartials bool) (<-chan storage.Commit, error) {
 	frames := make(chan json.RawMessage, 256)
-	id, ack, err := c.sendWatch("conversation.watch", map[string]any{"id": conversationID, "after": after}, frames)
+	id, ack, err := c.sendWatch("conversation.watch", map[string]any{"id": conversationID, "after": after, "live_partials": livePartials}, frames)
 	if err != nil {
 		return nil, err
 	}
@@ -336,6 +349,9 @@ func (c *Client) Watch(ctx context.Context, conversationID string, after uint64)
 				}
 				var cm storage.Commit
 				if json.Unmarshal(raw, &cm) != nil {
+					continue
+				}
+				if cm.Revision == 0 && !livePartials {
 					continue
 				}
 				select {

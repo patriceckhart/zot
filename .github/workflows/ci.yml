@@ -124,7 +124,7 @@ jobs:
           set -o pipefail
           go test -race -count=1 -v ./packages/continuous/storage/postgres/ 2>&1 | tee test.log
           go test -race -count=1 -v ./packages/agent/ -run 'Postgres|HostState' 2>&1 | tee -a test.log
-          go test -race -count=1 -v ./packages/continuous/ -run 'CrashAtEveryCommit|CrashInsideTool|NestedCrashMatrix|NativeVerticalSlice' 2>&1 | tee -a test.log
+          go test -race -count=1 -v ./packages/continuous/ -run 'CrashAtEveryCommit|CrashInsideTool|NestedCrashMatrix|NativeVerticalSlice|PostgresAttachedRAM|LivePartialProcessCrashRetainsOnlyCheckpoint' 2>&1 | tee -a test.log
           if ! grep -q -- '--- PASS: TestNestedCrashMatrix/postgres' test.log; then
             echo "postgres crash matrix did not run"
             exit 1

@@ -6,7 +6,7 @@ import (
 	"github.com/patriceckhart/zot/packages/core"
 )
 
-// partialStream projects committed snapshots without duplicating overlapping
+// partialStream projects checkpoints and RAM previews without duplicating overlapping
 // reasoning suffixes. Attempt identity resets both streams, including retries
 // whose answer text happens to start with the same prefix.
 type partialStream struct {
@@ -22,6 +22,13 @@ func (s *partialStream) reset() { *s = partialStream{} }
 
 func (s *partialStream) apply(p Partial, sink func(core.AgentEvent)) {
 	if p.Final || p.RunID == "" {
+		return
+	}
+	// A durable checkpoint can lag the latest RAM preview. Never rewind
+	// either stream when that older checkpoint arrives on the same watch.
+	if s.runID == p.RunID && s.turn == p.Turn && s.attempt == p.Attempt &&
+		len(p.Text) <= len(s.text) && strings.HasPrefix(s.text, p.Text) &&
+		max(p.ReasoningBytes, int64(len(p.Reasoning))) <= s.reasoningEnd {
 		return
 	}
 	if s.runID != p.RunID || s.turn != p.Turn || s.attempt != p.Attempt || !strings.HasPrefix(p.Text, s.text) {

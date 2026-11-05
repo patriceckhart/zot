@@ -443,7 +443,8 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 			// Mode is commits (default) for raw commits, view for
 			// operation-level changes of the conversation view, or events
 			// for committed agent events after a fresh snapshot.
-			Mode string `json:"mode"`
+			Mode         string `json:"mode"`
+			LivePartials bool   `json:"live_partials"`
 		}
 		if err := params(&p); err != nil {
 			return nil, err
@@ -453,7 +454,7 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 		default:
 			return nil, fmt.Errorf("unknown watch mode %q", p.Mode)
 		}
-		return c.watch(ctx, req.ID, p.ID, p.After, p.Mode)
+		return c.watch(ctx, req.ID, p.ID, p.After, p.Mode, p.LivePartials)
 	case "watch.cancel":
 		var p struct {
 			WatchID string `json:"watch_id"`
@@ -912,7 +913,7 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 // response to the watch request carries the watch id; events follow with
 // type commit and the same watch id. A client behind by more than the
 // retained history receives a cursor_expired error and must resnapshot.
-func (c *hostConn) watch(ctx context.Context, watchID, conversationID string, after uint64, mode string) (any, error) {
+func (c *hostConn) watch(ctx context.Context, watchID, conversationID string, after uint64, mode string, livePartials bool) (any, error) {
 	if watchID == "" {
 		return nil, fmt.Errorf("watch requires a request id")
 	}
@@ -974,12 +975,19 @@ func (c *hostConn) watch(ctx context.Context, watchID, conversationID string, af
 		}
 	default:
 		c.write(hostResponse{ID: watchID, Type: "response", Method: "conversation.watch", Success: true, Data: map[string]any{"watch_id": watchID, "after": after}})
-		err = rt.Watch(watchCtx, conversationID, after, func(cm storage.Commit) error {
-			// Deliver with a bounded write deadline so a stalled client
-			// cannot hold host memory; the watch ends with an error instead.
+		visit := func(cm storage.Commit) error {
+			// The connection's bounded write deadline also covers previews.
 			c.write(map[string]any{"type": "commit", "watch_id": watchID, "commit": cm})
 			return nil
-		})
+		}
+		if livePartials {
+			err = rt.watchLive(watchCtx, conversationID, after, visit, func(p Partial) error {
+				c.write(map[string]any{"type": "partial", "watch_id": watchID, "partial": p})
+				return nil
+			})
+		} else {
+			err = rt.Watch(watchCtx, conversationID, after, visit)
+		}
 	}
 	c.mu.Lock()
 	if c.watches != nil {

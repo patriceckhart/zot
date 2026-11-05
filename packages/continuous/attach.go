@@ -125,7 +125,7 @@ func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt s
 	if err != nil {
 		return err
 	}
-	watch, err := d.Client.Watch(ctx, d.ConversationID, snap.Revision)
+	watch, err := d.Client.watch(ctx, d.ConversationID, snap.Revision, true)
 	if err != nil {
 		return err
 	}
@@ -183,6 +183,12 @@ func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt s
 				sink(core.EvTurnEnd{Stop: provider.StopEnd})
 				sink(core.EvDone{})
 				return attachedSubmissionError(s.State, latest.Run)
+			}
+			if cm.Revision == 0 {
+				if p, ok := PartialFromCommit(cm, d.ConversationID); ok && p.PreviewAfter >= last {
+					streamed.apply(p, sink)
+				}
+				continue
 			}
 			last = cm.Revision
 			if ws.apply(cm, d.ConversationID) {
@@ -264,7 +270,7 @@ func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt s
 // host no longer retains that history, the view is reloaded from a fresh
 // snapshot and watched from there; entries already in it are marked seen.
 func (d *AttachedDriver) rewatch(ctx context.Context, agent *core.Agent, last *uint64, seen map[string]bool) (<-chan storage.Commit, error) {
-	if w, err := d.Client.Watch(ctx, d.ConversationID, *last); err == nil {
+	if w, err := d.Client.watch(ctx, d.ConversationID, *last, true); err == nil {
 		return w, nil
 	} else if ctx.Err() != nil {
 		return nil, err
@@ -277,5 +283,5 @@ func (d *AttachedDriver) rewatch(ctx context.Context, agent *core.Agent, last *u
 		seen[e.ID] = true
 	}
 	*last = snap.Revision
-	return d.Client.Watch(ctx, d.ConversationID, snap.Revision)
+	return d.Client.watch(ctx, d.ConversationID, snap.Revision, true)
 }
