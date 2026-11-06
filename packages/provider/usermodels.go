@@ -37,10 +37,10 @@ type UserModelsFile struct {
 // UserProvider groups models under a provider key.
 type UserProvider struct {
 	BaseURL string `json:"baseUrl,omitempty"`
-	API     string `json:"api,omitempty"`  // "openai" (default), "openai-responses", or "anthropic"
+	API     string `json:"api,omitempty"`  // "openai" (default), "openai-responses", "anthropic", or "google"
 	Auth    string `json:"auth,omitempty"` // "none" disables credentials, including stored keys
 	// Discover enables live model listing from the provider-level
-	// baseUrl's /models endpoint. Off by default so existing custom
+	// model-list endpoint. Off by default so existing custom
 	// providers never gain unexpected network traffic.
 	Discover bool        `json:"discover,omitempty"`
 	Models   []UserModel `json:"models"`
@@ -50,7 +50,7 @@ type UserProvider struct {
 // that isn't part of the built-in catalog.
 type CustomProviderConfig struct {
 	BaseURL string
-	API     string // "openai", "openai-responses", or "anthropic"
+	API     string // "openai", "openai-responses", "anthropic", or "google"
 	NoAuth  bool   // explicitly configured for keyless access
 	// Discover reports whether live model discovery is enabled. It is
 	// only true when a provider-level BaseURL is present.
@@ -204,6 +204,8 @@ func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
 				api = APIResponses
 			case "anthropic-messages", "messages", "anthropic":
 				api = "anthropic"
+			case "google":
+				api = "google"
 			default:
 				warnings = append(warnings, fmt.Sprintf("models.json: provider %q has unknown api %q; defaulting to openai", providerName, prov.API))
 				api = "openai"

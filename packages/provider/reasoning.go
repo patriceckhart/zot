@@ -49,7 +49,7 @@ func defaultReasoningLevels(model Model) []string {
 	if alwaysOnAdaptiveThinking(id) || miniMaxFlash(model) {
 		return []string{"low", "medium", "high", "xhigh", "max"}
 	}
-	if (model.Provider == "google" || model.Provider == "google-vertex") && strings.Contains(id, "gemini-3") {
+	if (model.API == "google" || model.Provider == "google" || model.Provider == "google-vertex") && strings.Contains(id, "gemini-3") {
 		if strings.Contains(id, "-pro") {
 			return []string{"", "low", "high"}
 		}
@@ -72,7 +72,7 @@ func defaultReasoningLevels(model Model) []string {
 		}
 		return levels
 	}
-	if model.Provider == "google" || model.Provider == "google-vertex" {
+	if model.API == "google" || model.Provider == "google" || model.Provider == "google-vertex" {
 		if strings.Contains(id, "gemini-2.5") {
 			return []string{"", "minimum", "low", "medium", "high", "xhigh"}
 		}

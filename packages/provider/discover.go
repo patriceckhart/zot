@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -117,6 +118,22 @@ func DiscoverOpenAI(ctx context.Context, apiKey, baseURL string) ([]Model, error
 // generativelanguage.googleapis.com. The API paginates with
 // nextPageToken; we follow it until exhausted.
 func DiscoverGoogle(ctx context.Context, apiKey, baseURL string) ([]Model, error) {
+	return DiscoverGoogleNamed(ctx, "google", apiKey, baseURL)
+}
+
+// DiscoverGoogleNamed lists Gemini-compatible models under the supplied provider ID.
+// Custom providers retain their endpoint and use generation methods rather than
+// Google's model naming conventions to identify chat models.
+func DiscoverGoogleNamed(ctx context.Context, providerID, apiKey, baseURL string) ([]Model, error) {
+	custom := providerID != "google"
+	if custom {
+		if strings.TrimSpace(providerID) == "" {
+			return nil, fmt.Errorf("custom provider discovery requires a provider id")
+		}
+		if _, err := customModelsURL(baseURL); err != nil {
+			return nil, err
+		}
+	}
 	if baseURL == "" {
 		baseURL = geminiDefaultBaseURL
 	}
@@ -124,23 +141,31 @@ func DiscoverGoogle(ctx context.Context, apiKey, baseURL string) ([]Model, error
 	var out []Model
 	pageToken := ""
 	for {
-		url := strings.TrimRight(baseURL, "/") + "/v1beta/models?pageSize=200"
+		endpoint := strings.TrimRight(baseURL, "/") + "/v1beta/models?pageSize=200"
 		if pageToken != "" {
-			url += "&pageToken=" + pageToken
+			endpoint += "&pageToken=" + url.QueryEscape(pageToken)
 		}
-		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("x-goog-api-key", apiKey)
+		if apiKey != "" {
+			req.Header.Set("x-goog-api-key", apiKey)
+		}
 		resp, err := client.Do(req)
 		if err != nil {
-			return nil, err
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fmt.Errorf("%s discovery request failed", providerID)
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(http.MaxBytesReader(nil, resp.Body, 8<<20))
 		resp.Body.Close()
 		if resp.StatusCode != 200 {
-			return nil, fmt.Errorf("google discover http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			return nil, fmt.Errorf("%s discovery HTTP %d", providerID, resp.StatusCode)
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("%s discovery returned invalid model data", providerID)
 		}
 		var page struct {
 			Models []struct {
@@ -153,26 +178,39 @@ func DiscoverGoogle(ctx context.Context, apiKey, baseURL string) ([]Model, error
 			NextPageToken string `json:"nextPageToken"`
 		}
 		if err := json.Unmarshal(body, &page); err != nil {
-			return nil, fmt.Errorf("google discover parse: %w", err)
+			return nil, fmt.Errorf("%s discovery returned invalid model data", providerID)
+		}
+		if page.Models == nil {
+			return nil, fmt.Errorf("%s discovery response is missing models", providerID)
 		}
 		for _, m := range page.Models {
 			// Strip the "models/" prefix Gemini uses on resource names.
 			id := strings.TrimPrefix(m.Name, "models/")
-			if !looksLikeGeminiChatModel(id, m.SupportedGenerationMethods) {
+			if custom {
+				if id == "" || !supportsGeminiGeneration(m.SupportedGenerationMethods) {
+					continue
+				}
+			} else if !looksLikeGeminiChatModel(id, m.SupportedGenerationMethods) {
 				continue
 			}
 			display := m.DisplayName
 			if display == "" {
 				display = id
 			}
-			out = append(out, Model{
-				Provider:      "google",
+			model := Model{
+				Provider:      providerID,
 				ID:            id,
 				DisplayName:   display,
 				ContextWindow: m.InputTokenLimit,
 				MaxOutput:     m.OutputTokenLimit,
 				Source:        "live",
-			})
+			}
+			if custom {
+				model.API = "google"
+				model.BaseURL = strings.TrimRight(baseURL, "/")
+				model.Reasoning = strings.Contains(id, "gemini-2.5") || strings.Contains(id, "gemini-3")
+			}
+			out = append(out, model)
 		}
 		if page.NextPageToken == "" {
 			break
@@ -180,6 +218,15 @@ func DiscoverGoogle(ctx context.Context, apiKey, baseURL string) ([]Model, error
 		pageToken = page.NextPageToken
 	}
 	return out, nil
+}
+
+func supportsGeminiGeneration(methods []string) bool {
+	for _, method := range methods {
+		if method == "generateContent" || method == "streamGenerateContent" {
+			return true
+		}
+	}
+	return false
 }
 
 // looksLikeGeminiChatModel filters Gemini's /v1beta/models output
@@ -192,17 +239,8 @@ func looksLikeGeminiChatModel(id string, methods []string) bool {
 	if strings.Contains(id, "embedding") || strings.Contains(id, "aqa") {
 		return false
 	}
-	if len(methods) > 0 {
-		ok := false
-		for _, m := range methods {
-			if m == "generateContent" || m == "streamGenerateContent" {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return false
-		}
+	if len(methods) > 0 && !supportsGeminiGeneration(methods) {
+		return false
 	}
 	return true
 }

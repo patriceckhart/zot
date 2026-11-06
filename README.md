@@ -694,7 +694,7 @@ User-defined models show `source: user` in `--list-models` and take precedence o
 
 #### Custom providers
 
-A top-level provider key that is not a built-in id defines a custom provider. Give it a provider-level `baseUrl` and an `api` wire format (`openai` for OpenAI-compatible Chat Completions, the default, `openai-responses` for the OpenAI Responses API, or `anthropic` for the Anthropic Messages API). A model-level `baseUrl` overrides the provider-level one for that model; an unknown `api` value falls back to `openai` with a warning.
+A top-level provider key that is not a built-in id defines a custom provider. Give it a provider-level `baseUrl` and an `api` wire format (`openai` for OpenAI-compatible Chat Completions, the default, `openai-responses` for the OpenAI Responses API, `anthropic` for the Anthropic Messages API, or `google` for the native Gemini API). A model-level `baseUrl` overrides the provider-level one for that model. An unknown `api` value falls back to `openai` with a warning.
 
 ```json
 {
@@ -734,9 +734,25 @@ The provider IDs in `models.json` and `auth.json` must match. Then select the cu
 zot --provider my-company --model company-llm-v2
 ```
 
+For a native Gemini-compatible endpoint, use `"api": "google"`. Set `baseUrl` to the API root, without `/v1beta` or `/models`. zot appends `/v1beta/models/<id>:streamGenerateContent` and sends the custom provider's key in `x-goog-api-key`. Thought text and Gemini thinking settings use the native protocol. Credentials and model metadata remain separate from the built-in `google` provider.
+
+```json
+{
+  "providers": {
+    "my-gemini": {
+      "baseUrl": "https://gemini.example.com",
+      "api": "google",
+      "discover": true
+    }
+  }
+}
+```
+
+Use `MY_GEMINI_API_KEY`, `/login my-gemini`, or a matching `additional_api_key_creds` entry to configure its key. Static models can also be listed in `models`, with `"reasoning": true` for thinking-capable models.
+
 ##### Live model discovery for custom providers
 
-Set `"discover": true` on a custom provider to list its models from the OpenAI-compatible `/models` endpoint instead of, or in addition to, a static `models` array. Discovery is off by default and requires a provider-level `baseUrl`.
+Set `"discover": true` on a custom provider to list its models instead of, or in addition to, a static `models` array. Discovery is off by default and requires a provider-level `baseUrl`.
 
 ```json
 {
@@ -749,7 +765,9 @@ Set `"discover": true` on a custom provider to list its models from the OpenAI-c
 }
 ```
 
-zot queries `<baseUrl>/models` (or `<baseUrl>/v1/models` when the base has no version segment) with a 3 second timeout: in the background at startup, when `/model` opens, and when launching with a discovered model that is not yet in the catalog. The stored or environment API key is sent as a bearer token when present, unless the provider sets `"auth": "none"`; a missing key is not an error. Discovered IDs get a conservative 32K context and 4K output default, and IDs containing `embed` are skipped. Entries in the provider's `models` array override discovered metadata for the same ID. The list stays in memory only, failed refreshes keep the previous snapshot, and `/model` reports the error. Background refresh never executes `api_key_command`.
+For non-Google wire formats, zot queries `<baseUrl>/models` (or `<baseUrl>/v1/models` when the base has no version segment) with a 3 second timeout: in the background at startup, when `/model` opens, and when launching with a discovered model that is not yet in the catalog. The stored or environment API key is sent as a bearer token when present, unless the provider sets `"auth": "none"`; a missing key is not an error. Discovered IDs get a conservative 32K context and 4K output default, and IDs containing `embed` are skipped. Entries in the provider's `models` array override discovered metadata for the same ID. The list stays in memory only, failed refreshes keep the previous snapshot, and `/model` reports the error. Background refresh never executes `api_key_command`.
+
+For `"api": "google"`, discovery queries `<baseUrl>/v1beta/models` with the same refresh timing and credential rules, using `x-goog-api-key` rather than bearer authentication. It follows pagination, reads the reported input and output token limits, and includes models advertising `generateContent` or `streamGenerateContent`, including custom model names. Gemini 2.5 and 3 family IDs enable reasoning automatically. Use static model metadata to enable reasoning for other thinking-capable IDs.
 
 ### Kimi Code
 

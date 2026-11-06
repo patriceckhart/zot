@@ -31,25 +31,37 @@ const geminiDefaultBaseURL = "https://generativelanguage.googleapis.com"
 
 // geminiClient implements Client against the Gemini Generative Language API.
 type geminiClient struct {
-	apiKey  string
-	baseURL string
-	http    *http.Client
+	providerName string
+	apiKey       string
+	baseURL      string
+	http         *http.Client
 }
 
 // NewGemini creates a Gemini client using an AI Studio API key.
 // baseURL may be empty; defaults to https://generativelanguage.googleapis.com.
 func NewGemini(apiKey, baseURL string) Client {
+	return NewGeminiNamed("google", apiKey, baseURL)
+}
+
+// NewGeminiNamed creates a Gemini-compatible client with its own provider identity.
+func NewGeminiNamed(providerName, apiKey, baseURL string) Client {
 	if baseURL == "" {
 		baseURL = geminiDefaultBaseURL
 	}
 	return &geminiClient{
-		apiKey:  apiKey,
-		baseURL: strings.TrimRight(baseURL, "/"),
-		http:    &http.Client{Timeout: 0},
+		providerName: providerName,
+		apiKey:       apiKey,
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		http:         &http.Client{Timeout: 0},
 	}
 }
 
-func (c *geminiClient) Name() string { return "google" }
+func (c *geminiClient) Name() string {
+	if c.providerName == "" {
+		return "google"
+	}
+	return c.providerName
+}
 
 // ---- wire types ----
 //
@@ -127,13 +139,14 @@ type gemRequest struct {
 // ---- request building ----
 
 func (c *geminiClient) buildRequest(req Request) (*gemRequest, string, error) {
-	m, err := FindModel("google", req.Model)
+	m, err := FindModel(c.Name(), req.Model)
 	if err != nil {
 		// Not in the catalog — still allow custom ids by falling back
 		// to defaults so users can point at unreleased models or
 		// alternate base URLs.
 		m = Model{
-			Provider:      "google",
+			Provider:      c.Name(),
+			API:           "google",
 			ID:            req.Model,
 			ContextWindow: 1_000_000,
 			MaxOutput:     8192,
@@ -509,18 +522,20 @@ func (c *geminiClient) Stream(ctx context.Context, req Request) (<-chan Event, e
 		// Two ways to authenticate against the Generative Language
 		// API: x-goog-api-key header or ?key= query param. We use
 		// the header so the key never lands in proxy access logs.
-		httpReq.Header.Set("x-goog-api-key", c.apiKey)
+		if c.apiKey != "" {
+			httpReq.Header.Set("x-goog-api-key", c.apiKey)
+		}
 		return httpReq, nil
 	}
 
 	resp, err := doStreamWithRetry(ctx, c.http, newReq)
 	if err != nil {
-		return nil, fmt.Errorf("google: %w", err)
+		return nil, fmt.Errorf("%s: %w", c.Name(), err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("google: http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return nil, fmt.Errorf("%s: http %d: %s", c.Name(), resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 
 	out := make(chan Event, 16)
@@ -532,8 +547,8 @@ func (c *geminiClient) runStream(ctx context.Context, resp *http.Response, req R
 	defer close(out)
 	defer resp.Body.Close()
 
-	model, _ := FindModel("google", req.Model)
-	out <- EventStart{Model: req.Model, Provider: "google"}
+	model, _ := FindModel(c.Name(), req.Model)
+	out <- EventStart{Model: req.Model, Provider: c.Name()}
 
 	raw := make(chan sseEvent, 16)
 	go readSSE(resp.Body, raw)
@@ -710,7 +725,7 @@ func (c *geminiClient) runStream(ctx context.Context, resp *http.Response, req R
 			}
 			if chunk.Error != nil {
 				stop = StopError
-				finalErr = fmt.Errorf("google: %s", chunk.Error.Message)
+				finalErr = fmt.Errorf("%s: %s", c.Name(), chunk.Error.Message)
 				sendDone()
 				return
 			}
@@ -760,7 +775,7 @@ func (c *geminiClient) runStream(ctx context.Context, resp *http.Response, req R
 					stop = StopLength
 				case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY":
 					stop = StopError
-					finalErr = fmt.Errorf("google: response blocked (%s)", cand.FinishReason)
+					finalErr = fmt.Errorf("%s: response blocked (%s)", c.Name(), cand.FinishReason)
 				}
 			}
 			if chunk.UsageMetadata != nil {

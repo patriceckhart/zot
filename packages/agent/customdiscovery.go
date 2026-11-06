@@ -86,7 +86,12 @@ func refreshCustomProviderModels(ctx context.Context, mode apiKeyCommandMode) er
 		if skip {
 			continue
 		}
-		models, err := provider.DiscoverCustomProvider(ctx, name, cfg.BaseURL, key)
+		var models []provider.Model
+		if cfg.API == "google" {
+			models, err = provider.DiscoverGoogleNamed(ctx, name, key, cfg.BaseURL)
+		} else {
+			models, err = provider.DiscoverCustomProvider(ctx, name, cfg.BaseURL, key)
+		}
 		if err != nil {
 			errs = append(errs, err)
 			continue

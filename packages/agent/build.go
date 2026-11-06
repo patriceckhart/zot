@@ -1085,6 +1085,8 @@ func (r Resolved) NewClient() provider.Client {
 				return wrap(provider.NewOpenAIResponsesNamed(r.Credential, r.BaseURL, r.Provider))
 			case "anthropic":
 				return wrap(provider.NewAnthropicCompat(r.Provider, r.Credential, r.BaseURL))
+			case "google":
+				return wrap(provider.NewGeminiNamed(r.Provider, r.Credential, r.BaseURL))
 			default: // "openai"
 				return wrap(provider.NewOpenAICompat(r.Provider, r.Credential, r.BaseURL, ""))
 			}
