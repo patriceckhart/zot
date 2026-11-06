@@ -193,6 +193,7 @@ type Manager struct {
 	// lifecycleMu serializes session boundaries and notification enqueue order.
 	lifecycleMu   sync.Mutex
 	sessionID     string
+	sessionAlias  string
 	sessionCWD    string
 	sequence      uint64
 	sessionClosed bool

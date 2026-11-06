@@ -396,7 +396,7 @@ After prompt assembly (including context files, skills, and extension tools),
 zot sends a request before the first agent model call:
 
 ```json
-{"type":"event_intercept","id":"start-1","event":"before_agent_start","session_id":"session-123","agent_run_id":"run-456","cwd":"/work/repo","provider":"anthropic","model":"claude-opus-4-7","system_prompt":"The complete current system prompt"}
+{"type":"event_intercept","id":"start-1","event":"before_agent_start","session_id":"session-123","session_alias":"tidy-birch","agent_run_id":"run-456","cwd":"/work/repo","provider":"anthropic","model":"claude-opus-4-7","system_prompt":"The complete current system prompt"}
 ```
 
 Reply with an exact replacement:
@@ -421,8 +421,11 @@ Cancellation stops preparation without committing a pending replacement.
 `session_start` remains a separate one-way setup notification.
 
 `session_id` is the persisted conversation ID when available, otherwise a
-runtime-local ID. `agent_run_id` identifies one preparation pass and changes
-on each rebuild. It is shared by all extensions in that pass.
+runtime-local ID. Optional `session_alias` is the persisted conversation's
+readable lookup name, such as `tidy-birch`, not its editable display title.
+The Go SDK exposes it as `BeforeAgentStartEvent.SessionAlias`. `agent_run_id`
+identifies one preparation pass and changes on each rebuild. It is shared by
+all extensions in that pass.
 
 Each extension has a five-second deadline including the request pipe write.
 Invalid/non-string values, malformed responses, crashes, and timeouts preserve
@@ -802,6 +805,25 @@ themselves indicate lost delivery. They reset when zot restarts. Correlate tool
 outcomes with `(session_id, tool_id)`, compaction with `compaction_id`, and swarm
 runs with `agent_run_id`. These are payload identifiers, not request/reply IDs.
 
+Notifications and intercept requests also include optional `session_alias` when
+the session's readable alias is available. The Go SDK exposes it as
+`Event.SessionAlias` and `BeforeAgentStartEvent.SessionAlias`. Subscribe to
+`session_start` to learn the alias without reading transcript files:
+
+```json
+{"type":"event","event":"session_start","session_id":"session-123","session_alias":"tidy-birch","cwd":"/work/repo","sequence":1}
+```
+
+Aliases are lookup names scoped to a working directory and named-agent namespace,
+not globally unique IDs or editable display titles. Continue using `session_id`
+for correlation. Resumed sessions retain their aliases, while forks and imports
+receive new ones. `session_end` describes the closing session, including its alias,
+before `session_start` describes the next one. Legacy transcripts, explicit-path
+sessions without an alias, and non-persisted conversations omit `session_alias`.
+Older hosts may also omit it, so extensions must tolerate its absence. These
+fields do not require a protocol-version change. Environment variables are not a
+session-change notification mechanism for already-running extension subprocesses.
+
 | Event | Additional payload | Meaning |
 |---|---|---|
 | `session_start` | No additional fields | An active conversation opens |
@@ -897,7 +919,9 @@ tokens. The events do not let extensions modify the summary.
 
 Swarm events are emitted by the parent supervisor, including resumed tasks.
 `session_id` identifies the task's parent conversation, even if the active
-conversation later changes. `agent_id` survives resume; `agent_run_id` is fresh
+conversation later changes. A delayed event for a different conversation does
+not inherit the active conversation's alias. Its `session_alias` may be absent.
+`agent_id` survives resume; `agent_run_id` is fresh
 for each local runner invocation and pairs start with stop. `name` currently
 uses the agent ID. Stop statuses are `completed`, `failed`, `cancelled`, and
 `timed_out`. Merely loading detached agents from disk does not replay lifecycle

@@ -20,7 +20,7 @@ func wireBeforeAgentStart(ag *core.Agent, mgr *extensions.Manager, provider stri
 			}
 		}
 		return mgr.InterceptBeforeAgentStart(ctx, extproto.EventInterceptFromHost{
-			SystemPrompt: &system, SessionID: session, AgentRunID: rand.Text(),
+			SystemPrompt: &system, SessionID: session, SessionAlias: ag.SessionAlias, AgentRunID: rand.Text(),
 			Provider: provider, Model: ag.Model,
 		})
 	}

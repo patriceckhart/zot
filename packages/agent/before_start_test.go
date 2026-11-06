@@ -41,6 +41,13 @@ func TestStartExtensionProcessHelper(t *testing.T) {
 		if ev.SystemPrompt == nil || ev.CWD == "" || ev.Provider == "" || ev.Model == "" || ev.SessionID == "" || ev.AgentRunID == "" {
 			os.Exit(3)
 		}
+		wantAlias := ""
+		if ev.SessionID == "named-session" {
+			wantAlias = "tidy-birch"
+		}
+		if ev.SessionAlias != wantAlias {
+			os.Exit(4)
+		}
 		count++
 		value, _ := json.Marshal(fmt.Sprintf("%s/%d/%s", *ev.SystemPrompt, count, ev.Model))
 		enc.Encode(extproto.EventInterceptResponseFromExt{Type: "event_intercept_response", ID: ev.ID, SystemPrompt: value})
@@ -104,4 +111,8 @@ func TestRPCBeforeAgentStart(t *testing.T) {
 	server.dispatch("set_model", "2", raw)
 	prompt("complete base/3/" + models[1].ID)
 	prompt("complete base/3/" + models[1].ID)
+	bindAgentSession(ag, &core.Session{ID: "named-session", Meta: core.SessionMeta{Alias: "tidy-birch"}})
+	prompt("complete base/4/" + models[1].ID)
+	bindAgentSession(ag, &core.Session{ID: "legacy-session"})
+	prompt("complete base/5/" + models[1].ID)
 }

@@ -75,7 +75,8 @@ type EventHandler func(ev Event)
 type EventResult = extproto.EventResult
 
 // Event is an observational lifecycle notification. SessionID, CWD and Sequence
-// identify its context. Name selects the remaining payload:
+// identify its context. SessionAlias is an optional readable lookup name, not a
+// globally unique identity. Name selects the remaining payload:
 //
 //	session_start: no additional fields
 //	session_end: Reason
@@ -97,6 +98,7 @@ type Event struct {
 	Name          string
 	AgentRunID    string
 	SessionID     string
+	SessionAlias  string
 	Queued        bool
 	ImageCount    int
 	CWD           string
@@ -161,6 +163,7 @@ type ToolCallHandler func(toolName string, args json.RawMessage) ToolCallDecisio
 type BeforeAgentStartEvent struct {
 	SystemPrompt string
 	SessionID    string
+	SessionAlias string
 	AgentRunID   string
 	CWD          string
 	Provider     string
@@ -920,7 +923,7 @@ func (e *Extension) Run() error {
 					}()
 					handler(Event{
 						Name: ef.Event, Step: ef.Step, Stop: ef.Stop,
-						SessionID: ef.SessionID, AgentRunID: ef.AgentRunID, Queued: ef.Queued, ImageCount: ef.ImageCount, CWD: ef.CWD, Sequence: ef.Sequence,
+						SessionID: ef.SessionID, SessionAlias: ef.SessionAlias, AgentRunID: ef.AgentRunID, Queued: ef.Queued, ImageCount: ef.ImageCount, CWD: ef.CWD, Sequence: ef.Sequence,
 						Status: ef.Status, Reason: ef.Reason, Source: ef.Source, Decision: ef.Decision, Stage: ef.Stage,
 						Result: ef.Result, Executed: ef.Executed, CompactionID: ef.CompactionID,
 						MessageCount: ef.MessageCount, TokenEstimate: ef.TokenEstimate,
@@ -1054,7 +1057,7 @@ func (e *Extension) dispatchIntercept(ei extproto.EventInterceptFromHost) {
 		e.mu.Unlock()
 		if fn != nil && ei.SystemPrompt != nil {
 			if replacement := fn(BeforeAgentStartEvent{
-				SystemPrompt: *ei.SystemPrompt, SessionID: ei.SessionID, AgentRunID: ei.AgentRunID,
+				SystemPrompt: *ei.SystemPrompt, SessionID: ei.SessionID, SessionAlias: ei.SessionAlias, AgentRunID: ei.AgentRunID,
 				CWD: ei.CWD, Provider: ei.Provider, Model: ei.Model,
 			}); replacement != nil {
 				resp.SystemPrompt, _ = json.Marshal(*replacement)

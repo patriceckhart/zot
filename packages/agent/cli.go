@@ -1930,8 +1930,10 @@ func bindAgentSession(ag *core.Agent, sess *core.Session) {
 	if ag == nil {
 		return
 	}
+	ag.SessionAlias = ""
 	if sess != nil {
 		ag.SessionID = sess.ID
+		ag.SessionAlias = sess.Meta.Alias
 	} else if ag.SessionID == "" {
 		ag.SessionID = uuid.NewString()
 	}

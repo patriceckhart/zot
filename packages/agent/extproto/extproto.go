@@ -250,6 +250,7 @@ type EventResult struct {
 }
 
 type EventFromHost struct {
+	SessionAlias    string          `json:"session_alias,omitempty"`
 	SessionID       string          `json:"session_id,omitempty"`
 	AgentRunID      string          `json:"agent_run_id,omitempty"`
 	Queued          bool            `json:"queued,omitempty"`
@@ -283,6 +284,7 @@ type EventFromHost struct {
 }
 
 type EventInterceptFromHost struct {
+	SessionAlias    string          `json:"session_alias,omitempty"`
 	SystemPrompt    *string         `json:"system_prompt,omitempty"`
 	OriginExtension string          `json:"origin_extension,omitempty"`
 	SessionID       string          `json:"session_id,omitempty"`

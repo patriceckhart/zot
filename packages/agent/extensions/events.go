@@ -31,6 +31,9 @@ func (m *Manager) emitEventLocked(ev extproto.EventFromHost) {
 	if ev.SessionID == "" {
 		ev.SessionID = m.sessionID
 	}
+	if ev.SessionAlias == "" && ev.SessionID != "" && ev.SessionID == m.sessionID {
+		ev.SessionAlias = m.sessionAlias
+	}
 	if ev.CWD == "" {
 		ev.CWD = m.sessionCWD
 	}
@@ -198,6 +201,15 @@ func (m *Manager) interceptSubsFor(event string) []*Extension {
 // result. before_agent_start callers bound the complete operation with a
 // context deadline; other events retain the legacy response-only timeout.
 func (m *Manager) askIntercept(ctx context.Context, ext *Extension, payload extproto.EventInterceptFromHost) InterceptResult {
+	m.lifecycleMu.Lock()
+	if payload.SessionID == "" {
+		payload.SessionID = m.sessionID
+	}
+	if payload.SessionAlias == "" && payload.SessionID != "" && payload.SessionID == m.sessionID {
+		payload.SessionAlias = m.sessionAlias
+	}
+	m.lifecycleMu.Unlock()
+
 	id := newCorrelationID()
 	ch := make(chan extproto.EventInterceptResponseFromExt, 1)
 	ext.mu.Lock()

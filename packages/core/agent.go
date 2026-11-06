@@ -36,6 +36,10 @@ type Agent struct {
 	// support sticky routing. Empty means omitted.
 	SessionID string
 
+	// SessionAlias is the persisted conversation's readable lookup name, if any.
+	// It is host metadata and is not forwarded to providers.
+	SessionAlias string
+
 	// MaxToolCalls caps provider-executed server-tool calls per turn.
 	// Zero leaves the field unset.
 	MaxToolCalls int
