@@ -23,7 +23,12 @@ You'll see one JSON object per line on stdout: a response acknowledging the prom
 
 ## Flags
 
-`zot rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--reasoning`, `--show-reasoning`, `--max-steps`, `--no-tools`, `--tools`, `--no-context-files`. Sessions are disabled by default in RPC mode; the embedding application owns persistence.
+`zot rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--append-compaction-prompt`, `--reasoning`, `--show-reasoning`, `--max-steps`, `--no-tools`, `--tools`, `--no-context-files`. Sessions are disabled by default in RPC mode; the embedding application owns persistence.
+
+Compaction uses `$ZOT_HOME/COMPACT.md` and any repeatable
+`--append-compaction-prompt` values as additional summarization instructions.
+See [Compaction instructions](../README.md#compaction-instructions). This does not
+change the RPC request schema.
 
 ## Extension system prompts
 

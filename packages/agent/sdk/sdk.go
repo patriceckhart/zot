@@ -63,6 +63,10 @@ type Config struct {
 	// system prompt. Useful for project-specific instructions.
 	AppendSystemPrompt []string
 
+	// AppendCompactionPrompt adds instructions after $ZOT_HOME/COMPACT.md.
+	// Applies to manual and automatic summaries, preserving the built-in template.
+	AppendCompactionPrompt []string
+
 	// Reasoning sets the reasoning effort for models that support it
 	// ("minimum", "low", "medium", "high", "xhigh", "max"). Empty disables it.
 	Reasoning string
@@ -141,22 +145,23 @@ func New(cfg Config) (*Runtime, error) {
 
 func argsFromConfig(cfg Config) agent.Args {
 	return agent.Args{
-		Mode:               agent.ModeJSON, // headless
-		Provider:           cfg.Provider,
-		Model:              cfg.Model,
-		CWD:                cfg.CWD,
-		APIKey:             cfg.APIKey,
-		BaseURL:            cfg.BaseURL,
-		SystemPrompt:       cfg.SystemPrompt,
-		SystemPromptSet:    cfg.SystemPromptSet || cfg.SystemPrompt != "",
-		AppendSystemPrompt: cfg.AppendSystemPrompt,
-		Reasoning:          cfg.Reasoning,
-		Temperature:        cfg.Temperature,
-		MaxSteps:           cfg.MaxSteps,
-		Tools:              cfg.Tools,
-		CodemodeSettings:   cfg.Codemode,
-		NoTools:            cfg.NoTools,
-		NoSess:             true, // SDK callers manage persistence themselves
+		Mode:                   agent.ModeJSON, // headless
+		Provider:               cfg.Provider,
+		Model:                  cfg.Model,
+		CWD:                    cfg.CWD,
+		APIKey:                 cfg.APIKey,
+		BaseURL:                cfg.BaseURL,
+		SystemPrompt:           cfg.SystemPrompt,
+		SystemPromptSet:        cfg.SystemPromptSet || cfg.SystemPrompt != "",
+		AppendSystemPrompt:     cfg.AppendSystemPrompt,
+		AppendCompactionPrompt: cfg.AppendCompactionPrompt,
+		Reasoning:              cfg.Reasoning,
+		Temperature:            cfg.Temperature,
+		MaxSteps:               cfg.MaxSteps,
+		Tools:                  cfg.Tools,
+		CodemodeSettings:       cfg.Codemode,
+		NoTools:                cfg.NoTools,
+		NoSess:                 true, // SDK callers manage persistence themselves
 	}
 }
 

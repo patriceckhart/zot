@@ -48,11 +48,12 @@ type Args struct {
 	SystemPrompt string
 	// SystemPromptSet records whether --system-prompt was provided. An empty
 	// value is an intentional override, distinct from leaving the flag absent.
-	SystemPromptSet    bool
-	AppendSystemPrompt []string
-	ShowReasoning      bool
-	Reasoning          string
-	Temperature        *float32
+	SystemPromptSet        bool
+	AppendSystemPrompt     []string
+	AppendCompactionPrompt []string
+	ShowReasoning          bool
+	Reasoning              string
+	Temperature            *float32
 
 	Continue    bool
 	Resume      bool
@@ -284,6 +285,12 @@ func ParseArgs(in []string) (Args, error) {
 				return a, err
 			}
 			a.AppendSystemPrompt = append(a.AppendSystemPrompt, v)
+		case "--append-compaction-prompt":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			a.AppendCompactionPrompt = append(a.AppendCompactionPrompt, v)
 		case "--ext", "-e":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -558,6 +565,7 @@ func printHelp(out *os.File, version string) {
 		row{"--stats PATH", "write print-mode generation stats as json"},
 		row{"--system-prompt TEXT", "replace the default system prompt"},
 		row{"--append-system-prompt TEXT", "append to the system prompt (repeatable)"},
+		row{"--append-compaction-prompt TEXT", "append compaction instructions (repeatable)"},
 		row{"-c, --continue", "continue the most recent session for this cwd"},
 		row{"-r, --resume", "pick a session to resume"},
 		row{"--session PATH", "resume a specific session file"},

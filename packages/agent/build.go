@@ -36,11 +36,12 @@ type Resolved struct {
 	Reasoning   string
 	Temperature *float32
 
-	ToolRegistry core.Registry
-	ToolSummary  []ToolSummary
-	SystemPrompt string
-	MaxSteps     int
-	Sandbox      *tools.Sandbox
+	ToolRegistry           core.Registry
+	ToolSummary            []ToolSummary
+	SystemPrompt           string
+	CompactionInstructions string
+	MaxSteps               int
+	Sandbox                *tools.Sandbox
 
 	// MaxOutput is the resolved model's maximum output-token budget
 	// (from the catalog). Passed to the agent so each turn requests
@@ -729,6 +730,11 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		}, nil
 	}
 
+	compactionInstructions, err := resolveCompactionInstructions(ZotHome(), args.AppendCompactionPrompt)
+	if err != nil {
+		return Resolved{}, err
+	}
+
 	sandbox := tools.NewSandbox(args.CWD)
 	if cfg.JailByDefault != nil && *cfg.JailByDefault {
 		sandbox.Lock()
@@ -834,31 +840,32 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 	}
 
 	return Resolved{
-		Provider:              provName,
-		Model:                 model,
-		Credential:            cred,
-		AuthMethod:            method,
-		AccountID:             accountID,
-		BaseURL:               args.BaseURL,
-		InsecureTLS:           insecureTLS,
-		CWD:                   args.CWD,
-		Reasoning:             reasoning,
-		Temperature:           temperature,
-		ToolRegistry:          reg,
-		ToolSummary:           summaries,
-		SystemPrompt:          sys,
-		MaxSteps:              max,
-		MaxOutput:             resolvedModel.MaxOutput,
-		Sandbox:               sandbox,
-		SkillTool:             skillTool,
-		SkillDiagnostics:      skillDiagnostics,
-		ContextFiles:          contextFiles,
-		credentialOptional:    credentialOptional,
-		openRouterServerTools: !args.NoTools && OpenRouterServerToolsEnabled(),
-		systemAppend:          append_,
-		systemCustom:          custom,
-		systemCustomSet:       customSet,
-		toolDescriptions:      descMapFromSummaries(summaries),
+		Provider:               provName,
+		Model:                  model,
+		Credential:             cred,
+		AuthMethod:             method,
+		AccountID:              accountID,
+		BaseURL:                args.BaseURL,
+		InsecureTLS:            insecureTLS,
+		CWD:                    args.CWD,
+		Reasoning:              reasoning,
+		Temperature:            temperature,
+		ToolRegistry:           reg,
+		ToolSummary:            summaries,
+		SystemPrompt:           sys,
+		CompactionInstructions: compactionInstructions,
+		MaxSteps:               max,
+		MaxOutput:              resolvedModel.MaxOutput,
+		Sandbox:                sandbox,
+		SkillTool:              skillTool,
+		SkillDiagnostics:       skillDiagnostics,
+		ContextFiles:           contextFiles,
+		credentialOptional:     credentialOptional,
+		openRouterServerTools:  !args.NoTools && OpenRouterServerToolsEnabled(),
+		systemAppend:           append_,
+		systemCustom:           custom,
+		systemCustomSet:        customSet,
+		toolDescriptions:       descMapFromSummaries(summaries),
 	}, nil
 }
 
@@ -1188,6 +1195,7 @@ func (r Resolved) NewAgent() *core.Agent {
 	a.MaxTokens = r.MaxOutput
 	a.Reasoning = r.Reasoning
 	a.Temperature = r.Temperature
+	a.CompactionInstructions = r.CompactionInstructions
 	if hasOpenRouterServerTools(r.ToolRegistry) {
 		a.MaxToolCalls = openRouterServerToolCallLimit()
 	}

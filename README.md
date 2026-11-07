@@ -160,6 +160,7 @@ $ZOT_HOME/
 ├── models-cache.json   # live /v1/models discovery cache (6h ttl)
 ├── AGENTS.md           # optional: global instructions appended to the prompt
 ├── SYSTEM.md           # optional: replaces the default system prompt
+├── COMPACT.md          # optional: additional compaction instructions
 ├── skills/             # optional: user SKILL.md files
 ├── themes/             # optional: user theme JSON files
 ├── extensions/         # installed extensions, one dir per extension
@@ -167,6 +168,39 @@ $ZOT_HOME/
 ```
 
 Drop a `SYSTEM.md` in `$ZOT_HOME` to replace the built-in identity and zot-docs guidance for every run. `--system-prompt` still wins per-invocation. Pass an empty value (`--system-prompt ""`) to intentionally omit the built-in identity. Custom prompts still receive appended instructions and generated context, including `AGENTS.md`, skills, auto-swarm guidance when enabled, and the date/cwd footer. Delete the file to revert to the default.
+
+### Compaction instructions
+
+Create `$ZOT_HOME/COMPACT.md` to add persistent guidance to manual (`/compact`)
+and automatic compaction. For per-run additions, use the repeatable flag:
+
+```sh
+zot --append-compaction-prompt "Reference Markdown documents by path instead of repeating their contents."
+```
+
+Instructions are appended to the built-in summary template in this order:
+`COMPACT.md`, then flag values in command-line order. They do not replace the
+summary template or the separate summarization system prompt. Missing or blank
+files add nothing. Other file-read failures stop startup with an error.
+Instructions are loaded when the agent is configured, so restart zot after
+editing the file. They also apply to resumed sessions, but are not stored as
+session settings. Normal system-prompt overrides and `AGENTS.md` do not configure
+this separate summarization request.
+
+For example, `COMPACT.md` could contain:
+
+```markdown
+Prioritize the current work, unresolved issues, key decisions, and next steps.
+Reference existing Markdown documents by exact path instead of repeating their
+contents. Preserve essential context that is not recorded in those documents.
+```
+
+The summarizer receives the transcript without tools. It cannot open referenced
+files or verify that their contents are sufficient for resuming work.
+The Go SDK exposes `Config.AppendCompactionPrompt`. Direct core users can set
+`Agent.CompactionInstructions` before use. Continuous-mode summaries use the same
+configured instructions, followed by any per-request `conversation.compact`
+instructions. No customization leaves the existing compaction behavior unchanged.
 
 ### Configuration files
 
@@ -304,6 +338,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `--insecure` | Skip TLS certificate verification for the explicit `--base-url` endpoint or a `baseUrl` defined for a user model in `models.json` (self-signed local/internal inference servers). Built-in providers, auth, and model discovery keep normal TLS verification. |
 | `--system-prompt <text>` | Replace the default system prompt for this run (also overrides `$ZOT_HOME/SYSTEM.md`; pass `""` for no built-in identity). |
 | `--append-system-prompt <text>` | Append text to the system prompt (repeatable). |
+| `--append-compaction-prompt <text>` | Append compaction instructions after `$ZOT_HOME/COMPACT.md` (repeatable). |
 | `--reasoning off\|minimum\|low\|medium\|high\|xhigh\|max` | Set the reasoning level on supported models (default: off). `max` is a separate opt-in tier above `xhigh`. |
 | `--show-reasoning` | Show live reasoning and retain a compact tail before each reply in interactive mode. Explicitly opt in to `reasoning_delta` events in JSON/RPC mode. Does not change reasoning effort. |
 | `--stats <path>` | With `-p`/`--print`, write generation statistics as JSON. |

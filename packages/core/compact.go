@@ -112,9 +112,9 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 
 // Summarize requests a summary of the given messages without changing the
 // transcript. Durable hosts use it as one model request between two commits
-// and publish the summary themselves. Extra instructions, when given, are
-// appended to the compaction prompt. It returns the summary and a rough
-// token estimate of the summarized text.
+// and publish the summary themselves. CompactionInstructions and then any
+// per-call instructions are appended to the template. It returns the summary
+// and a rough token estimate of the summarized text.
 func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, instructions string, sink func(delta string)) (string, int, error) {
 	if len(messages) == 0 {
 		return "", 0, fmt.Errorf("nothing to summarize")
@@ -123,8 +123,10 @@ func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, inst
 	// so the model treats it as material to summarize, not to continue.
 	transcript := serializeTranscript(messages)
 	prompt := "<conversation>\n" + transcript + "\n</conversation>\n\n" + compactionPrompt
-	if strings.TrimSpace(instructions) != "" {
-		prompt += "\n\nAdditional instructions: " + strings.TrimSpace(instructions)
+	for _, extra := range []string{a.CompactionInstructions, instructions} {
+		if text := strings.TrimSpace(extra); text != "" {
+			prompt += "\n\nAdditional instructions: " + text
+		}
 	}
 	req := provider.Request{
 		Model:       a.Model,
