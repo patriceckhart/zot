@@ -33,6 +33,12 @@ type Config struct {
 	Theme       string             `json:"theme"`
 	Codemode    *codemode.Settings `json:"codemode,omitempty"`
 
+	// DisabledProviders blocks inference, credential resolution, and discovery.
+	DisabledProviders []string `json:"disabled_providers,omitempty"`
+
+	// HideSpeculativeModels hides unconfirmed catalog IDs from selection lists.
+	HideSpeculativeModels bool `json:"hide_speculative_models,omitempty"`
+
 	// SkillExclude omits filesystem paths and their descendants from skill
 	// discovery. Relative paths use the session starting directory.
 	SkillExclude []string `json:"skill_exclude,omitempty"`
@@ -319,6 +325,9 @@ func ResolveLlamaCPPConfig() (baseURL, apiKey string, err error) {
 }
 
 func resolveLlamaCPPConfig(ctx context.Context, commandMode apiKeyCommandMode) (baseURL, apiKey string, err error) {
+	if err := CheckProviderEnabled(providerpkg.LlamaCPPProviderID); err != nil {
+		return "", "", err
+	}
 	baseURL = strings.TrimSpace(os.Getenv("LLAMA_BASE_URL"))
 	apiKey = strings.TrimSpace(os.Getenv("LLAMA_API_KEY"))
 	if baseURL == "" {
@@ -389,6 +398,9 @@ const (
 )
 
 func resolveCredentialFull(ctx context.Context, provider, explicit string, commandMode apiKeyCommandMode) (cred, method, accountID string, err error) {
+	if err := CheckProviderEnabled(provider); err != nil {
+		return "", "", "", err
+	}
 	if explicit != "" {
 		return explicit, "apikey", "", nil
 	}

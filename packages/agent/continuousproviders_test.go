@@ -12,6 +12,25 @@ import (
 	"github.com/patriceckhart/zot/packages/provider/auth"
 )
 
+func TestContinuousModelPolicyBlocksHostAndKeylessProviders(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	loadTestModelsJSON(t, `{"providers":{"blocked-routing":{"baseUrl":"http://localhost:1/v1","auth":"none","models":[{"id":"pinned"}]},"ollama":{"models":[{"id":"local-model"}]}}}`)
+	disabled := append(append([]string(nil), knownProviders...), "blocked-routing")
+	if err := SaveConfig(Config{DisabledProviders: disabled, HideSpeculativeModels: true}); err != nil {
+		t.Fatal(err)
+	}
+	host := Resolved{Provider: "openai", Model: "gpt-4o-mini", Credential: "test-key"}
+	for _, config := range []continuous.AgentConfig{{}, {Provider: "blocked-routing", Model: "pinned"}} {
+		if _, err := continuousInference(context.Background(), host, config); err == nil {
+			t.Fatal("disabled host or keyless provider bypassed policy")
+		}
+	}
+	models, err := continuousAvailableModels(context.Background(), host)
+	if err != nil || len(models) != 0 {
+		t.Fatalf("available disabled models = %+v, error = %v", models, err)
+	}
+}
+
 func TestContinuousInferenceScopesCredentialsAndEndpoint(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	t.Setenv("ANTHROPIC_API_KEY", "synthetic-other")

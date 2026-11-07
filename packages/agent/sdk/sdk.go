@@ -322,6 +322,9 @@ func (r *Runtime) SetModel(model string) error {
 	if r.activeCancel != nil {
 		return ErrBusy
 	}
+	if err := agent.CheckProviderEnabled(r.provider); err != nil {
+		return err
+	}
 	m, err := provider.FindModel(r.provider, model)
 	if err != nil {
 		return err

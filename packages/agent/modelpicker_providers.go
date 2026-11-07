@@ -14,7 +14,7 @@ func modelPickerProviders() []string {
 		}
 	}
 	for p, cfg := range provider.CustomProviders() {
-		if seen[p] {
+		if seen[p] || CheckProviderEnabled(p) != nil {
 			continue
 		}
 		if CredentialAvailable(p) || (!isBuiltinProvider(p) && (cfg.BaseURL != "" || customProviderHasModelURL(p))) {
@@ -22,7 +22,7 @@ func modelPickerProviders() []string {
 			seen[p] = true
 		}
 	}
-	if !seen["ollama"] {
+	if !seen["ollama"] && CheckProviderEnabled("ollama") == nil {
 		out = append(out, "ollama")
 	}
 	return out

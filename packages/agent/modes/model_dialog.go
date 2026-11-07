@@ -17,6 +17,7 @@ import (
 // Typing characters narrows the list via a fuzzy substring match that
 // ignores punctuation (e.g. "opus46" matches "claude-opus-4-6").
 type modelDialog struct {
+	catalog       func() []provider.Model
 	active        bool
 	all           []provider.Model // full catalog, sorted
 	view          []provider.Model // filtered view shown to the user
@@ -59,8 +60,12 @@ func (d *modelDialog) Open(current string, loggedInProviders []string, reasoning
 	for _, p := range loggedInProviders {
 		provSet[p] = true
 	}
+	models := provider.Active()
+	if d.catalog != nil {
+		models = d.catalog()
+	}
 	var filtered []provider.Model
-	for _, m := range provider.Active() {
+	for _, m := range models {
 		if provSet[m.Provider] {
 			filtered = append(filtered, m)
 		}

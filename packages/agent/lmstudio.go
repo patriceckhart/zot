@@ -11,6 +11,9 @@ import (
 // resolveLMStudioConfig never assumes a localhost endpoint. Discovery is
 // enabled only by a saved server URL, independently of whether a key is needed.
 func resolveLMStudioConfig(ctx context.Context, mode apiKeyCommandMode) (string, string, error) {
+	if err := CheckProviderEnabled(provider.LMStudioProviderID); err != nil {
+		return "", "", err
+	}
 	creds, err := AuthStoreFor().Load()
 	if err != nil {
 		return "", "", err
@@ -32,6 +35,9 @@ func resolveLMStudioConfig(ctx context.Context, mode apiKeyCommandMode) (string,
 
 // LMStudioConfigured checks only saved configuration, never the network.
 func LMStudioConfigured() bool {
+	if CheckProviderEnabled(provider.LMStudioProviderID) != nil {
+		return false
+	}
 	root, _, err := AuthStoreFor().EndpointCredential(provider.LMStudioProviderID)
 	return err == nil && strings.TrimSpace(root) != ""
 }

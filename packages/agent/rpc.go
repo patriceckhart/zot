@@ -294,6 +294,10 @@ func (s *rpcServer) dispatch(cmd, id string, raw []byte) {
 			s.writeError(id, cmd, err.Error())
 			return
 		}
+		if err := CheckProviderEnabled(s.provider); err != nil {
+			s.writeError(id, cmd, err.Error())
+			return
+		}
 		m, err := provider.FindModel(s.provider, req.Model)
 		if err != nil {
 			s.writeError(id, cmd, err.Error())

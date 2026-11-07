@@ -365,6 +365,9 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 	// provider and silently downgraded to anthropic.
 	argProvider := canonicalProvider(args.Provider)
 	provName := firstNonEmpty(argProvider, canonicalProvider(cfg.Provider), "anthropic")
+	if err := CheckProviderEnabled(provName); err != nil {
+		return Resolved{}, err
+	}
 	if !isKnownProvider(provName) {
 		// Unknown provider (maybe removed or renamed). Fall back to
 		// the first provider that has credentials, or anthropic.
@@ -386,6 +389,9 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		}
 		if CredentialAvailable("anthropic") {
 			provName = "anthropic"
+		}
+		if err := CheckProviderEnabled(provName); err != nil {
+			return Resolved{}, err
 		}
 		// Reset the saved config so this doesn't keep happening.
 		cfg.Provider = provName

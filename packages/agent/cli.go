@@ -1612,6 +1612,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		BuildAgentFor:               buildAgentFor,
 		BuildAgentForRescue:         buildAgentForRescue,
 		LoggedInProviders:           modelPickerProviders,
+		ModelCatalog:                visibleModelCatalog,
+		CheckProviderEnabled:        CheckProviderEnabled,
 		NewSession:                  newSession,
 		LoadSession:                 loadSession,
 		ChangeCWD:                   changeCWD,
@@ -1995,7 +1997,7 @@ func readAllStdin() (string, error) {
 }
 
 func printModels() {
-	models := provider.Active()
+	models := visibleModelCatalog()
 
 	// Compute column widths from actual data so wide providers (e.g.
 	// xiaomi-token-plan-sgp) and long bedrock model ids don't force the

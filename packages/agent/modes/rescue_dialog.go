@@ -15,6 +15,7 @@ import (
 // list is built dynamically from the providers the user is currently
 // logged in to — no static fallback config.
 type rescueDialog struct {
+	catalog  func() []provider.Model
 	active   bool
 	all      []provider.Model // candidates, sorted
 	view     []provider.Model // filtered view (typed query)
@@ -48,6 +49,9 @@ func (d *rescueDialog) Open(current string, loggedInProviders []string, failedPr
 	d.failedAt = strings.TrimSpace(failedProvider + "/" + failedModel)
 
 	all := provider.Active()
+	if d.catalog != nil {
+		all = d.catalog()
+	}
 	provSet := map[string]bool{}
 	for _, p := range loggedInProviders {
 		provSet[p] = true

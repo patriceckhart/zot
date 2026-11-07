@@ -18,6 +18,9 @@ func continuousInference(ctx context.Context, host Resolved, config continuous.A
 	if name == "" {
 		name = host.Provider
 	}
+	if err := CheckProviderEnabled(name); err != nil {
+		return Resolved{}, err
+	}
 	if !isKnownProvider(name) {
 		return Resolved{}, fmt.Errorf("unknown provider %q", name)
 	}
@@ -59,7 +62,7 @@ func continuousAvailableModels(ctx context.Context, host Resolved) ([]continuous
 		return nil, err
 	}
 	available := map[string]bool{host.Provider: true}
-	catalog := provider.Active()
+	catalog := visibleModelCatalog()
 	for _, model := range catalog {
 		if _, checked := available[model.Provider]; checked {
 			continue

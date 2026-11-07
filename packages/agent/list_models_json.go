@@ -67,13 +67,17 @@ func printModelCatalogJSONContext(ctx context.Context, w, diagnostics io.Writer)
 	// short-lived CLI cannot rely on startup's background refresh finishing.
 	// Never execute credential commands just to enumerate models.
 	for _, refresh := range []struct {
-		name string
-		fn   func(context.Context, apiKeyCommandMode) error
+		name     string
+		provider string
+		fn       func(context.Context, apiKeyCommandMode) error
 	}{
-		{"LM Studio", refreshLMStudioModels},
-		{"llama.cpp", refreshLlamaCPPModels},
-		{"custom providers", refreshCustomProviderModels},
+		{"LM Studio", provider.LMStudioProviderID, refreshLMStudioModels},
+		{"llama.cpp", provider.LlamaCPPProviderID, refreshLlamaCPPModels},
+		{"custom providers", "", refreshCustomProviderModels},
 	} {
+		if refresh.provider != "" && CheckProviderEnabled(refresh.provider) != nil {
+			continue
+		}
 		refreshCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		err := refresh.fn(refreshCtx, apiKeyCommandSkip)
 		cancel()
@@ -85,5 +89,5 @@ func printModelCatalogJSONContext(ctx context.Context, w, diagnostics io.Writer)
 	// must stay separate from the machine-readable JSON on stdout.
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(modelPickerCatalog(provider.Active(), modelPickerProviders()))
+	return enc.Encode(modelPickerCatalog(visibleModelCatalog(), modelPickerProviders()))
 }

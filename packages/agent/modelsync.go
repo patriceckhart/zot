@@ -92,6 +92,11 @@ func ValidateAndRepairConfig() {
 		fmt.Fprintf(os.Stderr, "zot: config.json: %v (using defaults)\n", err)
 		return
 	}
+	// Preserve a disabled saved selection so resolution can explain the policy
+	// error instead of silently repairing it to another model or provider.
+	if cfg.providerDisabled(cfg.Provider) {
+		return
+	}
 	changed := false
 
 	if cfg.Provider != "" && !isKnownProvider(cfg.Provider) {
@@ -279,8 +284,10 @@ func refreshModels() {
 		// Bedrock resolves SigV4 credentials independently of inference auth.
 		// A default AWS CLI profile can be usable even when zot has no
 		// Bedrock credential registered with its general resolver.
-		if live, err := provider.DiscoverBedrock(ctx, ""); err == nil {
-			all = append(all, live...)
+		if CheckProviderEnabled("amazon-bedrock") == nil {
+			if live, err := provider.DiscoverBedrock(ctx, ""); err == nil {
+				all = append(all, live...)
+			}
 		}
 		if haveOpenRouter {
 			// /models is public; gate on a credential so the picker only

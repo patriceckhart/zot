@@ -715,13 +715,31 @@ Use `/login` to store API keys or subscription credentials. `/model` only shows 
 
 ## Models
 
-`--list-models` or the `/model` picker shows the full catalog across all built-in providers. Three sources:
+`--list-models` shows the catalog across providers. The `/model` picker and `--list-models-json` only list models from currently available providers. The filtering settings below apply to both listings and the pickers. Three sources:
 
 - **Catalog**: models baked into zot, covering Claude, GPT/Codex, Gemini/Gemma, Kimi/Moonshot, DeepSeek, Groq-hosted Llama/Gemma/Compound, OpenRouter-routed models, Bedrock model ids, Vertex model ids, Azure OpenAI deployments, Copilot models, and other provider-specific catalog entries.
 - **Live**: IDs discovered from the provider using your stored credentials — usually `GET /v1/models`, or provider-specific listing APIs for Amazon Bedrock (see [Amazon Bedrock](#amazon-bedrock)). Cached for 6h in `$ZOT_HOME/models-cache.json` and refreshed in the background on startup.
 - **Speculative**: IDs that appear in the upstream generator but aren't live on the public API yet. They'll 404 today and start working the moment the provider ships them.
 
 The context meter in the status line uses the model's advertised context window to show how much of it your last turn consumed.
+
+### Model visibility and disabled providers
+
+To reduce the model lists, add these optional settings to `$ZOT_HOME/config.json`:
+
+```json
+{
+  "disabled_providers": ["google-vertex"],
+  "hide_speculative_models": true
+}
+```
+
+Both default to off (an empty provider list and `false`). They apply to `/model`, the rescue picker, shortcut assignment, continuous-agent model discovery, `--list-models`, and `--list-models-json`.
+
+- `disabled_providers` blocks the named providers, including custom and local providers. zot skips their credential resolution and model discovery, even when credentials come from environment variables or external files such as gcloud ADC. Supported provider aliases are accepted. Explicit `--provider`, saved selections, and existing shortcuts cannot bypass the setting and return a clear error. Saved selections and credentials are not deleted. To use a disabled saved provider again, remove it from this list or select an enabled provider with `--provider`.
+- `hide_speculative_models` only hides entries still marked speculative after catalog merging. Explicit `--model`, saved selections, and existing shortcuts remain usable. A model confirmed by live discovery becomes visible again. The underlying catalog and model metadata are unchanged.
+
+These settings do not cancel an already running turn or revoke credentials held by an existing client. Restart zot after changing provider policy to ensure existing clients are replaced. There are no `/settings` controls or per-model hiding options yet.
 
 ### Model fallback (rescue)
 

@@ -241,6 +241,11 @@ type InteractiveConfig struct {
 	// picker to only show reachable models.
 	LoggedInProviders func() []string
 
+	// ModelCatalog supplies models visible in pickers. Nil uses the full catalog.
+	ModelCatalog func() []provider.Model
+	// CheckProviderEnabled rejects disabled providers before model switching.
+	CheckProviderEnabled func(string) error
+
 	// ZotHome is zot's global state directory, used by authentication,
 	// themes, extensions, and other shared configuration.
 	ZotHome string
@@ -787,6 +792,8 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		inputHistoryIndex: -1,
 		reloadErrors:      append([]string(nil), cfg.StartupExtensionErrors...),
 	}
+	i.modelDialog.catalog = cfg.ModelCatalog
+	i.rescueDialog.catalog = cfg.ModelCatalog
 	i.SetPinnedSkillsPending(cfg.PreloadPinnedSkills)
 	var keymapIssues []string
 	bindings := keymapcfg.Commands(cfg.Keymap)
@@ -5920,6 +5927,14 @@ func (i *Interactive) swapModel(prov, model string, builder func(string, string)
 		i.statusErr = err.Error()
 		i.mu.Unlock()
 		return
+	}
+	if i.cfg.CheckProviderEnabled != nil {
+		if err := i.cfg.CheckProviderEnabled(m.Provider); err != nil {
+			i.mu.Lock()
+			i.statusErr = err.Error()
+			i.mu.Unlock()
+			return
+		}
 	}
 	// Same provider AND not a rescue retry: just swap the model on
 	// the existing agent. Mixed-API providers dispatch from model metadata,

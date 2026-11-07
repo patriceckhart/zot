@@ -16,7 +16,7 @@ import (
 func discoverableCustomProviders() []string {
 	var out []string
 	for name := range provider.CustomProviders() {
-		if isDiscoverableCustomProvider(name) {
+		if isDiscoverableCustomProvider(name) && CheckProviderEnabled(name) == nil {
 			out = append(out, name)
 		}
 	}
@@ -43,6 +43,9 @@ func CustomDiscoveryConfigured() bool {
 // unauthenticated requests. skip is true when the only key is command-backed
 // and mode forbids running the command.
 func customProviderKey(ctx context.Context, name string, mode apiKeyCommandMode) (key string, skip bool, err error) {
+	if err := CheckProviderEnabled(name); err != nil {
+		return "", false, err
+	}
 	if cfg, ok := provider.CustomProviders()[name]; ok && cfg.NoAuth && !isBuiltinProvider(name) {
 		return "", false, nil
 	}
