@@ -164,10 +164,34 @@ $ZOT_HOME/
 ├── skills/             # optional: user SKILL.md files
 ├── themes/             # optional: user theme JSON files
 ├── extensions/         # installed extensions, one dir per extension
+├── docs/               # bundled reference and website Markdown, start at index.md
 └── logs/               # app log files
 ```
 
 Drop a `SYSTEM.md` in `$ZOT_HOME` to replace the built-in identity and zot-docs guidance for every run. `--system-prompt` still wins per-invocation. Pass an empty value (`--system-prompt ""`) to intentionally omit the built-in identity. Custom prompts still receive appended instructions and generated context, including `AGENTS.md`, skills, auto-swarm guidance when enabled, and the date/cwd footer. Delete the file to revert to the default.
+
+### Offline documentation
+
+Zot installs its bundled Markdown into `$ZOT_HOME/docs` when configuring the agent.
+Start with `index.md` for a catalog of all installed pages, including quickstart,
+tools, settings, sessions, providers, RPC, and extension development. Documentation
+is embedded in the binary, so reading it requires no network access or checkout.
+Matching files are left untouched, outdated bundled files are refreshed, and
+unrelated files are retained.
+
+The bundle combines repository reference docs with a build-time snapshot of
+[zot.sh documentation](https://www.zot.sh/docs). Repository references win when
+filenames overlap. Website-only pages may describe features newer than the binary.
+`website-source.txt` records downloaded-content hashes and `website-license.txt`
+contains the website documentation license. Links to bundled documentation pages
+are rewritten to local Markdown paths during installation.
+
+Website pages are downloaded during builds, not maintained as a second copy in
+this repository. GitHub release binaries include them. Local `make build` and
+`make install` warn and fall back to a validated cache if the website is unreachable,
+or repository docs only if no cache exists. Plain `go build` and `go install`
+embed whatever docs are available locally without downloading. Go dependencies
+must still be available locally. Release builds require a successful docs download.
 
 ### Compaction instructions
 

@@ -69,7 +69,7 @@ func BuildSystemPrompt(o SystemPromptOpts) string {
 		if strings.TrimSpace(o.ZotDocsDir) != "" {
 			sb.WriteString("\n\nZot's own docs are installed under ")
 			sb.WriteString(o.ZotDocsDir)
-			sb.WriteString("; use the read tool there when you need details about zot RPC, extensions, skills, or built-in behaviour.")
+			sb.WriteString(". Start with index.md and use the read tool there for zot configuration, tools, RPC, extensions, skills, or built-in behaviour. Repository reference docs take precedence over website-only pages, which may describe newer features.")
 		}
 	}
 

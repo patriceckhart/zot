@@ -57,7 +57,9 @@ func TestBuildSystemPromptDefaultIncludesBuiltInDocs(t *testing.T) {
 		ZotDocsDir: "/zot/docs",
 	})
 
-	if !strings.Contains(got, "Zot's own docs are installed under /zot/docs") {
-		t.Fatalf("default prompt missing built-in docs guidance:\n%s", got)
+	for _, want := range []string{"Zot's own docs are installed under /zot/docs", "Start with index.md", "Repository reference docs take precedence"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("default prompt missing %q:\n%s", want, got)
+		}
 	}
 }

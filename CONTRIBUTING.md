@@ -68,11 +68,43 @@ make build
 Useful commands:
 
 ```sh
-make build       # compile ./bin/zot
+make build       # refresh website docs, then compile ./bin/zot
+make docs        # download generated website Markdown (ignored by Git)
 make run         # build and start the interactive application
 make test        # run all tests with the race detector
 make lint        # run go vet and verify gofmt
 ```
+
+`make build`, `make install`, `make release`, and GoReleaser fetch public website
+Markdown before compiling. The downloader discovers pages from
+`https://www.zot.sh/llms.txt` and fetches their `/docs/<slug>.md` URLs without
+credentials. Local `make build` and `make install` allow up to 15 seconds for the
+refresh. If downloading fails, they warn and use an existing cache after checking
+its page hashes and required pages. Without a cache they build with repository
+docs only. Incomplete or corrupt caches and local filesystem write errors remain
+fatal.
+`make docs`, `make release`, and GoReleaser stay strict: download failures stop them.
+The downloader validates all downloads before updating `docs/website`, removes obsolete
+snapshot pages, and records SHA-256 hashes in `docs/website/SOURCE.txt`.
+Repository `docs/*.md` files remain authoritative when page names overlap.
+
+Downloaded pages and provenance in `docs/website/` are generated build inputs,
+ignored by Git. Maintain website pages only in the website source repository.
+GitHub release builds download them through the GoReleaser hook and embed them in
+the binary. The project's MIT license also covers the website documentation.
+
+Ordinary `go build` and `go install` do not run the downloader. They embed cached
+website docs if present, otherwise only repository docs. No generated files are
+required to compile. For an offline build with dependencies already cached:
+
+```sh
+go build -o bin/zot ./cmd/zot
+```
+
+Build-time refreshes track the live website, so documentation in a release can
+change between builds of the same source revision. Do not edit or commit the
+contents of `docs/website/`. Update the website source and run `make docs` to
+refresh local copies. Tests use local HTTP fixtures and never contact the live site.
 
 Tests must not depend on real provider credentials, paid model calls, a developer's global zot state, or a specific terminal. Use local HTTP test servers, fixtures, temporary directories, and synthetic credentials.
 
