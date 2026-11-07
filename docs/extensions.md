@@ -1190,6 +1190,12 @@ Type `/reload-ext` in the TUI to tear down every running extension
 subprocess, re-read the manifests from disk, and respawn the set.
 The agent's tool registry is rebuilt automatically, so freshly-
 registered extension tools become callable without restarting zot.
+After waiting for registration/readiness, zot replays `session_start` to subscribed
+extensions when a conversation is active. The replay includes the current
+`session_id`, optional `session_alias`, and `cwd`, with a fresh `sequence`.
+It restores extension setup context without creating a new conversation or
+emitting `session_end`. No replay is sent for a closed or missing conversation.
+Extensions should subscribe before sending `ready` to receive this replay.
 Useful while developing an extension: edit, save, `/reload-ext`,
 done. Explicit `--ext` paths are remembered and reloaded alongside
 discovered extensions. The temporary reload status reports each load

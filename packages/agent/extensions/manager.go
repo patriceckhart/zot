@@ -581,8 +581,9 @@ type ReloadStats struct {
 // Reload tears down every running extension, re-reads the manifests
 // from disk, respawns everyone (including the --ext paths remembered
 // from LoadExplicit), waits up to grace for ready signals, and
-// invokes the SetOnReload callback so the host can rebuild its tool
-// registry. The manager's internal maps are cleared before the
+// replays session_start for the active conversation, and invokes the
+// SetOnReload callback so the host can rebuild its tool registry.
+// The manager's internal maps are cleared before the
 // new load to ensure a clean slate.
 //
 // Safe to call concurrently with normal host operations: the lock is
@@ -633,6 +634,7 @@ func (m *Manager) Reload(ctx context.Context, grace time.Duration) ReloadStats {
 		readyDeadline = time.Now().Add(3 * time.Second)
 	}
 	m.WaitForReady(time.Until(readyDeadline))
+	m.replaySessionStart()
 
 	m.mu.RLock()
 	for _, ext := range m.ext {

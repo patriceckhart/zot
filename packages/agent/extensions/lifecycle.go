@@ -42,6 +42,17 @@ func (m *Manager) StartSessionWithAlias(id, alias, cwd, reason string) {
 	m.emitEventLocked(extproto.EventFromHost{Event: "session_start"})
 }
 
+// replaySessionStart restores setup context for freshly reloaded subscribers.
+// It does not reopen the lifecycle or change the active conversation identity.
+func (m *Manager) replaySessionStart() {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if m.stopping || m.sessionClosed || m.sessionID == "" {
+		return
+	}
+	m.emitEventLocked(extproto.EventFromHost{Event: "session_start"})
+}
+
 // SessionContext returns the active conversation identity and working directory.
 func (m *Manager) SessionContext() (string, string) {
 	m.lifecycleMu.Lock()
