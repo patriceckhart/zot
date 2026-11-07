@@ -6263,13 +6263,17 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 	i.helpBlock = nil
 	sandbox := i.cfg.Sandbox
 	cwd := i.cfg.CWD
+	startupFile := ""
+	if i.cfg.ZotHome != "" {
+		startupFile = filepath.Join(i.cfg.ZotHome, ".bashrc")
+	}
 	i.mu.Unlock()
 	i.invalidate()
 
 	go func() {
 		defer cancel()
 		raw, _ := json.Marshal(map[string]any{"command": cmd})
-		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox}
+		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox, StartupFile: startupFile}
 		progress := func(chunk string) {
 			i.mu.Lock()
 			i.shellLive += chunk

@@ -1280,7 +1280,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox) core.Regis
 		"read":  &tools.ReadTool{CWD: cwd, Sandbox: sandbox},
 		"write": &tools.WriteTool{CWD: cwd, Sandbox: sandbox},
 		"edit":  &tools.EditTool{CWD: cwd, Sandbox: sandbox},
-		"bash":  &tools.BashTool{CWD: cwd, Sandbox: sandbox},
+		"bash":  &tools.BashTool{CWD: cwd, Sandbox: sandbox, StartupFile: filepath.Join(ZotHome(), ".bashrc")},
 		"glob":  &tools.GlobTool{CWD: cwd, Sandbox: sandbox},
 	}
 	reg := core.Registry{}

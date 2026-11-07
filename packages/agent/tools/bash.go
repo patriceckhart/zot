@@ -29,6 +29,8 @@ const (
 type BashTool struct {
 	CWD     string
 	Sandbox *Sandbox
+	// StartupFile is an optional trusted Bash startup file. Empty disables loading.
+	StartupFile string
 }
 
 type bashArgs struct {
@@ -52,7 +54,7 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		}
 		return t.Sandbox.CheckBashPermission(command)
 	}, func(ctx context.Context, command string) (*exec.Cmd, error) {
-		return newShellCmd(ctx, command), nil
+		return t.newCommand(ctx, currentShell(), command)
 	})
 }
 
@@ -357,9 +359,28 @@ func shellDescription(shell shellCommand) string {
 	return "Bash is unavailable; run a POSIX sh command via /bin/sh -c. stdout+stderr merged."
 }
 
-func newShellCmd(ctx context.Context, command string) *exec.Cmd {
-	shell := currentShell()
+func (t *BashTool) newCommand(ctx context.Context, shell shellCommand, command string) (*exec.Cmd, error) {
+	if shell.isBash && t.StartupFile != "" {
+		path, err := filepath.Abs(t.StartupFile)
+		if err != nil {
+			return nil, fmt.Errorf("bash startup path: %w", err)
+		}
+		info, err := os.Stat(path)
+		switch {
+		case os.IsNotExist(err):
+			// A startup file is optional.
+		case err != nil:
+			return nil, fmt.Errorf("bash startup file: %w", err)
+		case !info.Mode().IsRegular():
+			return nil, fmt.Errorf("bash startup file %q is not a regular file", path)
+		default:
+			// Bash reads inherited BASH_ENV before this script. Separate lines
+			// let aliases take effect before Bash parses the requested command.
+			quoted := "'" + strings.ReplaceAll(path, "'", "'\"'\"'") + "'"
+			command = "shopt -s expand_aliases\nsource " + quoted + " || exit $?\n" + command
+		}
+	}
 	cmd := exec.CommandContext(ctx, shell.path, shell.flag, command)
 	applyRawCmdLine(cmd, shell, command)
-	return cmd
+	return cmd, nil
 }

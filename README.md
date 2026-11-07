@@ -393,6 +393,21 @@ In the interactive UI on Unix, a leading `cd <cwd> &&` in a Bash command is show
 
 When the sandbox is on (see `/jail`), filesystem tools refuse paths outside the session cwd, except that `read` and `glob` can access loaded extension directories. `bash` applies best-effort command checks. Jail mode is an accident-prevention guardrail, not a security boundary.
 
+### Bash startup file
+
+To customize the agent's Bash commands, create a `.bashrc` in zot's global state directory (the resolved zot home described above). This respects `ZOT_HOME`, then `XDG_STATE_HOME`, then the platform default. For example:
+
+```bash
+alias la='ls -la'
+export PAGER=cat
+```
+
+When Bash is available, zot sources this optional file before each command, with alias expansion enabled. Bash remains non-interactive and does not automatically read your usual `~/.bashrc`. An inherited `BASH_ENV` is still read first, so zot's file can override its definitions. Each call starts a fresh shell, so shell state does not persist between calls. Startup output is included in tool output. A missing file is ignored, while an unreadable or invalid file, or a nonzero return from sourcing it, prevents the requested command from running.
+
+This also applies to interactive `!` commands, .zot agent pre-hooks, and workers using the Bash tool. POSIX `sh`, Windows `cmd`, and the optional PowerShell tool are unchanged. zot never automatically sources a project-local startup file.
+
+Treat this file as trusted executable configuration. Anyone who can modify it can run code as your user. Aliases and functions can change the behavior of permission-checked commands, and jail mode remains a best-effort guardrail, not a security boundary.
+
 ### Codemode
 
 The optional `codemode` tool lets the model write JavaScript that calls other active tools, runs independent calls in parallel, and filters results before returning them to the model. Enable it for a run:

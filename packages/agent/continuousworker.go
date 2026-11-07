@@ -156,7 +156,7 @@ func (t *repoWorkerTool) tool(dir string) core.Tool {
 	case "glob":
 		return &tools.GlobTool{CWD: dir, Sandbox: sb}
 	default:
-		return &tools.BashTool{CWD: dir, Sandbox: sb}
+		return &tools.BashTool{CWD: dir, Sandbox: sb, StartupFile: filepath.Join(ZotHome(), ".bashrc")}
 	}
 }
 
