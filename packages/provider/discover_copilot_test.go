@@ -97,7 +97,7 @@ func TestModelAvailabilityFiltersWithoutDeletingCatalog(t *testing.T) {
 		t.Error("empty availability did not hide models")
 	}
 	SetModelAvailability("github-copilot", nil)
-	if len(ModelsForProvider("github-copilot")) != 30 {
+	if len(ModelsForProvider("github-copilot")) != 31 {
 		t.Error("clearing restriction did not restore catalog")
 	}
 }

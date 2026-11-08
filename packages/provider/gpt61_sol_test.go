@@ -6,7 +6,7 @@ import (
 )
 
 func TestGPT61SolCatalog(t *testing.T) {
-	for _, name := range []string{"openai", "openai-responses", "openai-codex"} {
+	for _, name := range []string{"openai", "openai-responses", "openai-codex", "github-copilot"} {
 		t.Run(name, func(t *testing.T) {
 			m, err := FindModel(name, "gpt-6.1-sol")
 			if err != nil {
@@ -15,6 +15,11 @@ func TestGPT61SolCatalog(t *testing.T) {
 			wantContext := 272000
 			if name == "openai-codex" {
 				wantContext = 500000
+			} else if name == "github-copilot" {
+				wantContext = 1050000
+				if m.BaseURL != copilotDefaultBaseURL {
+					t.Fatalf("Copilot endpoint = %q", m.BaseURL)
+				}
 			}
 			if m.API != APIResponses || m.ContextWindow != wantContext || m.MaxOutput != 128000 || !m.Reasoning {
 				t.Fatalf("model metadata: %+v", m)
@@ -36,6 +41,7 @@ func TestGPT61SolResponsesRequest(t *testing.T) {
 		"openai":           NewOpenAIResponsesNamed("test-token", "", "openai").(*renamedClient).inner.(*codexClient),
 		"openai-responses": NewOpenAIResponsesNamed("test-token", "", "openai-responses").(*renamedClient).inner.(*codexClient),
 		"openai-codex":     NewOpenAICodex("test-token", "test-account", "").(*codexClient),
+		"github-copilot":   NewGithubCopilotClient("synthetic-token").(*copilotClient).router.byAPI[APIResponses].(*codexClient),
 	}
 	for name, client := range clients {
 		t.Run(name, func(t *testing.T) {

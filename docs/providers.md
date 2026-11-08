@@ -114,10 +114,10 @@ use Chat Completions without `reasoning_effort`; their reasoning is managed by t
 endpoint. All three routes send user/agent initiator metadata and image-request
 headers where appropriate.
 
-As of September 22, 2026, the catalog includes 30 public chat models: Claude
+The catalog includes 31 public chat models: Claude
 Fable 5/5.1, Haiku 4.5, Opus 4.7/4.8/4.8 Fast/5/5.5, Sonnet 5, Gemini
 3.5/3.6/3.7/3.8 Flash, GPT-5 mini, GPT-5.3-Codex, GPT-5.4/5.4 mini/5.5,
-GPT-5.6 Luna/Sol/Terra, GPT-6 Astra/Luna/Sol, Grok 4.5/4.6, Kimi K2.7 Code/K3,
+GPT-5.6 Luna/Sol/Terra, GPT-6 Astra/Luna/Sol, GPT-6.1 Sol, Grok 4.5/4.6, Kimi K2.7 Code/K3,
 and MAI-Code-1-Flash/1.1-Flash. MAI-Code-1-Flash uses the public picker ID
 `mai-code-1-flash-picker` and is scheduled to retire on September 10, 2026.
 
@@ -159,12 +159,14 @@ Subscription access depends on your plan, rollout, and organization policy.
 Catalog availability does not grant access.
 
 GPT-6.1 Sol (`gpt-6.1-sol`) is available in zot with `openai`,
-`openai-responses`, and `openai-codex`, subject to account access. It uses the
-Responses API, supports `low` through `max` reasoning and up to 128,000 output
-tokens. Zot currently uses a 272,000-token context window for these entries.
+`openai-responses`, `openai-codex`, and `github-copilot`, subject to account access
+and Copilot model policy. It uses the Responses API, supports `low` through
+`max` reasoning and up to 128,000 output tokens. The context window is 272,000
+tokens for API-key providers, 500,000 for Codex, and 1,050,000 for Copilot.
 Standard per-million-token prices are $2 input, $10 output, $0.10 cache reads,
 and $2.50 cache writes. Prompts above 272,000 input tokens use the long-context
-price tier. GPT-6.1 Sol is not listed for GitHub Copilot in zot.
+price tier. Copilot's `/model` picker only shows models enabled in the account's
+model listing.
 
 ## API-key providers
 
