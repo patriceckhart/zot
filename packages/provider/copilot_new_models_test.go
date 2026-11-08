@@ -22,36 +22,14 @@ func TestCopilotArgonMetadata(t *testing.T) {
 	}
 }
 
-func TestCopilotMAI2Reasoning(t *testing.T) {
+func TestCopilotCatalogDefersUnverifiedPreviews(t *testing.T) {
+	// Do not bundle preview entries with guessed limits or unknown pricing.
+	// Revisit these IDs once their Copilot metadata can be verified.
 	for _, id := range []string{"mai-code-2-flash", "mai-code-2.x1"} {
-		t.Run(id, func(t *testing.T) {
-			m, err := FindModel("github-copilot", id)
-			if err != nil {
-				t.Fatal(err)
+		for _, m := range Catalog {
+			if m.Provider == "github-copilot" && m.ID == id {
+				t.Errorf("unverified preview %q is bundled in the catalog", id)
 			}
-			if m.DisplayName != map[string]string{
-				"mai-code-2-flash": "MAI-Code-2-Flash (Preview)",
-				"mai-code-2.x1":    "MAI-Code-2.x1 (Preview)",
-			}[id] {
-				t.Fatalf("display name = %q", m.DisplayName)
-			}
-			if got := AvailableReasoningLevels(m); !slices.Equal(got, []string{"", "low", "medium", "high"}) {
-				t.Fatalf("reasoning levels = %q", got)
-			}
-			client := NewGithubCopilotClient("synthetic-token").(*copilotClient).router.byAPI[APIResponses].(*codexClient)
-			for _, level := range []string{"low", "medium", "high", "xhigh", "max"} {
-				wire, err := client.buildRequest(Request{Model: id, Reasoning: level})
-				if err != nil {
-					t.Fatal(err)
-				}
-				want := level
-				if level == "xhigh" || level == "max" {
-					want = "high"
-				}
-				if wire.Reasoning == nil || wire.Reasoning.Effort != want {
-					t.Fatalf("%s: reasoning = %+v, want %s", level, wire.Reasoning, want)
-				}
-			}
-		})
+		}
 	}
 }

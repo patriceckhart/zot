@@ -33,8 +33,7 @@ func TestCopilotWireProtocols(t *testing.T) {
 		{"gpt-5.4", "/responses"},
 		{"grok-4.6", "/responses"},
 		{"mai-code-1.1-flash", "/responses"},
-		{"mai-code-2-flash", "/responses"},
-		{"mai-code-2.x1", "/responses"},
+		{"gpt-6.1-sol", "/responses"},
 		{"gpt-6.1-terra", "/responses"},
 		{"gemini-3.8-flash", "/chat/completions"},
 		{"gemini-4-argon", "/chat/completions"},
@@ -86,9 +85,6 @@ func TestCopilotWireProtocols(t *testing.T) {
 				case "/responses":
 					if len(body["input"]) == 0 || len(body["reasoning"]) == 0 {
 						t.Error("missing Responses fields")
-					}
-					if strings.HasPrefix(tc.model, "mai-code-2") && string(body["reasoning"]) != `{"effort":"high"}` {
-						t.Errorf("MAI reasoning = %s, want high effort", body["reasoning"])
 					}
 					fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
 				default:

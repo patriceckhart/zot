@@ -175,10 +175,6 @@ var builtinCatalog = []Model{
 	{Provider: "github-copilot", ID: "grok-4.6", DisplayName: "Grok 4.6", ContextWindow: 500000, MaxOutput: 128000, Reasoning: true, PriceInput: 2, PriceOutput: 6, PriceCacheRead: 0.5, PriceTierInputTokens: 200000, PriceInputAbove: 4, PriceOutputAbove: 12, PriceCacheReadAbove: 1, BaseURL: "https://api.individual.githubcopilot.com"},
 	{Provider: "github-copilot", ID: "kimi-k2.7-code", DisplayName: "Kimi K2.7 Code", ContextWindow: 256000, MaxOutput: 32000, Reasoning: true, PriceInput: 0.95, PriceOutput: 4, PriceCacheRead: 0.19, BaseURL: "https://api.individual.githubcopilot.com"},
 	{Provider: "github-copilot", ID: "kimi-k3", DisplayName: "Kimi K3", ContextWindow: 1048576, MaxOutput: 131072, Reasoning: true, PriceInput: 3, PriceOutput: 15, PriceCacheRead: 0.3, BaseURL: "https://api.individual.githubcopilot.com"},
-	// MAI-Code-2 preview limits are provisional, using the preceding MAI defaults.
-	// Token pricing is not published; leave it unset rather than infer rates.
-	{Provider: "github-copilot", ID: "mai-code-2-flash", DisplayName: "MAI-Code-2-Flash (Preview)", ContextWindow: 256000, MaxOutput: 128000, Reasoning: true, BaseURL: "https://api.individual.githubcopilot.com"},
-	{Provider: "github-copilot", ID: "mai-code-2.x1", DisplayName: "MAI-Code-2.x1 (Preview)", ContextWindow: 256000, MaxOutput: 128000, Reasoning: true, BaseURL: "https://api.individual.githubcopilot.com"},
 	// MAI-Code-1-Flash remains offered until its scheduled retirement on 2026-09-10.
 	{Provider: "github-copilot", ID: "mai-code-1-flash-picker", DisplayName: "MAI-Code-1-Flash", ContextWindow: 256000, MaxOutput: 128000, Reasoning: true, PriceInput: 0.75, PriceOutput: 4.5, PriceCacheRead: 0.075, BaseURL: "https://api.individual.githubcopilot.com"},
 	{Provider: "github-copilot", ID: "mai-code-1.1-flash", DisplayName: "MAI-Code-1.1-Flash", ContextWindow: 256000, MaxOutput: 128000, Reasoning: true, PriceInput: 0.2, PriceOutput: 1.2, PriceCacheRead: 0.02, BaseURL: "https://api.individual.githubcopilot.com"},
