@@ -49,7 +49,7 @@ The major ownership boundaries are:
 - `packages/agent/swarm`: background-agent supervision and state
 - `packages/agent/tools`: built-in tools, permissions, and jail checks
 - `packages/tui`: terminal mechanics and rendering
-- `packages/ignore`: ignore matching
+- `internal/ignore`: ignore matching (internal, not a public API)
 
 Keep provider-specific decisions out of the core agent loop. Keep terminal rendering out of orchestration code. If a feature can be delivered cleanly as an extension, consider that before expanding the built-in surface.
 

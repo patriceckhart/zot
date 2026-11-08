@@ -1,4 +1,4 @@
-package docs
+package docsinstall_test
 
 import (
 	"bytes"
@@ -11,20 +11,27 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	docs "github.com/patriceckhart/zot"
+	"github.com/patriceckhart/zot/internal/docsinstall"
 )
+
+// repository mirrors the embedded paths. The embed declaration itself is
+// exercised through docs.EnsureInstalled and TestBuildWithoutGeneratedWebsiteDirectory.
+var repository = os.DirFS(filepath.Join("..", ".."))
 
 func TestEnsureInstalledIncludesEveryDocument(t *testing.T) {
 	home := t.TempDir()
-	dir, err := EnsureInstalled(home)
+	dir, err := docs.EnsureInstalled(home)
 	if err != nil {
 		t.Fatal(err)
 	}
-	files, err := documentationFiles(embeddedDocs)
+	files, err := docsinstall.Files(repository)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, pattern := range []string{"docs/*.md", "docs/website/*.md"} {
-		names, err := fs.Glob(embeddedDocs, pattern)
+		names, err := fs.Glob(repository, pattern)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -48,9 +55,9 @@ func TestEnsureInstalledIncludesEveryDocument(t *testing.T) {
 			t.Errorf("index missing %s", name)
 		}
 		if strings.HasPrefix(source, "docs/") && !strings.HasPrefix(source, "docs/website/") {
-			original, _ := embeddedDocs.ReadFile(source)
+			original, _ := fs.ReadFile(repository, source)
 			installed, err := os.ReadFile(filepath.Join(dir, name))
-			if err != nil || !bytes.Equal(installed, localDocLinks(original, files)) {
+			if err != nil || !bytes.Equal(installed, docsinstall.LocalLinks(original, files)) {
 				t.Errorf("repository reference not preferred for %s", name)
 			}
 		}
@@ -59,7 +66,7 @@ func TestEnsureInstalledIncludesEveryDocument(t *testing.T) {
 
 func TestEnsureInstalledUpdatesAndPreservesFiles(t *testing.T) {
 	home := t.TempDir()
-	dir, err := EnsureInstalled(home)
+	dir, err := docs.EnsureInstalled(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +87,7 @@ func TestEnsureInstalledUpdatesAndPreservesFiles(t *testing.T) {
 	if err := os.WriteFile(custom, []byte("user notes"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := EnsureInstalled(home); err != nil {
+	if _, err := docs.EnsureInstalled(home); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.Stat(unchanged)
@@ -107,7 +114,7 @@ func TestEnsureInstalledFilesystemErrors(t *testing.T) {
 			} else if err := os.MkdirAll(dst, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := EnsureInstalled(home); err == nil {
+			if _, err := docs.EnsureInstalled(home); err == nil {
 				t.Fatal("filesystem error ignored")
 			}
 		})
@@ -118,22 +125,22 @@ func TestLocalDocLinks(t *testing.T) {
 	files := map[string]string{"index.md": "", "tools.md": "", "README.md": ""}
 	input := "[home](/docs) [tools](/docs/tools#bash) [web](https://www.zot.sh/docs/tools.md) [repo](docs/tools.md) [readme](../README.md#flags) [other](https://example.com/docs/tools) [missing](/docs/missing)"
 	want := "[home](index.md) [tools](tools.md#bash) [web](tools.md) [repo](tools.md) [readme](README.md#flags) [other](https://example.com/docs/tools) [missing](/docs/missing)"
-	if got := string(localDocLinks([]byte(input), files)); got != want {
+	if got := string(docsinstall.LocalLinks([]byte(input), files)); got != want {
 		t.Fatalf("links = %s, want %s", got, want)
 	}
 }
 
 func TestWebsiteSnapshotHashes(t *testing.T) {
-	source, err := embeddedDocs.ReadFile("docs/website/SOURCE.txt")
+	source, err := fs.ReadFile(repository, "docs/website/SOURCE.txt")
 	if os.IsNotExist(err) {
 		t.Skip("website documentation was not generated for this build")
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	names, _ := fs.Glob(embeddedDocs, "docs/website/*.md")
+	names, _ := fs.Glob(repository, "docs/website/*.md")
 	for _, name := range names {
-		data, err := embeddedDocs.ReadFile(name)
+		data, err := fs.ReadFile(repository, name)
 		if err != nil {
 			t.Fatal(err)
 		}

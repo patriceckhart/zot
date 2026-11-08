@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patriceckhart/zot/internal/ignore"
 	"github.com/patriceckhart/zot/packages/agent/extensions"
 	"github.com/patriceckhart/zot/packages/agent/extproto"
-	"github.com/patriceckhart/zot/packages/ignore"
 )
 
 // runExtCommand dispatches `zot ext ...` subcommands. Returns
@@ -651,7 +651,7 @@ func copyDir(src, dst string) error {
 	})
 }
 
-// gitignore matching lives in packages/ignore so the @-file picker in
+// gitignore matching lives in internal/ignore so the @-file picker in
 // packages/agent/modes can share it without an import cycle. These
 // thin aliases keep the existing call sites (and tests) terse.
 type gitignore = ignore.Gitignore

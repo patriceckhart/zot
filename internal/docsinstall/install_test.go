@@ -1,4 +1,4 @@
-package docs
+package docsinstall
 
 import (
 	"os"
@@ -27,7 +27,7 @@ func TestInstallWithOptionalWebsiteDocs(t *testing.T) {
 				source["docs/website/extensions.md"] = &fstest.MapFile{Data: []byte("# Website extensions")}
 				source["docs/website/SOURCE.txt"] = &fstest.MapFile{Data: []byte("website provenance")}
 			}
-			dir, err := installDocumentation(t.TempDir(), source)
+			dir, err := Install(t.TempDir(), source)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -64,8 +64,8 @@ func TestBuildWithoutGeneratedWebsiteDirectory(t *testing.T) {
 	// Compile the real embed declaration in a fresh module without a website
 	// directory. This catches patterns that require generated files to exist.
 	dir := t.TempDir()
-	for _, name := range []string{"docs.go", "README.md", "LICENSE", "docs/extensions.md"} {
-		data, err := os.ReadFile(name)
+	for _, name := range []string{"docs.go", "README.md", "LICENSE", "docs/extensions.md", "internal/docsinstall/docsinstall.go"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(name)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -77,7 +77,7 @@ func TestBuildWithoutGeneratedWebsiteDirectory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module docsfixture\n\ngo 1.25.5\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/patriceckhart/zot\n\ngo 1.25.5\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("go", "build", ".")
