@@ -8,8 +8,8 @@ import (
 func TestCopilotCatalogCoversPublicChatModels(t *testing.T) {
 	groups := map[string][]string{
 		APIAnthropicMessages: {"claude-fable-5", "claude-fable-5.1", "claude-haiku-4.5", "claude-opus-4.7", "claude-opus-4.8", "claude-opus-4.8-fast", "claude-opus-5", "claude-opus-5.5", "claude-sonnet-5"},
-		APIResponses:         {"gpt-5-mini", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "grok-4.5", "grok-4.6", "mai-code-1-flash-picker", "mai-code-1.1-flash"},
-		APICompletions:       {"gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "kimi-k2.7-code", "kimi-k3"},
+		APIResponses:         {"gpt-5-mini", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "grok-4.5", "grok-4.6", "mai-code-1-flash-picker", "mai-code-1.1-flash", "mai-code-2-flash", "mai-code-2.x1"},
+		APICompletions:       {"gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon", "kimi-k2.7-code", "kimi-k3"},
 	}
 	for api, ids := range groups {
 		for _, id := range ids {

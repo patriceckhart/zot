@@ -58,7 +58,18 @@ func TestCopilotPreviouslyUnpricedModels(t *testing.T) {
 
 func TestCopilotCatalogHasAPIEquivalentPrices(t *testing.T) {
 	for _, m := range Catalog {
-		if m.Provider == "github-copilot" && (m.PriceInput <= 0 || m.PriceOutput <= 0) {
+		if m.Provider != "github-copilot" {
+			continue
+		}
+		// These previews have no published token prices. Do not substitute
+		// predecessor prices or imply that an unset estimate means free use.
+		if m.ID == "mai-code-2-flash" || m.ID == "mai-code-2.x1" {
+			if m.PriceInput != 0 || m.PriceOutput != 0 || m.PriceCacheRead != 0 || m.PriceCacheWrite != 0 {
+				t.Errorf("%s has unverified preview pricing", m.ID)
+			}
+			continue
+		}
+		if m.PriceInput <= 0 || m.PriceOutput <= 0 {
 			t.Errorf("%s lacks API-equivalent pricing", m.ID)
 		}
 	}

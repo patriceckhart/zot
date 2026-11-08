@@ -114,11 +114,12 @@ use Chat Completions without `reasoning_effort`; their reasoning is managed by t
 endpoint. All three routes send user/agent initiator metadata and image-request
 headers where appropriate.
 
-The catalog includes 32 public chat models: Claude
+The catalog includes 35 public chat models: Claude
 Fable 5/5.1, Haiku 4.5, Opus 4.7/4.8/4.8 Fast/5/5.5, Sonnet 5, Gemini
-3.5/3.6/3.7/3.8 Flash, GPT-5 mini, GPT-5.3-Codex, GPT-5.4/5.4 mini/5.5,
+3.5/3.6/3.7/3.8 Flash and Gemini 4 Argon, GPT-5 mini, GPT-5.3-Codex, GPT-5.4/5.4 mini/5.5,
 GPT-5.6 Luna/Sol/Terra, GPT-6 Astra/Luna/Sol, GPT-6.1 Sol/Terra, Grok 4.5/4.6, Kimi K2.7 Code/K3,
-and MAI-Code-1-Flash/1.1-Flash. MAI-Code-1-Flash uses the public picker ID
+and MAI-Code-1-Flash/1.1-Flash plus MAI-Code-2-Flash/2.x1 previews.
+MAI-Code-1-Flash uses the public picker ID
 `mai-code-1-flash-picker` and is scheduled to retire on September 10, 2026.
 
 Internal search, execution, and compaction models are not chat choices.
@@ -126,6 +127,24 @@ GPT-5.4 nano is excluded because GitHub offers it in the Codex VS Code
 extension, not Copilot Chat. New entries use Copilot-specific limits and token
 prices from [models.dev](https://models.dev); these are not a quote for your
 subscription bill. Existing zero-priced entries do not imply unlimited free use.
+
+The new choices use IDs `gemini-4-argon`, `gpt-6.1-terra`,
+`mai-code-2-flash`, and `mai-code-2.x1`, for example:
+
+```bash
+zot --provider github-copilot --model mai-code-2-flash
+```
+
+Gemini 4 Argon uses Chat Completions with endpoint-managed reasoning; the
+MAI previews use Responses with `low`, `medium`, and `high` reasoning.
+Gemini's bundled API context/output limits are 1,048,576/65,536 tokens,
+from models.dev; Copilot CLI may display a smaller usable context budget.
+Terra was already supported (see below). The MAI previews do not yet publish
+limits or token prices: zot provisionally uses the preceding MAI defaults
+of 256,000 context and 128,000 output tokens, with no token-cost estimate.
+These are not verified preview limits or a promise of free usage; override
+them through `$ZOT_HOME/models.json` if your account advertises different limits.
+All choices remain subject to account availability and policy.
 
 Claude Fable models have different data-retention terms: Anthropic retains
 prompts and outputs by default for safety classifiers. Eligible enterprises
