@@ -114,10 +114,10 @@ use Chat Completions without `reasoning_effort`; their reasoning is managed by t
 endpoint. All three routes send user/agent initiator metadata and image-request
 headers where appropriate.
 
-The catalog includes 31 public chat models: Claude
+The catalog includes 32 public chat models: Claude
 Fable 5/5.1, Haiku 4.5, Opus 4.7/4.8/4.8 Fast/5/5.5, Sonnet 5, Gemini
 3.5/3.6/3.7/3.8 Flash, GPT-5 mini, GPT-5.3-Codex, GPT-5.4/5.4 mini/5.5,
-GPT-5.6 Luna/Sol/Terra, GPT-6 Astra/Luna/Sol, GPT-6.1 Sol, Grok 4.5/4.6, Kimi K2.7 Code/K3,
+GPT-5.6 Luna/Sol/Terra, GPT-6 Astra/Luna/Sol, GPT-6.1 Sol/Terra, Grok 4.5/4.6, Kimi K2.7 Code/K3,
 and MAI-Code-1-Flash/1.1-Flash. MAI-Code-1-Flash uses the public picker ID
 `mai-code-1-flash-picker` and is scheduled to retire on September 10, 2026.
 
@@ -167,6 +167,21 @@ Standard per-million-token prices are $2 input, $10 output, $0.10 cache reads,
 and $2.50 cache writes. Prompts above 272,000 input tokens use the long-context
 price tier. Copilot's `/model` picker only shows models enabled in the account's
 model listing.
+
+GPT-6.1 Terra (`gpt-6.1-terra`) is available with `openai`, `openai-responses`,
+`openai-codex`, `azure-openai-responses`, and `github-copilot`, subject to account,
+deployment, and Copilot model policy access. It uses Responses with a
+272,000-token context window for API-key providers, 500,000 for Codex, and
+1,050,000 for Copilot, and up to 128,000 output tokens. Reasoning supports
+`off` (sent as `none`) and `low` through `max`. Standard per-million-token prices
+are $1 input, $5 output, $0.05 cache reads, and $1.25 cache writes; above
+272,000 input tokens these become $2, $7.50, $0.10, and $2.50. These are
+API-equivalent estimates, not Copilot subscription invoices. Copilot's `/model`
+picker only shows it when enabled in the account's model listing.
+
+```bash
+zot --provider github-copilot --model gpt-6.1-terra
+```
 
 ## API-key providers
 
