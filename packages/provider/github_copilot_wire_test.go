@@ -33,7 +33,10 @@ func TestCopilotWireProtocols(t *testing.T) {
 		{"gpt-5.4", "/responses"},
 		{"grok-4.6", "/responses"},
 		{"mai-code-1.1-flash", "/responses"},
+		{"gpt-6.1-sol", "/responses"},
+		{"gpt-6.1-terra", "/responses"},
 		{"gemini-3.8-flash", "/chat/completions"},
+		{"gemini-4-argon", "/chat/completions"},
 		{"kimi-k3", "/chat/completions"},
 	} {
 		t.Run(tc.model, func(t *testing.T) {

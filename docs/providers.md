@@ -114,11 +114,12 @@ use Chat Completions without `reasoning_effort`; their reasoning is managed by t
 endpoint. All three routes send user/agent initiator metadata and image-request
 headers where appropriate.
 
-As of September 22, 2026, the catalog includes 30 public chat models: Claude
+The catalog includes 33 public chat models: Claude
 Fable 5/5.1, Haiku 4.5, Opus 4.7/4.8/4.8 Fast/5/5.5, Sonnet 5, Gemini
-3.5/3.6/3.7/3.8 Flash, GPT-5 mini, GPT-5.3-Codex, GPT-5.4/5.4 mini/5.5,
-GPT-5.6 Luna/Sol/Terra, GPT-6 Astra/Luna/Sol, Grok 4.5/4.6, Kimi K2.7 Code/K3,
-and MAI-Code-1-Flash/1.1-Flash. MAI-Code-1-Flash uses the public picker ID
+3.5/3.6/3.7/3.8 Flash and Gemini 4 Argon, GPT-5 mini, GPT-5.3-Codex, GPT-5.4/5.4 mini/5.5,
+GPT-5.6 Luna/Sol/Terra, GPT-6 Astra/Luna/Sol, GPT-6.1 Sol/Terra, Grok 4.5/4.6, Kimi K2.7 Code/K3,
+and MAI-Code-1-Flash/1.1-Flash.
+MAI-Code-1-Flash uses the public picker ID
 `mai-code-1-flash-picker` and is scheduled to retire on September 10, 2026.
 
 Internal search, execution, and compaction models are not chat choices.
@@ -126,6 +127,22 @@ GPT-5.4 nano is excluded because GitHub offers it in the Codex VS Code
 extension, not Copilot Chat. New entries use Copilot-specific limits and token
 prices from [models.dev](https://models.dev); these are not a quote for your
 subscription bill. Existing zero-priced entries do not imply unlimited free use.
+
+The new choices use IDs `gemini-4-argon`, `gpt-6.1-sol`, and
+`gpt-6.1-terra`, for example:
+
+```bash
+zot --provider github-copilot --model gemini-4-argon
+```
+
+Gemini 4 Argon uses Chat Completions with endpoint-managed reasoning.
+Its bundled API context/output limits are 1,048,576/65,536 tokens,
+from models.dev. Copilot CLI may display a smaller usable context budget.
+All choices remain subject to account availability and policy.
+
+MAI-Code-2 previews are not bundled because their Copilot limits and pricing
+have not been verified. Add an entry through `$ZOT_HOME/models.json` only
+with metadata verified for your account rather than predecessor defaults.
 
 Claude Fable models have different data-retention terms: Anthropic retains
 prompts and outputs by default for safety classifiers. Eligible enterprises
@@ -159,12 +176,29 @@ Subscription access depends on your plan, rollout, and organization policy.
 Catalog availability does not grant access.
 
 GPT-6.1 Sol (`gpt-6.1-sol`) is available in zot with `openai`,
-`openai-responses`, and `openai-codex`, subject to account access. It uses the
-Responses API, supports `low` through `max` reasoning and up to 128,000 output
-tokens. Zot currently uses a 272,000-token context window for these entries.
+`openai-responses`, `openai-codex`, and `github-copilot`, subject to account access
+and Copilot model policy. It uses the Responses API, supports `low` through
+`max` reasoning and up to 128,000 output tokens. The context window is 272,000
+tokens for API-key providers, 500,000 for Codex, and 1,050,000 for Copilot.
 Standard per-million-token prices are $2 input, $10 output, $0.10 cache reads,
 and $2.50 cache writes. Prompts above 272,000 input tokens use the long-context
-price tier. GPT-6.1 Sol is not listed for GitHub Copilot in zot.
+price tier. Copilot's `/model` picker only shows models enabled in the account's
+model listing.
+
+GPT-6.1 Terra (`gpt-6.1-terra`) is available with `openai`, `openai-responses`,
+`openai-codex`, `azure-openai-responses`, and `github-copilot`, subject to account,
+deployment, and Copilot model policy access. It uses Responses with a
+272,000-token context window for API-key providers, 500,000 for Codex, and
+1,050,000 for Copilot, and up to 128,000 output tokens. Reasoning supports
+`off` (sent as `none`) and `low` through `max`. Standard per-million-token prices
+are $1 input, $5 output, $0.05 cache reads, and $1.25 cache writes; above
+272,000 input tokens these become $2, $7.50, $0.10, and $2.50. These are
+API-equivalent estimates, not Copilot subscription invoices. Copilot's `/model`
+picker only shows it when enabled in the account's model listing.
+
+```bash
+zot --provider github-copilot --model gpt-6.1-terra
+```
 
 ## API-key providers
 

@@ -77,6 +77,7 @@ func TestCopilotDiscoveryHTTP(t *testing.T) {
 func TestModelAvailabilityFiltersWithoutDeletingCatalog(t *testing.T) {
 	t.Cleanup(func() { SetModelAvailability("github-copilot", nil) })
 	before := len(ModelsForProvider("anthropic"))
+	copilotBefore := len(ModelsForProvider("github-copilot"))
 	ids := []string{"claude-sonnet-5"}
 	SetModelAvailability("github-copilot", ids)
 	ids[0] = "mutated"
@@ -97,7 +98,7 @@ func TestModelAvailabilityFiltersWithoutDeletingCatalog(t *testing.T) {
 		t.Error("empty availability did not hide models")
 	}
 	SetModelAvailability("github-copilot", nil)
-	if len(ModelsForProvider("github-copilot")) != 30 {
+	if len(ModelsForProvider("github-copilot")) != copilotBefore {
 		t.Error("clearing restriction did not restore catalog")
 	}
 }
