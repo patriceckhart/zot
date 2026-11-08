@@ -14,14 +14,7 @@ import (
 )
 
 func TestLoadUserModelsGoogleAPI(t *testing.T) {
-	previous := customProviders
-	nonChatMu.RLock()
-	previousNonChat := append([]NonChatModel(nil), userNonChatModels...)
-	nonChatMu.RUnlock()
-	t.Cleanup(func() {
-		customProviders = previous
-		setNonChatModels(previousNonChat)
-	})
+	preserveUserModelRegistries(t)
 	path := filepath.Join(t.TempDir(), "models.json")
 	if err := os.WriteFile(path, []byte(`{"providers":{"custom-google":{"api":"google","baseUrl":"https://gemini.example.com","models":[{"id":"gemini-3-pro","reasoning":true}]}}}`), 0o600); err != nil {
 		t.Fatal(err)

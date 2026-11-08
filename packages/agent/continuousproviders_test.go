@@ -109,16 +109,7 @@ func TestContinuousInferenceDoesNotDowngradeFailedCredentialCommand(t *testing.T
 	home := t.TempDir()
 	t.Setenv("ZOT_HOME", home)
 	const name = "routing-command"
-	configs := provider.CustomProviders()
-	previous, existed := configs[name]
-	configs[name] = provider.CustomProviderConfig{API: "openai", BaseURL: "http://127.0.0.1:1"}
-	t.Cleanup(func() {
-		if existed {
-			configs[name] = previous
-		} else {
-			delete(configs, name)
-		}
-	})
+	loadTestModelsJSON(t, `{"providers":{"routing-command":{"api":"openai","baseUrl":"http://127.0.0.1:1"}}}`)
 	creds := auth.Credentials{AdditionalAPIKeyCreds: map[string]auth.ProviderCreds{name: {
 		APIKeyCommand: &auth.APIKeyCommand{Program: filepath.Join(home, "missing-command")},
 	}}}

@@ -24,6 +24,7 @@ func TestContinuousProviderSwitchKeepsHistoryAndRoutesRequests(t *testing.T) {
 		messages int
 	}
 	requests := make(chan request, 4)
+	providers := map[string]provider.UserProvider{}
 	for _, name := range []string{"routing-first", "routing-second"} {
 		name := name
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -43,23 +44,19 @@ func TestContinuousProviderSwitchKeepsHistoryAndRoutesRequests(t *testing.T) {
 			fmt.Fprintln(w)
 		}))
 		t.Cleanup(server.Close)
-		configs := provider.CustomProviders()
-		previous, existed := configs[name]
-		configs[name] = provider.CustomProviderConfig{API: "openai", BaseURL: server.URL}
-		t.Cleanup(func() {
-			if existed {
-				configs[name] = previous
-			} else {
-				delete(configs, name)
-			}
-		})
-		previousModels := provider.ModelsForProvider(name)
-		provider.SetManagedModelsForProvider(name, []provider.Model{{Provider: name, ID: "shared", BaseURL: server.URL, MaxOutput: 1000, ContextWindow: 10000}})
-		t.Cleanup(func() { provider.SetManagedModelsForProvider(name, previousModels) })
+		providers[name] = provider.UserProvider{
+			API: "openai", BaseURL: server.URL,
+			Models: []provider.UserModel{{ID: "shared", MaxTokens: 1000, ContextWindow: 10000}},
+		}
 		if err := AuthStoreFor().SetAPIKey(name, "synthetic-"+name); err != nil {
 			t.Fatal(err)
 		}
 	}
+	modelsJSON, err := json.Marshal(provider.UserModelsFile{Providers: providers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadTestModelsJSON(t, string(modelsJSON))
 	rt, err := continuous.New(memory.Open())
 	if err != nil {
 		t.Fatal(err)
