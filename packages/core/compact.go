@@ -112,9 +112,9 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 
 // Summarize requests a summary of the given messages without changing the
 // transcript. Durable hosts use it as one model request between two commits
-// and publish the summary themselves. CompactionInstructions and then any
-// per-call instructions are appended to the template. It returns the summary
-// and a rough token estimate of the summarized text.
+// and publish the summary themselves. CompactionPrompt selects the template.
+// CompactionInstructions and then any per-call instructions are appended to it.
+// It returns the summary and a rough token estimate of the summarized text.
 func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, instructions string, sink func(delta string)) (string, int, error) {
 	if len(messages) == 0 {
 		return "", 0, fmt.Errorf("nothing to summarize")
@@ -122,7 +122,14 @@ func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, inst
 	// Serialize the summarizable transcript to text and wrap it in tags
 	// so the model treats it as material to summarize, not to continue.
 	transcript := serializeTranscript(messages)
-	prompt := "<conversation>\n" + transcript + "\n</conversation>\n\n" + compactionPrompt
+	template := strings.TrimSpace(a.CompactionPrompt)
+	system := summarizationSystem
+	if template == "" {
+		template = compactionPrompt
+	} else {
+		system = customSummarizationSystem
+	}
+	prompt := "<conversation>\n" + transcript + "\n</conversation>\n\n" + template
 	for _, extra := range []string{a.CompactionInstructions, instructions} {
 		if text := strings.TrimSpace(extra); text != "" {
 			prompt += "\n\nAdditional instructions: " + text
@@ -130,7 +137,7 @@ func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, inst
 	}
 	req := provider.Request{
 		Model:       a.Model,
-		System:      summarizationSystem,
+		System:      system,
 		MaxTokens:   4096,
 		Temperature: a.Temperature,
 		SessionID:   a.SessionID,
@@ -229,6 +236,10 @@ func serializeTranscript(msgs []provider.Message) string {
 const summarizationSystem = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`
+
+const customSummarizationSystem = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a summary following the provided instructions.
+
+Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the summary.`
 
 const compactionPrompt = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 

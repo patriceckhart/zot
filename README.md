@@ -160,7 +160,7 @@ $ZOT_HOME/
 ├── models-cache.json   # live /v1/models discovery cache (6h ttl)
 ├── AGENTS.md           # optional: global instructions appended to the prompt
 ├── SYSTEM.md           # optional: replaces the default system prompt
-├── COMPACT.md          # optional: additional compaction instructions
+├── COMPACT.md          # optional: replacement compaction template
 ├── skills/             # optional: user SKILL.md files
 ├── themes/             # optional: user theme JSON files
 ├── extensions/         # installed extensions, one dir per extension
@@ -195,17 +195,20 @@ must still be available locally. Release builds require a successful docs downlo
 
 ### Compaction instructions
 
-Create `$ZOT_HOME/COMPACT.md` to add persistent guidance to manual (`/compact`)
-and automatic compaction. For per-run additions, use the repeatable flag:
+Create `$ZOT_HOME/COMPACT.md` to replace the built-in summary template for manual
+(`/compact`) and automatic compaction. The file controls the summary's content
+and format. For per-run additions, use the repeatable flag:
 
 ```sh
 zot --append-compaction-prompt "Reference Markdown documents by path instead of repeating their contents."
 ```
 
-Instructions are appended to the built-in summary template in this order:
-`COMPACT.md`, then flag values in command-line order. They do not replace the
-summary template or the separate summarization system prompt. Missing or blank
-files add nothing. Other file-read failures stop startup with an error.
+A nonblank `COMPACT.md` replaces the built-in summary template. Missing or blank
+files use the built-in template. Flag values are appended to the selected template
+in command-line order. The separate summarization system prompt still requires
+summarizing rather than continuing the conversation, but does not impose the
+built-in format when a custom template is used. Other file-read failures stop
+startup with an error.
 Instructions are loaded when the agent is configured, so restart zot after
 editing the file. They also apply to resumed sessions, but are not stored as
 session settings. Normal system-prompt overrides and `AGENTS.md` do not configure
@@ -214,7 +217,9 @@ this separate summarization request.
 For example, `COMPACT.md` could contain:
 
 ```markdown
-Prioritize the current work, unresolved issues, key decisions, and next steps.
+Summarize the conversation as a concise handoff for another coding assistant.
+Use sections for current work, completed changes, unresolved issues, key decisions,
+and next steps.
 Reference existing Markdown documents by exact path instead of repeating their
 contents. Preserve essential context that is not recorded in those documents.
 ```
@@ -222,7 +227,8 @@ contents. Preserve essential context that is not recorded in those documents.
 The summarizer receives the transcript without tools. It cannot open referenced
 files or verify that their contents are sufficient for resuming work.
 The Go SDK exposes `Config.AppendCompactionPrompt`. Direct core users can set
-`Agent.CompactionInstructions` before use. Continuous-mode summaries use the same
+`Agent.CompactionPrompt` to replace the template and `Agent.CompactionInstructions`
+to append guidance before use. Continuous-mode summaries use the same
 configured instructions, followed by any per-request `conversation.compact`
 instructions. No customization leaves the existing compaction behavior unchanged.
 

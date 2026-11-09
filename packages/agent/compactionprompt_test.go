@@ -26,7 +26,7 @@ func TestResolveCompactionInstructions(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			got, err := resolveCompactionInstructions(home, []string{"  Keep blockers. ", " \n ", "Keep next steps."})
+			prompt, got, err := resolveCompactionInstructions(home, []string{"  Keep blockers. ", " \n ", "Keep next steps."})
 			if state == "unreadable" {
 				if err == nil || !strings.Contains(err.Error(), path) {
 					t.Fatalf("want contextual read error, got %v", err)
@@ -37,8 +37,12 @@ func TestResolveCompactionInstructions(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := "Keep blockers.\n\nKeep next steps."
+			wantPrompt := ""
 			if state == "configured" {
-				want = "Reference Markdown by path.\n\n" + want
+				wantPrompt = "Reference Markdown by path."
+			}
+			if prompt != wantPrompt {
+				t.Fatalf("prompt = %q, want %q", prompt, wantPrompt)
 			}
 			if got != want {
 				t.Fatalf("instructions = %q, want %q", got, want)
@@ -77,7 +81,10 @@ func TestResolveWiresCompactionInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "Persistent summary guidance.\n\nPer-run guidance."
+	want := "Per-run guidance."
+	if r.CompactionPrompt != "Persistent summary guidance." || r.NewAgent().CompactionPrompt != r.CompactionPrompt {
+		t.Fatal("replacement compaction template not wired to agent")
+	}
 	if r.CompactionInstructions != want || r.NewAgent().CompactionInstructions != want {
 		t.Fatal("compaction instructions not wired to agent")
 	}

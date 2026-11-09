@@ -39,6 +39,7 @@ type Resolved struct {
 	ToolRegistry           core.Registry
 	ToolSummary            []ToolSummary
 	SystemPrompt           string
+	CompactionPrompt       string
 	CompactionInstructions string
 	MaxSteps               int
 	Sandbox                *tools.Sandbox
@@ -736,7 +737,7 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		}, nil
 	}
 
-	compactionInstructions, err := resolveCompactionInstructions(ZotHome(), args.AppendCompactionPrompt)
+	compactionPrompt, compactionInstructions, err := resolveCompactionInstructions(ZotHome(), args.AppendCompactionPrompt)
 	if err != nil {
 		return Resolved{}, err
 	}
@@ -859,6 +860,7 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		ToolRegistry:           reg,
 		ToolSummary:            summaries,
 		SystemPrompt:           sys,
+		CompactionPrompt:       compactionPrompt,
 		CompactionInstructions: compactionInstructions,
 		MaxSteps:               max,
 		MaxOutput:              resolvedModel.MaxOutput,
@@ -1201,6 +1203,7 @@ func (r Resolved) NewAgent() *core.Agent {
 	a.MaxTokens = r.MaxOutput
 	a.Reasoning = r.Reasoning
 	a.Temperature = r.Temperature
+	a.CompactionPrompt = r.CompactionPrompt
 	a.CompactionInstructions = r.CompactionInstructions
 	if hasOpenRouterServerTools(r.ToolRegistry) {
 		a.MaxToolCalls = openRouterServerToolCallLimit()

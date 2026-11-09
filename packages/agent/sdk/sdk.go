@@ -63,8 +63,9 @@ type Config struct {
 	// system prompt. Useful for project-specific instructions.
 	AppendSystemPrompt []string
 
-	// AppendCompactionPrompt adds instructions after $ZOT_HOME/COMPACT.md.
-	// Applies to manual and automatic summaries, preserving the built-in template.
+	// AppendCompactionPrompt adds instructions after the summary template.
+	// A nonblank $ZOT_HOME/COMPACT.md replaces the built-in template.
+	// Applies to manual and automatic summaries.
 	AppendCompactionPrompt []string
 
 	// Reasoning sets the reasoning effort for models that support it

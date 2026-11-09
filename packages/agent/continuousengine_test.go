@@ -56,7 +56,7 @@ func TestContinuousEngineRoutesProviders(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	t.Setenv("ANTHROPIC_API_KEY", "synthetic-anthropic-key")
 	t.Setenv("ANTHROPIC_OAUTH_TOKEN", "")
-	r := Resolved{Provider: "openai", Credential: "synthetic-key", Model: "gpt-4o-mini", SystemPrompt: "host instructions", CompactionInstructions: "host summary instructions"}
+	r := Resolved{Provider: "openai", Credential: "synthetic-key", Model: "gpt-4o-mini", SystemPrompt: "host instructions", CompactionPrompt: "host summary template", CompactionInstructions: "host summary instructions"}
 	engine := newContinuousEngine(r, nil, nil, func() *continuous.Service { return nil })
 	for _, name := range []string{"", "openai", "OpenAI"} {
 		if _, err := engine.Build(context.Background(), continuous.Conversation{Config: continuous.AgentConfig{Provider: name}}); err != nil {
@@ -67,7 +67,7 @@ func TestContinuousEngineRoutesProviders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ag.Client.Name() != "anthropic" || ag.Model != "claude-sonnet-4-5" || ag.System != r.SystemPrompt || ag.CompactionInstructions != r.CompactionInstructions || ag.MaxTokens == 0 {
+	if ag.Client.Name() != "anthropic" || ag.Model != "claude-sonnet-4-5" || ag.System != r.SystemPrompt || ag.CompactionPrompt != r.CompactionPrompt || ag.CompactionInstructions != r.CompactionInstructions || ag.MaxTokens == 0 {
 		t.Fatalf("incorrect routed agent: client=%s model=%s max=%d", ag.Client.Name(), ag.Model, ag.MaxTokens)
 	}
 	if _, err := engine.Build(context.Background(), continuous.Conversation{Config: continuous.AgentConfig{Provider: "anthropic", Model: "claude-test"}}); err == nil || !strings.Contains(err.Error(), "unknown model") {

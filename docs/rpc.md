@@ -25,8 +25,9 @@ You'll see one JSON object per line on stdout: a response acknowledging the prom
 
 `zot rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--append-compaction-prompt`, `--reasoning`, `--show-reasoning`, `--max-steps`, `--no-tools`, `--tools`, `--no-context-files`. Sessions are disabled by default in RPC mode; the embedding application owns persistence.
 
-Compaction uses `$ZOT_HOME/COMPACT.md` and any repeatable
-`--append-compaction-prompt` values as additional summarization instructions.
+A nonblank `$ZOT_HOME/COMPACT.md` replaces the built-in compaction template.
+Missing or blank files retain the default. Repeatable `--append-compaction-prompt`
+values add instructions after the selected template.
 See [Compaction instructions](../README.md#compaction-instructions). This does not
 change the RPC request schema.
 

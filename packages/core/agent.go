@@ -24,7 +24,11 @@ type Agent struct {
 	Reasoning   string
 	Temperature *float32
 
-	// CompactionInstructions are appended to the built-in summary template.
+	// CompactionPrompt replaces the built-in summary template when nonblank.
+	// Configure before use. It applies to both Compact and Summarize.
+	CompactionPrompt string
+
+	// CompactionInstructions are appended to the selected summary template.
 	// Configure before use. They apply to both Compact and Summarize.
 	CompactionInstructions string
 
