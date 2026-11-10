@@ -156,6 +156,27 @@ September 1, 2026, except for individual annual Copilot Pro and Pro+ subscribers
 Eligible subscribers can add it through `$ZOT_HOME/models.json`.
 See [GitHub's model retirement history and plan exceptions](https://docs.github.com/en/copilot/reference/ai-models/supported-models#model-retirement-history).
 
+## Claude Fable 5.2
+
+Select the bundled Anthropic model with:
+
+```bash
+zot --provider anthropic --model claude-fable-5-2
+```
+
+Claude Fable 5.2 accepts text and images, has a 1,000,000-token context
+window, and supports up to 128,000 output tokens. Prices per million tokens
+are $8 input, $40 output, $0.20 cache reads, and $10 cache writes.
+
+Thinking is always adaptive. Available effort levels are `low`, `medium`,
+`high`, `xhigh`, and `max`. Off and minimum settings resolve to low.
+Anthropic Messages requests send effort in a trailing system message with
+the required output-config and thinking-binding beta headers. Top-level
+effort stays fixed at low. Signed Claude thinking blocks are not replayed,
+and historical effort settings are not persisted. API-key and subscription
+OAuth requests use the same model configuration, subject to account access.
+Server-side fallback to a different model is not requested.
+
 ## GPT-6 models
 
 Select `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna` with provider `openai`,

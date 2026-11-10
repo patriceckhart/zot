@@ -92,12 +92,33 @@ func defaultReasoningLevels(model Model) []string {
 // ID are recognised, as are Bedrock IDs ("anthropic." plus an optional
 // inference-profile prefix such as "us." or "global.").
 func alwaysOnAdaptiveThinking(id string) bool {
+	if isClaudeFable52(id) {
+		return true
+	}
 	if i := strings.Index(id, "anthropic."); i >= 0 && !strings.Contains(id[:i], "/") {
 		id = id[i+len("anthropic."):]
 	}
 	switch id {
 	case "claude-opus-5-5", "claude-opus-5.5", "claude-sonnet-5-5", "claude-sonnet-5.5":
 		return true
+	}
+	return false
+}
+
+// isClaudeFable52 accepts direct and provider-prefixed model IDs, including
+// dated releases. Keep this narrow so older Fable requests remain unchanged.
+func isClaudeFable52(id string) bool {
+	id = strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(id), "~"), "anthropic/")
+	if i := strings.Index(id, "anthropic."); i >= 0 && !strings.Contains(id[:i], "/") {
+		id = id[i+len("anthropic."):]
+	}
+	for _, base := range []string{"claude-fable-5-2", "claude-fable-5.2"} {
+		if id == base {
+			return true
+		}
+		if suffix, ok := strings.CutPrefix(id, base+"-"); ok && len(suffix) == 8 && strings.Trim(suffix, "0123456789") == "" {
+			return true
+		}
 	}
 	return false
 }
