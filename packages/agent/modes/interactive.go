@@ -2440,6 +2440,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if act.StartAPIKey {
 			i.startAPIKeyFlow(act.Provider)
 		}
+		if act.APIKey != "" {
+			i.submitAPIKey(act.Provider, act.APIKey)
+		}
 		if act.StartOAuth {
 			i.startOAuthFlow(act.Provider)
 		}
@@ -5500,12 +5503,7 @@ func (i *Interactive) startAPIKeyFlow(provider string) {
 	if provider == "kimi" && i.cfg.SetKimiCLIFallbackDisabled != nil {
 		_ = i.cfg.SetKimiCLIFallbackDisabled(false)
 	}
-	url, err := i.cfg.AuthManager.StartAPIKey(provider)
-	if err != nil {
-		i.dialog.ShowResult(false, err.Error())
-		return
-	}
-	i.dialog.ShowWaiting(url)
+	i.dialog.ShowAPIKeyEntry()
 }
 
 func (i *Interactive) startOAuthFlow(provider string) {

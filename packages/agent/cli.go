@@ -236,6 +236,9 @@ func Run(rawArgs []string, version string) error {
 
 	// Subcommand router: `zot bot ...` is handled separately so the
 	// generic flag parser doesn't reject "bot" as a positional arg.
+	if handled, err := runAuthCommand(rawArgs); handled {
+		return err
+	}
 	if handled, err := runBotCommand(rawArgs, version); handled {
 		return err
 	}

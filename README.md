@@ -74,7 +74,7 @@ Every release on the [releases page](https://github.com/patriceckhart/zot/releas
 
 ## Authenticate
 
-The easiest way is to just run `zot` and type `/login`. The TUI opens even without credentials and walks you through a browser-based login flow.
+The easiest way is to just run `zot` and type `/login`. The TUI opens even without credentials. API keys are entered directly in a hidden terminal input, including over SSH. Subscription login uses the provider's browser or device-code flow.
 
 ### Credential lookup order
 
@@ -127,11 +127,24 @@ zot runs the command only when that provider is selected, not while checking log
 
 Treat `auth.json` as executable configuration: anyone who can modify it can cause zot to run a program under your user account. zot does not interpret `!` prefixes or execute command strings through a shell.
 
+### Headless API-key setup
+
+Use `zot auth set <provider>` for a hidden terminal prompt without starting
+the TUI, or `zot auth set <provider> --stdin < /path/to/protected-key.txt`
+for scripts. Keys are not accepted as positional arguments, to avoid exposing
+them in process listings and shell history. Both forms validate the key where
+supported and save it to `$ZOT_HOME/auth.json`. Custom providers must already
+be configured in `models.json`.
+
+For subscription login over SSH, use the existing copy-code or device flows,
+or forward the provider's fixed callback port. See
+[headless and SSH authentication](docs/providers.md#headless-and-ssh-authentication).
+
 ### `/login` flow
 
 Run `zot` and type `/login`. Pick one of two methods:
 
-- **API key**: a small local web server starts on `127.0.0.1:<free-port>`, your browser opens a form, you pick a provider from the full API-key provider list, paste the key, and zot saves it to `auth.json` if accepted. Providers with a lightweight model-list endpoint are probed before saving; provider backends that need extra project/account env vars are saved directly.
+- **API key**: pick a provider, paste the key into the masked terminal input, and press Enter to validate and save it to `auth.json`. No browser or callback server is needed. Providers with a lightweight model-list endpoint are probed before saving. Providers needing extra project/account settings show setup guidance instead.
 - **Subscription**: use your Claude Pro/Max, ChatGPT Plus/Pro, Kimi Code, SuperGrok/X Premium, or GitHub Copilot subscription. DeepSeek and Google Gemini do **not** have a subscription login path. For those, use the API-key flow.
   - For Anthropic, choose browser callback (`localhost:53692`) or copy code before starting login. Browser callback also accepts a pasted code or full redirect URL from the same authorization link. Copy code uses Anthropic's hosted redirect and works over SSH or on headless machines without a local callback server. Anthropic uses the Claude Code OAuth flow. Messages go to `api.anthropic.com` with a bearer token and the Claude Code identity headers.
   - OpenAI uses the Codex CLI OAuth flow with a browser callback on `localhost:1455`. The same authorization link also accepts a pasted code or full redirect URL if the browser cannot reach zot's callback port (for example, over SSH). Copy the final redirect URL from the browser address bar, even if the page fails to load locally. The callback port must still be available on the machine running zot. Messages go to `chatgpt.com/backend-api/codex/responses` with the `chatgpt-account-id` extracted from the returned id_token.

@@ -22,8 +22,8 @@ type Event struct {
 	Message  string // on error
 }
 
-// Manager drives a login flow end-to-end. It owns a local web server
-// (for api-key form) plus provider-specific OAuth callback servers.
+// Manager drives direct API-key login and provider-specific OAuth flows.
+// It also retains the optional browser API-key form for embedded callers.
 type Manager struct {
 	store       *Store
 	keyServer   *Server         // random-port web form server (api-key flow)
@@ -31,6 +31,7 @@ type Manager struct {
 	mu          sync.Mutex
 	events      chan Event
 	openBrowser bool
+	probeKey    func(context.Context, string, string) error
 
 	oauthCtx    context.Context
 	oauthCancel context.CancelFunc
@@ -48,6 +49,7 @@ func NewManager(store *Store) *Manager {
 		store:       store,
 		events:      make(chan Event, 16),
 		openBrowser: true,
+		probeKey:    ProbeAPIKey,
 	}
 }
 
@@ -80,7 +82,54 @@ func (m *Manager) Close() {
 
 // ---- API key flow ----
 
-// StartAPIKey launches the API-key login flow.
+// LoginAPIKey validates and stores a directly entered key without a browser or
+// listener. It emits the same completion events as browser-based API-key login.
+// Callers should cancel ctx when the input dialog or command is dismissed.
+func (m *Manager) LoginAPIKey(ctx context.Context, provider, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	key = strings.TrimSpace(key)
+	err := validateAPIKeyInput(provider, key)
+	if err == nil {
+		probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		err = m.probeKey(probeCtx, provider, key)
+		if err == nil {
+			err = probeCtx.Err()
+		}
+		cancel()
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err == nil {
+		err = m.store.SetAPIKey(provider, key)
+	}
+	if err != nil {
+		m.emit(Event{Kind: "error", Provider: provider, Method: "apikey", Message: err.Error()})
+		return err
+	}
+	m.emit(Event{Kind: "success", Provider: provider, Method: "apikey"})
+	return nil
+}
+
+func validateAPIKeyInput(provider, key string) error {
+	if !isKnownAPIKeyProvider(provider) {
+		return errors.New(apiKeyProviderMessage())
+	}
+	if key == "" {
+		return errors.New("empty API key")
+	}
+	if len(key) > 64*1024 {
+		return errors.New("API key exceeds 64 KiB")
+	}
+	if strings.ContainsAny(key, "\r\n\x00") {
+		return errors.New("API key must be a single line without NUL bytes")
+	}
+	return nil
+}
+
+// StartAPIKey launches the browser-based API-key login flow.
 func (m *Manager) StartAPIKey(provider string) (string, error) {
 	if !isKnownAPIKeyProvider(provider) {
 		return "", errors.New(apiKeyProviderMessage())

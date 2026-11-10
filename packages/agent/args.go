@@ -518,6 +518,11 @@ func printHelp(out *os.File, version string) {
 		row{"zot --json \"prompt\"", "newline-delimited json events, exit"},
 		row{"zot rpc", "json-rpc loop on stdin/stdout (see docs/rpc.md)"},
 	)
+	section("authentication",
+		row{"zot auth set <provider>", "save an API key from a hidden terminal prompt"},
+		row{"zot auth set <provider> --stdin", "save an API key from redirected stdin"},
+		row{"zot auth --help", "headless API-key setup and credential storage"},
+	)
 	section("extensions",
 		row{"zot ext list", "list installed extensions"},
 		row{"zot ext install <path|url>", "install into $ZOT_HOME/extensions/"},

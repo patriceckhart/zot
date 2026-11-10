@@ -117,9 +117,13 @@ func isExtraAPIKeyProvider(p string) bool {
 	return false
 }
 
-// isKnownAPIKeyProvider reports whether the given provider supports
-// API-key login through the loopback flow. OAuth-only paths are handled
-// elsewhere (manager.StartOAuth).
+// SupportsAPIKeyLogin reports whether a provider accepts API-key login,
+// including custom providers registered by the host.
+func SupportsAPIKeyLogin(provider string) bool {
+	return isKnownAPIKeyProvider(provider)
+}
+
+// isKnownAPIKeyProvider checks built-in and registered API-key providers.
 func isKnownAPIKeyProvider(p string) bool {
 	for _, provider := range APIKeyProviders() {
 		if p == provider {

@@ -22,15 +22,75 @@ zot applies this setting at startup. Existing `HTTP_PROXY`, `HTTPS_PROXY`, `http
 
 Use `/login` in interactive mode. Type in either provider picker to filter the list by provider ID or display name.
 
-- `api key`: stores an API key in `$ZOT_HOME/auth.json` when the provider uses a normal key.
+- `api key`: accepts a key directly in a masked terminal input, validates it where supported, and saves it in `$ZOT_HOME/auth.json`. No browser or local web server is required.
 - `subscription`: stores OAuth credentials for subscription-backed providers.
 
 Use `/logout` to choose stored credentials to remove, or `/logout <provider>` to remove a specific provider's credentials. This also works for custom providers removed from `models.json`. Use `/logout all` to remove all stored provider credentials, including custom providers.
 
 Some providers need more than a single pasted key. For those providers,
-`/login` shows setup instructions instead of opening a localhost browser form.
-This avoids broken browser flows in SSH, containers, and `kubectl exec`
-sessions.
+`/login` shows setup instructions instead of accepting a generic API key.
+llama.cpp and LM Studio ask for a server URL and an optional masked key.
+
+### Headless and SSH authentication
+
+API-key login works directly over SSH: run `zot`, enter `/login`, choose
+`api key`, select a provider, and paste the key into the hidden input.
+Enter validates and saves the key. Esc or Ctrl+C cancels pending validation.
+The input is cleared after submission or cancellation. Existing credentials
+are retained if validation fails. Providers without a supported probe,
+including configured custom providers, save the key without remote validation.
+
+For a terminal-only setup without starting the TUI:
+
+```bash
+zot auth set anthropic
+```
+
+The command reads the key without echoing it. In scripts, use explicit stdin
+input instead of putting the secret in arguments or shell history:
+
+```bash
+zot auth set anthropic --stdin < /path/to/protected-api-key.txt
+op read op://Work/OpenAI/credential | zot auth set openai --stdin
+```
+
+`--stdin` requires redirected input and reads until EOF, with a 64 KiB limit.
+Whitespace around the key is removed. Empty keys, embedded newlines, and NUL
+bytes are rejected. Both forms use the same validation and credential store
+as `/login`. The command exits nonzero on failure and does not print the key.
+It replaces any stored command-backed key for that provider. Credential files
+use mode 0600 on platforms that support Unix permissions. Custom providers
+must be configured in `$ZOT_HOME/models.json` first. This command stores only
+the key, not AWS profiles, server URLs, project IDs, or account settings.
+Run `zot auth --help` for usage.
+
+Subscription flows depend on the provider:
+
+- **Anthropic:** choose `copy code (headless / SSH)` to use the hosted
+  copy-code page without a local callback server. Open the authorization link
+  on your own computer and paste the returned code into zot.
+- **OpenAI/Codex:** use the browser authorization link on your own computer.
+  If the final localhost page fails to load, copy the full redirect URL from
+  the address bar and paste it into the same zot login dialog. This completes
+  the original transaction, including its PKCE and state checks. The callback
+  port must still be available on the host running zot.
+- **Kimi, xAI, GitHub Copilot:** use their device-code flows. Complete approval
+  on another device while zot waits, with no loopback tunnel needed.
+
+Browser callback flows already have fixed ports: Anthropic uses `53692` and
+OpenAI/Codex uses `1455`. If you prefer callback forwarding, establish the
+appropriate tunnel from your own computer before starting login:
+
+```bash
+ssh -L 53692:localhost:53692 user@host
+ssh -L 1455:localhost:1455 user@host
+```
+
+Use only the tunnel for the provider you are signing into, then run zot on
+that host. No `--auth-port` flag is needed or provided. OAuth redirect ports
+are part of the provider's registered client configuration and cannot be
+changed arbitrarily. Authorization links, codes, and redirect URLs are
+sensitive. Do not share them or reuse them in a different login transaction.
 
 ### Command-backed API keys
 

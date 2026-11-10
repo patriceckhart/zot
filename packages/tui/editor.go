@@ -212,6 +212,12 @@ func (e *Editor) HandleKey(k Key) (submit bool) {
 		e.deleteWord()
 	case KeyPaste:
 		paste := normalizeEditorText(k.Paste)
+		if e.Mask {
+			// Secret input is literal text, never a file attachment or a
+			// collapsed paste placeholder that could alter the credential.
+			e.insert(paste)
+			break
+		}
 		// Large multi-line pastes are collapsed to a short
 		// placeholder token so the editor doesn't balloon to
 		// hundreds of rows. The full body is stashed in e.pastes,
