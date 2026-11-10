@@ -220,6 +220,8 @@ func defaultModelForProvider(prov string) string {
 		return "deepseek-ai/DeepSeek-V4.1-Flash"
 	case "cloudgpu":
 		return "deepseek-v4-flash"
+	case "uberllm":
+		return "deepseek/deepseek-v4-flash"
 	case "mistral":
 		return "mistral-large-latest"
 	case "zai":
@@ -261,7 +263,7 @@ func defaultModelForProvider(prov string) string {
 var knownProviders = []string{
 	"anthropic", "openai", "openai-codex", "openai-responses", "kimi", "deepseek", "google", "ollama", provider.LlamaCPPProviderID, provider.LMStudioProviderID,
 	"moonshotai", "moonshotai-cn",
-	"cerebras", "groq", "xai", "together", "huggingface", "openrouter", "gondola", "yolo-auto", "cheaperinference", "opper", "runcrate", "cloudgpu",
+	"cerebras", "groq", "xai", "together", "huggingface", "openrouter", "gondola", "yolo-auto", "cheaperinference", "opper", "runcrate", "cloudgpu", "uberllm",
 	"mistral", "zai",
 	"xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp",
 	"minimax", "minimax-cn",
@@ -546,6 +548,16 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 	// selections before asynchronous discovery completes; the API validates
 	// unknown IDs. Plain unknown values still fall back to the default.
 	if err != nil && provName == "runcrate" && isGatewayRoutedModelID(model) {
+		resolvedModel = provider.Model{
+			Provider: provName, ID: model, DisplayName: model,
+			ContextWindow: 32768, MaxOutput: 4096, Source: "gateway",
+		}
+		err = nil
+	}
+	// UberLLM model IDs are vendor/model. Preserve route-qualified explicit
+	// selections before asynchronous discovery completes; the API validates
+	// unknown IDs. Plain unknown values still fall back to the default.
+	if err != nil && provName == "uberllm" && isGatewayRoutedModelID(model) {
 		resolvedModel = provider.Model{
 			Provider: provName, ID: model, DisplayName: model,
 			ContextWindow: 32768, MaxOutput: 4096, Source: "gateway",
@@ -1056,6 +1068,8 @@ func (r Resolved) NewClient() provider.Client {
 		return wrap(provider.NewRuncrate(r.Credential, r.BaseURL))
 	case "cloudgpu":
 		return wrap(provider.NewCloudGPU(r.Credential, r.BaseURL))
+	case "uberllm":
+		return wrap(provider.NewUberLLM(r.Credential, r.BaseURL))
 	case "zai":
 		return wrap(provider.NewZAI(r.Credential, r.BaseURL))
 	case "xiaomi":
@@ -1401,6 +1415,8 @@ func envVarName(provider string) string {
 		return "RUNCRATE"
 	case "cloudgpu":
 		return "CLOUDGPU"
+	case "uberllm":
+		return "UBERLLM"
 	case "mistral":
 		return "MISTRAL"
 	case "zai":

@@ -274,6 +274,7 @@ const (
 	opperDefaultBaseURL            = "https://api.opper.ai/v3/compat"
 	runcrateDefaultBaseURL         = "https://api.runcrate.ai/v1"
 	cloudgpuDefaultBaseURL         = "https://cloudgpu.app/v1"
+	uberllmDefaultBaseURL          = "https://api.uberllm.dev/v1"
 
 	// Yolo-Auto's documented conservative client limits. The provider is
 	// flat-rate with plan-bounded windows, so the window is a safe floor
