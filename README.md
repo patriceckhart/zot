@@ -170,6 +170,8 @@ $ZOT_HOME/
 
 Drop a `SYSTEM.md` in `$ZOT_HOME` to replace the built-in identity and zot-docs guidance for every run. `--system-prompt` still wins per-invocation. Pass an empty value (`--system-prompt ""`) to intentionally omit the built-in identity. Custom prompts still receive appended instructions and generated context, including `AGENTS.md`, skills, auto-swarm guidance when enabled, and the date/cwd footer. Delete the file to revert to the default.
 
+The default identity is tool-independent. Built-in editing guidance follows the available tool set, including `--no-tools` and restricted `--tools` selections. The docs guidance mentions `read` only when available. Shell-based editing is discouraged only when `bash`, `edit`, and `write` are all available. On Windows, the cmd.exe shell hint is included only when `bash` is available. Custom prompts replace the built-in editing guidance as well as the identity and docs guidance.
+
 ### Offline documentation
 
 Zot installs its bundled Markdown into `$ZOT_HOME/docs` when configuring the agent.
