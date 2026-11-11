@@ -45,6 +45,33 @@ func TestShellEscapeAddsOutputToAgentContext(t *testing.T) {
 	t.Fatal("shell output was not appended to agent context")
 }
 
+func TestShellEscapeConfiguredShell(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX sh")
+	}
+	agent := core.NewAgent(nil, "", "", nil)
+	i := NewInteractive(InteractiveConfig{
+		Agent: agent,
+		CWD:   t.TempDir(),
+		Shell: []string{"/bin/sh", "-c", "printf configured-shell-ok"},
+	})
+	i.startShellEscape(context.Background(), "ignored-command")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		i.mu.Lock()
+		running := i.shellRunning
+		i.mu.Unlock()
+		if messages := agent.Messages(); len(messages) == 1 && !running {
+			if text := userMessageText(messages[0]); !strings.Contains(text, "configured-shell-ok") {
+				t.Fatalf("shell context = %q", text)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("configured shell did not finish")
+}
+
 func TestShellEscapeCommand(t *testing.T) {
 	cases := []struct {
 		in      string

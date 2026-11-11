@@ -696,7 +696,11 @@ func runZotfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.S
 				_ = f.Sync()
 			}
 		}
-		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox, StartupFile: filepath.Join(ZotHome(), ".bashrc")}
+		cfg, err := LoadConfig()
+		if err != nil {
+			return err
+		}
+		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox, StartupFile: filepath.Join(ZotHome(), ".bashrc"), Shell: cfg.Shell}
 		res, err := bash.Execute(ctx, raw, progress)
 		if err != nil {
 			return fmt.Errorf(".zot agent entry.pre: %w", err)
@@ -1577,6 +1581,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		Tools:                         r.ToolRegistry,
 		MaxSteps:                      r.MaxSteps,
 		CWD:                           r.CWD,
+		Shell:                         initialCfg.Shell,
 		StartupAgentName:              args.AgentName,
 		StartupContextPaths:           instructionContextPaths(r.ContextFiles),
 		StartupExtensionNames:         startupExtensionNames(extMgr.All()),

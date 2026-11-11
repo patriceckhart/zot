@@ -357,8 +357,8 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 	if err := args.CodemodeSettings.Validate(); err != nil {
 		return Resolved{}, err
 	}
-	cfg, _ := LoadConfig()
-	if err := cfg.Codemode.Validate(); err != nil {
+	cfg, err := LoadConfig()
+	if err != nil {
 		return Resolved{}, err
 	}
 
@@ -1274,6 +1274,9 @@ func withOpenRouterServerTools(reg core.Registry) core.Registry {
 
 func buildConfiguredToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, cfg Config, goos string) core.Registry {
 	reg := buildToolRegistry(args, cwd, sandbox)
+	if bash, ok := reg["bash"].(*tools.BashTool); ok {
+		bash.Shell = append([]string(nil), cfg.Shell...)
+	}
 	if goos == "windows" && !args.NoTools && len(args.Tools) == 0 && cfg.PowerShellEnabled != nil && *cfg.PowerShellEnabled {
 		reg["powershell"] = &tools.PowerShellTool{CWD: cwd, Sandbox: sandbox}
 	}
@@ -1335,7 +1338,11 @@ func toolSummaries(reg core.Registry, args Args) []ToolSummary {
 	var out []ToolSummary
 	for _, name := range order {
 		if t, ok := reg[name]; ok {
-			out = append(out, ToolSummary{Name: t.Name(), Description: t.Description()})
+			summary := ToolSummary{Name: t.Name(), Description: t.Description()}
+			if bash, ok := t.(*tools.BashTool); ok {
+				summary.ConfiguredShell = len(bash.Shell) > 0
+			}
+			out = append(out, summary)
 		}
 	}
 	return out
