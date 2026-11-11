@@ -414,6 +414,30 @@ In the interactive UI on Unix, a leading `cd <cwd> &&` in a Bash command is show
 
 When the sandbox is on (see `/jail`), filesystem tools refuse paths outside the session cwd, except that `read` and `glob` can access loaded extension directories. `bash` applies best-effort command checks. Jail mode is an accident-prevention guardrail, not a security boundary.
 
+### Configured shell and container execution
+
+Set `shell` in `$ZOT_HOME/config.json` to an argv prefix. zot appends each command as one final argument, without splitting or interpolating the configured arguments. For a local shell:
+
+```json
+{
+  "shell": ["/bin/zsh", "-c"]
+}
+```
+
+To run shell commands in an existing Apple container while keeping zot, extensions, codemode, and file tools on the host:
+
+```json
+{
+  "shell": ["container", "exec", "-i", "-w", "/absolute/path/to/project", "mydev", "bash", "-c"]
+}
+```
+
+For Docker, replace `"container"` with `"docker"`. Bind-mount the workspace into the container at the same absolute path, and set `-w` to that path. The path in the setting is literal, not a placeholder expanded by zot. Update it when switching projects. The container must already be running and have the selected shell installed. Do not allocate a TTY with `-t`.
+
+Restart zot after editing the setting. It applies to the `bash` tool (including calls from codemode), interactive `!` commands, .zot agent shell pre-hooks, and continuous workers using their own config. The optional PowerShell tool and extension subprocesses are unaffected. Omitting `shell`, or setting it to `null` or `[]`, preserves the default shell auto-detection. Invalid argv types, empty executable names, and NUL characters are rejected. An unavailable executable fails the call rather than falling back to a local shell.
+
+The subprocess still starts in the host session cwd and inherits the host environment. Container environment and working-directory forwarding depend on the wrapper's arguments. Timeouts and cancellation stop the local client process (and its local process group on Unix), but a command inside a container or on a remote host may keep running. Permission and jail checks still inspect the original command before execution. A configured shell is trusted executable configuration, not a security boundary.
+
 ### Bash startup file
 
 To customize the agent's Bash commands, create a `.bashrc` in zot's global state directory (the resolved zot home described above). This respects `ZOT_HOME`, then `XDG_STATE_HOME`, then the platform default. For example:
@@ -425,7 +449,7 @@ export PAGER=cat
 
 When Bash is available, zot sources this optional file before each command, with alias expansion enabled. Bash remains non-interactive and does not automatically read your usual `~/.bashrc`. An inherited `BASH_ENV` is still read first, so zot's file can override its definitions. Each call starts a fresh shell, so shell state does not persist between calls. Startup output is included in tool output. A missing file is ignored, while an unreadable or invalid file, or a nonzero return from sourcing it, prevents the requested command from running.
 
-This also applies to interactive `!` commands, .zot agent pre-hooks, and workers using the Bash tool. POSIX `sh`, Windows `cmd`, and the optional PowerShell tool are unchanged. zot never automatically sources a project-local startup file.
+This also applies to interactive `!` commands, .zot agent pre-hooks, and workers using the Bash tool. With `shell` configured, zot loads this file only for a direct `["bash", "-c"]` invocation (including a path to Bash). Wrappers, container shells, other argument combinations, POSIX `sh`, Windows `cmd`, and the optional PowerShell tool do not load it. zot never injects the host startup path into a wrapper or automatically sources a project-local startup file.
 
 Treat this file as trusted executable configuration. Anyone who can modify it can run code as your user. Aliases and functions can change the behavior of permission-checked commands, and jail mode remains a best-effort guardrail, not a security boundary.
 
@@ -523,7 +547,7 @@ Extension-registered commands appear under a divider at the bottom of the popup,
 
 ### Shell escape (`!command`)
 
-Type `!` followed by a command to run it directly without going through the model. Everything after the `!` is passed to the same shell the `bash` tool uses (`/bin/bash -c` when available on Unix, then `bash -c` from `PATH`, with POSIX `/bin/sh -c` as a fallback; `cmd /C` on Windows), runs in the session working directory, and honors the `/jail` sandbox. The command, merged output, and exit status are appended to the transcript as user context, so the model can use them on the next turn. Running the command does not itself start a model turn. A running `!command` shares the busy state with the agent: `esc` cancels it, and you cannot start one while a turn (or another shell escape) is in flight.
+Type `!` followed by a command to run it directly without going through the model. Everything after the `!` is passed to the same shell the `bash` tool uses (the configured `shell` argv prefix when set, otherwise `/bin/bash -c` when available on Unix, then `bash -c` from `PATH`, with POSIX `/bin/sh -c` as a fallback; `cmd /C` on Windows), runs in the session working directory, and honors the `/jail` sandbox. The command, merged output, and exit status are appended to the transcript as user context, so the model can use them on the next turn. Running the command does not itself start a model turn. A running `!command` shares the busy state with the agent: `esc` cancels it, and you cannot start one while a turn (or another shell escape) is in flight.
 
 When the input starts with `!` (except the `!@` file picker), Ctrl+V text paste and terminal paste insert text without automatic path quoting or file placeholders. For example, pasting `~/.cache/huggingface/hub` after `!ls ` preserves shell tilde expansion. Quote or escape paths with spaces yourself. Pasting does not execute the command, press Enter to run it.
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/patriceckhart/zot/packages/agent/codemode"
 	"github.com/patriceckhart/zot/packages/agent/keymap"
+	"github.com/patriceckhart/zot/packages/agent/tools"
 	providerpkg "github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/provider/auth"
 )
@@ -32,6 +33,10 @@ type Config struct {
 	Temperature *float32           `json:"temperature,omitempty"`
 	Theme       string             `json:"theme"`
 	Codemode    *codemode.Settings `json:"codemode,omitempty"`
+
+	// Shell is an argv prefix for the bash tool and shell escapes.
+	// Empty preserves platform-specific shell auto-detection.
+	Shell []string `json:"shell,omitempty"`
 
 	// DisabledProviders blocks inference, credential resolution, and discovery.
 	DisabledProviders []string `json:"disabled_providers,omitempty"`
@@ -268,11 +273,17 @@ func LoadConfig() (Config, error) {
 	if err := c.Codemode.Validate(); err != nil {
 		return c, err
 	}
+	if err := tools.ValidateShell(c.Shell); err != nil {
+		return c, err
+	}
 	return c, nil
 }
 
 // SaveConfig writes the config file, creating parent dirs.
 func SaveConfig(c Config) error {
+	if err := tools.ValidateShell(c.Shell); err != nil {
+		return err
+	}
 	if err := c.Codemode.Validate(); err != nil {
 		return err
 	}

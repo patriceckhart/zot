@@ -31,6 +31,8 @@ type BashTool struct {
 	Sandbox *Sandbox
 	// StartupFile is an optional trusted Bash startup file. Empty disables loading.
 	StartupFile string
+	// Shell is an optional argv prefix. The command is appended as one argument.
+	Shell []string
 }
 
 type bashArgs struct {
@@ -40,8 +42,13 @@ type bashArgs struct {
 
 const bashSchema = `{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]}`
 
-func (t *BashTool) Name() string                  { return "bash" }
-func (t *BashTool) Description() string           { return shellDescription(currentShell()) }
+func (t *BashTool) Name() string { return "bash" }
+func (t *BashTool) Description() string {
+	if len(t.Shell) > 0 {
+		return fmt.Sprintf("Run a command via configured shell argv %q, with the command appended as the final argument. stdout+stderr merged.", t.Shell)
+	}
+	return shellDescription(currentShell())
+}
 func (t *BashTool) Schema() json.RawMessage       { return json.RawMessage(bashSchema) }
 func (t *BashTool) OutputSchema() json.RawMessage { return json.RawMessage(shellOutputSchema) }
 
@@ -359,7 +366,42 @@ func shellDescription(shell shellCommand) string {
 	return "Bash is unavailable; run a POSIX sh command via /bin/sh -c. stdout+stderr merged."
 }
 
+// ValidateShell checks an optional argv prefix without requiring the executable
+// to be installed on the machine where configuration is saved.
+func ValidateShell(shell []string) error {
+	if len(shell) > 0 && strings.TrimSpace(shell[0]) == "" {
+		return fmt.Errorf("shell executable must not be empty")
+	}
+	for _, arg := range shell {
+		if strings.ContainsRune(arg, 0) {
+			return fmt.Errorf("shell arguments must not contain NUL")
+		}
+	}
+	return nil
+}
+
 func (t *BashTool) newCommand(ctx context.Context, shell shellCommand, command string) (*exec.Cmd, error) {
+	if err := ValidateShell(t.Shell); err != nil {
+		return nil, err
+	}
+	if len(t.Shell) > 0 {
+		// Only a direct Bash invocation can source a host startup file.
+		// Never inject host paths into a wrapper or a remote command.
+		base := strings.ToLower(filepath.Base(t.Shell[0]))
+		shell = shellCommand{path: t.Shell[0]}
+		if len(t.Shell) == 2 {
+			shell.flag = t.Shell[1]
+			shell.isBash = (base == "bash" || base == "bash.exe") && shell.flag == "-c"
+		}
+		if !shell.isBash {
+			argv := append([]string(nil), t.Shell[1:]...)
+			cmd := exec.CommandContext(ctx, t.Shell[0], append(argv, command)...)
+			if base == "cmd" || base == "cmd.exe" {
+				applyRawCmdLine(cmd, shell, command)
+			}
+			return cmd, nil
+		}
+	}
 	if shell.isBash && t.StartupFile != "" {
 		path, err := filepath.Abs(t.StartupFile)
 		if err != nil {

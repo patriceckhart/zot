@@ -12,6 +12,8 @@ import (
 type ToolSummary struct {
 	Name        string
 	Description string
+	// ConfiguredShell suppresses host-specific default shell guidance.
+	ConfiguredShell bool
 }
 
 // SystemPromptOpts configures BuildSystemPrompt.
@@ -43,8 +45,12 @@ func BuildSystemPrompt(o SystemPromptOpts) string {
 		cwd = "."
 	}
 	available := make(map[string]bool, len(o.Tools))
+	configuredShell := false
 	for _, tool := range o.Tools {
 		available[tool.Name] = true
+		if tool.Name == "bash" {
+			configuredShell = tool.ConfiguredShell
+		}
 	}
 
 	var sb strings.Builder
@@ -88,13 +94,13 @@ func BuildSystemPrompt(o SystemPromptOpts) string {
 	}
 
 	fmt.Fprintf(&sb, "\n\nCurrent date: %s\nCurrent working directory: %s\n", date, cwd)
-	sb.WriteString(platformLine(o.GOOS, o.GOARCH, available))
+	sb.WriteString(platformLine(o.GOOS, o.GOARCH, available, configuredShell))
 	return sb.String()
 }
 
 // platformLine identifies the OS and, when bash is available, its Windows
 // shell dialect. Keep this short because it sits in the cached prefix.
-func platformLine(goos, goarch string, available map[string]bool) string {
+func platformLine(goos, goarch string, available map[string]bool, configuredShell bool) string {
 	if goos == "" {
 		goos = runtime.GOOS
 	}
@@ -102,7 +108,7 @@ func platformLine(goos, goarch string, available map[string]bool) string {
 		goarch = runtime.GOARCH
 	}
 	line := fmt.Sprintf("Platform: %s/%s\n", goos, goarch)
-	if goos == "windows" && available["bash"] {
+	if goos == "windows" && available["bash"] && !configuredShell {
 		line += windowsShellHint
 		if available["read"] && available["glob"] {
 			line += "For searching, prefer the read and glob tools.\n"

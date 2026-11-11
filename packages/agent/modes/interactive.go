@@ -40,6 +40,7 @@ type InteractiveConfig struct {
 	Tools        core.Registry
 	MaxSteps     int
 	CWD          string
+	Shell        []string // optional argv prefix for shell escapes
 
 	// Startup resource fields are loaded inputs available to list before the
 	// transcript. They are never sent to the provider or persisted by the view.
@@ -6276,6 +6277,7 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 	i.helpBlock = nil
 	sandbox := i.cfg.Sandbox
 	cwd := i.cfg.CWD
+	shell := append([]string(nil), i.cfg.Shell...)
 	startupFile := ""
 	if i.cfg.ZotHome != "" {
 		startupFile = filepath.Join(i.cfg.ZotHome, ".bashrc")
@@ -6286,7 +6288,7 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 	go func() {
 		defer cancel()
 		raw, _ := json.Marshal(map[string]any{"command": cmd})
-		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox, StartupFile: startupFile}
+		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox, StartupFile: startupFile, Shell: shell}
 		progress := func(chunk string) {
 			i.mu.Lock()
 			i.shellLive += chunk

@@ -102,6 +102,23 @@ func TestBashStartupFreshShell(t *testing.T) {
 	}
 }
 
+func TestConfiguredLocalBashStartup(t *testing.T) {
+	if !currentShell().isBash {
+		t.Skip("requires local Bash")
+	}
+	t.Setenv("BASH_ENV", "")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "startup")
+	if err := os.WriteFile(path, []byte("export ZOT_STARTUP_TEST=configured-local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tool := &BashTool{CWD: dir, Shell: []string{currentShell().path, "-c"}, StartupFile: path}
+	res, err := tool.Execute(context.Background(), mustJSON(t, map[string]any{"command": "printf '%s' \"$ZOT_STARTUP_TEST\""}), nil)
+	if err != nil || res.IsError || !strings.Contains(string(res.StructuredContent), "configured-local") {
+		t.Fatalf("result = %+v, error = %v", res, err)
+	}
+}
+
 func TestBashStartupOtherShellsUnchanged(t *testing.T) {
 	tool := &BashTool{StartupFile: t.TempDir()}
 	for _, shell := range []shellCommand{{path: "/bin/sh", flag: "-c"}, {path: "cmd", flag: "/C"}} {
