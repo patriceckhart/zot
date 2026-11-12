@@ -27,10 +27,11 @@ type Frame struct {
 }
 
 type HelloFromExt struct {
-	Type         string   `json:"type"`
-	Name         string   `json:"name"`
-	Version      string   `json:"version"`
-	Capabilities []string `json:"capabilities,omitempty"`
+	RequestTransform *RequestTransformOptions `json:"request_transform,omitempty"`
+	Type             string                   `json:"type"`
+	Name             string                   `json:"name"`
+	Version          string                   `json:"version"`
+	Capabilities     []string                 `json:"capabilities,omitempty"`
 }
 
 type RegisterCommandFromExt struct {

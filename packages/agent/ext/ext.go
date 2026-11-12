@@ -346,15 +346,18 @@ type Extension struct {
 	eventHandlers   map[string]EventHandler
 	eventNames      []string // declared subscription order
 
-	interceptTool      InterceptHandler
-	interceptToolRich  ToolCallHandler
-	interceptOn        bool
-	interceptStart     BeforeAgentStartHandler
-	interceptTurn      TurnStartHandler
-	interceptAssistant AssistantMessageHandler
-	panelKeys          map[string]func(key, text string)
-	panelCloses        map[string]func()
-	onHello            func(HostInfo)
+	interceptTool         InterceptHandler
+	interceptToolRich     ToolCallHandler
+	interceptOn           bool
+	interceptStart        BeforeAgentStartHandler
+	requestTransform      RequestTransformHandler
+	requestOptions        RequestTransformOptions
+	requestTransformReady atomic.Bool
+	interceptTurn         TurnStartHandler
+	interceptAssistant    AssistantMessageHandler
+	panelKeys             map[string]func(key, text string)
+	panelCloses           map[string]func()
+	onHello               func(HostInfo)
 
 	// Caps reported in the hello frame.
 	caps []string
@@ -693,21 +696,30 @@ func (e *Extension) Run() error {
 		}
 	}()
 	scanner := bufio.NewScanner(e.in)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), extproto.RequestTransformFrameLimit)
 
 	// Send hello first. zot answers with hello_ack immediately; read it
 	// synchronously so extensions can use HostInfo while registering
 	// commands/tools before the ready frame.
+	var requestOptions *RequestTransformOptions
+	if e.requestTransform != nil {
+		options := e.requestOptions
+		requestOptions = &options
+	}
 	if err := e.send(extproto.HelloFromExt{
-		Type:         "hello",
-		Name:         e.name,
-		Version:      e.version,
-		Capabilities: e.caps,
+		Type:             "hello",
+		Name:             e.name,
+		Version:          e.version,
+		Capabilities:     e.caps,
+		RequestTransform: requestOptions,
 	}); err != nil {
 		return err
 	}
 	if !scanner.Scan() {
 		return scanner.Err()
+	}
+	if len(scanner.Bytes()) >= 4*1024*1024 {
+		return fmt.Errorf("hello_ack exceeds transport limit")
 	}
 	var ack extproto.HelloAckFromHost
 	if err := json.Unmarshal(scanner.Bytes(), &ack); err != nil {
@@ -715,6 +727,10 @@ func (e *Extension) Run() error {
 	}
 	if ack.Type != "hello_ack" {
 		return fmt.Errorf("first host frame must be hello_ack (got %q)", ack.Type)
+	}
+	e.requestTransformReady.Store(slices.Contains(e.caps, "request_transform") && slices.Contains(ack.Capabilities, "request_transform"))
+	if e.requestTransform != nil && !e.requestTransformReady.Load() {
+		return errRequestTransformUnsupported
 	}
 	e.callToolReady.Store(slices.Contains(ack.Capabilities, "call_tool"))
 	e.callToolDurable.Store(slices.Contains(ack.Capabilities, "call_tool_durable"))
@@ -742,6 +758,7 @@ func (e *Extension) Run() error {
 	toolDefs := append([]toolDef(nil), e.toolDefs...)
 	eventNames := append([]string(nil), e.eventNames...)
 	interceptStart := e.interceptStart != nil
+	requestTransform := e.requestTransform != nil
 	interceptTool := e.interceptOn
 	interceptTurn := e.interceptTurn != nil
 	interceptAsst := e.interceptAssistant != nil
@@ -770,6 +787,9 @@ func (e *Extension) Run() error {
 		})
 	}
 	var intercepts []string
+	if requestTransform {
+		intercepts = append(intercepts, "before_request")
+	}
 	if interceptStart {
 		intercepts = append(intercepts, "before_agent_start")
 	}
@@ -797,6 +817,9 @@ func (e *Extension) Run() error {
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		if !e.requestTransformReady.Load() && len(line) >= 4*1024*1024 {
+			return fmt.Errorf("host frame exceeds transport limit")
+		}
 		var frame extproto.Frame
 		if err := json.Unmarshal(line, &frame); err != nil {
 			e.Logf("malformed frame from host: %v", err)
@@ -933,6 +956,11 @@ func (e *Extension) Run() error {
 					})
 				}()
 			}
+		case "request_transform":
+			var event RequestTransformEvent
+			if json.Unmarshal(line, &event) == nil && e.requestTransformReady.Load() {
+				go e.dispatchRequestTransform(event)
+			}
 		case "event_intercept":
 			var ei extproto.EventInterceptFromHost
 			if err := json.Unmarshal(line, &ei); err != nil {
@@ -1022,6 +1050,13 @@ func (e *Extension) send(v any) error {
 	b, err := extproto.Encode(v)
 	if err != nil {
 		return err
+	}
+	limit := 4 * 1024 * 1024
+	if e.requestTransformReady.Load() {
+		limit = extproto.RequestTransformFrameLimit
+	}
+	if len(b) >= limit {
+		return fmt.Errorf("extension frame exceeds transport limit")
 	}
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()

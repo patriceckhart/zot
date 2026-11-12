@@ -379,6 +379,9 @@ Interceptable events:
 
 - `before_agent_start`: inspect and replace the complete system prompt before
   the first model call. See [System prompt replacement](#system-prompt-replacement).
+- `before_request`: transform selected logical request segments using a dedicated
+  frame pair. Requires `request_transform`, and fails closed by default. See
+  [Logical request transforms](#logical-request-transforms-before_request).
 - `tool_call`: block the call (model sees `reason` as the tool
   error) or rewrite args via `modified_args`.
 - `turn_start`: block the turn before the model is called. Useful
@@ -431,7 +434,8 @@ Each extension has a five-second deadline including the request pipe write.
 Invalid/non-string values, malformed responses, crashes, and timeouts preserve
 the current prompt and produce an extension log diagnostic and host warning.
 An omitted value is a normal no-op. The encoded `system_prompt` response value
-is limited to 1 MiB; complete transport frames are limited to 4 MiB. Exceeding
+is limited to 1 MiB. Complete transport frames are limited to 4 MiB unless
+`request_transform` is negotiated as described below. Exceeding
 the frame limit disconnects the extension's read loop. A blocked request write
 closes its input pipe to release the writer. Other subscribed extensions still
 run unless the user cancels startup.
@@ -440,6 +444,154 @@ Supported in interactive, print, JSON, and RPC modes. RPC warnings use
 `ext_notify`. Subscribed extensions see the entire prompt, including private
 context-file instructions. This feature is not a security boundary and does
 not change tool permissions or validate the safety of replacement instructions.
+
+#### Logical request transforms (`before_request`)
+
+A `request_transform` capability enables a separate, correlated request/response
+pair for inspecting and rewriting logical model request content. It is not an
+HTTP-body hook and does not expose the exact provider payload. Provider clients
+still perform their own wire conversion, signature handling and transport retries.
+
+Advertise the capability in `hello`, optionally with options:
+
+```json
+{"type":"hello","name":"redactor","version":"1","capabilities":["request_transform"],"request_transform":{"timeout_ms":30000,"on_timeout":"fail"}}
+```
+
+The host advertises `request_transform` in `hello_ack.capabilities`. Extensions
+may also subscribe to `before_request`, but the capability itself declares the
+transform requirement. A missing subscription cannot disable it. Older hosts
+ignore unknown capabilities. The Go SDK refuses to run a registered transform
+without host support, but an old host may still continue without the extension.
+Security-sensitive deployments must require a host version supporting this hook.
+
+Declare the same options in `extension.json` to require the transform even when
+its executable fails before sending `hello`. Manifest options override `hello`:
+
+```json
+{"name":"redactor","exec":"./redactor","request_transform":{"timeout_ms":30000,"on_timeout":"fail"}}
+```
+
+The host sends:
+
+```json
+{"type":"request_transform","id":"rt-1","session_id":"session-123","provider":"anthropic","model":"claude-opus-4-7","purpose":"chat","request_hash":"sha256:...","segments":[{"id":"system","kind":"text","text":"You are an assistant."},{"id":"m0.c0","kind":"text","text":"Use token SECRET."},{"id":"m1.c0","kind":"json","value":{"path":"/private/report.csv"}},{"id":"m2.c0","kind":"text","skipped":"signed"}]}
+```
+
+Return replacements by segment ID, or `error` to reject the request:
+
+```json
+{"type":"request_transform_response","id":"rt-1","replacements":{"m0.c0":"Use token <REDACTED>.","m1.c0":{"path":"/<REDACTED>/report.csv"}}}
+```
+
+- `system` is the complete outgoing system prompt. Chat and in-place compaction
+  use the active prompt after `before_agent_start`. Side compaction uses its
+  separate summarization prompt.
+- `mN.cN` identifies message content using zero-based indexes. Nested tool-result
+  content adds `.r.cN`, recursively. Plain text, replayed assistant text and
+  unsigned tool-call arguments are included.
+- `tN.description`, `tN.namespace_description`, `tN.namespace_instructions` and
+  `tN.schema` identify tool descriptions, namespace text and input schemas.
+- `kind` is `text`, `json` or `opaque`. Empty text may omit `text`. JSON is a
+  parsed JSON value, not a JSON string containing encoded JSON.
+- Signed text and tool calls, images, reasoning, constrained-sampling grammars,
+  and unknown block types have a `skipped` reason and no content. They remain
+  byte-for-byte unchanged. A transform can reject requests with skipped content
+  when complete inspection is required.
+- Missing IDs mean unchanged. Unknown IDs and replacements for skipped IDs are
+  ignored. Empty string is a valid text replacement. `null` is not.
+- JSON replacements must preserve object keys, array lengths and scalar types
+  recursively. They may replace values, not message roles, tool names, call IDs,
+  signatures, metadata, or message/block/tool structure. Tool schemas are not
+  semantically revalidated after value replacement, so extensions must preserve
+  schema meaning. JSON keys themselves cannot be redacted.
+- Transforms chain in successful extension load order. Each extension sees the
+  previous extension's successful replacements. A whole
+  response is validated before applying it, using copy-on-write. A failed
+  response never partially applies. Local transcripts, persisted sessions and
+  the live tool registry are not rewritten.
+
+Transforms run once per core `Client.Stream` invocation, including each core
+retry, every tool-loop turn, side compaction, in-place compaction and its
+context-overflow fallback. `purpose` is `chat`, `compaction_side` or
+`compaction_in_place`. Provider-internal HTTP retries reuse the transformed
+payload without invoking the hook again. Transform failures do not trigger
+provider retries or compaction fallback.
+
+Shared wiring covers interactive, print, JSON, RPC, bot/Telegram and continuous
+agents, including continuous compaction and subagents using that engine. This
+is not a process-wide egress firewall. Non-chat classifier/image-generation
+APIs, extension/tool-owned network traffic, opaque data, credentials and
+provider-generated wire fields are outside the hook. Every extension receives
+potentially sensitive request content. Do not install untrusted transforms or
+log segments by default. The host records only content-free failure diagnostics
+and does not expose extension-supplied error text.
+
+**Failure policy and bounds:** `timeout_ms` defaults to 30000, with an allowed
+range of 1 to 300000. Frames include `deadline_ms` (Unix milliseconds) so the SDK
+uses the host's effective deadline, including manifest overrides and any earlier
+parent deadline. This volatile field is excluded from the hash.
+The deadline includes extraction, serialization, queueing,
+pipe writes, the response and replacement validation. CPU-bound work observes
+expiration at phase boundaries. `on_timeout` defaults to `fail` and applies to
+all failures: timeouts, crashes, disconnects, invalid responses, unsupported
+capabilities and size limits. `pass` explicitly allows the unchanged input to
+that extension to continue. With multiple transforms, the strictest policy
+wins: any `fail` policy makes any transform failure terminal. Parent cancellation
+always aborts regardless of policy. A blocked write closes the extension pipe.
+
+Requirements remain registered after crashes and failed reloads. Reloading may
+restore a failed transform but cannot remove or weaken a required transform
+until zot restarts. To enforce startup failures as well, use the manifest
+field above. Explicitly disabling/removing an extension before startup disables
+its requirement. This guardrail is not protection against a user or extension
+that controls zot's configuration or process.
+
+Each stage permits at most 10,000 segments and 16 MiB of text UTF-8 bytes plus
+canonical JSON value bytes, both before and after replacements. Nesting is
+limited to 64 levels. These are rejection limits, never truncation. Negotiating
+`request_transform` raises the host and SDK frame limit to 128 MiB to accommodate
+JSON escaping, and the host's outbound byte queue to 128 MiB. Other extensions
+retain the 4 MiB frame limit and 16 MiB queue. The queue still holds at most
+256 frames plus one in flight. Transform writes use their dedicated deadline,
+not the legacy five-second interception timeout.
+
+`request_hash` is `sha256:` followed by lowercase hexadecimal SHA-256 of compact
+Go `encoding/json` output for an object with fields in this order: `provider`,
+`model`, `purpose`, `segments`. Segment fields are ordered `id`, `kind`, `text`,
+`value`, `skipped`, with empty optional fields omitted. JSON values are
+canonicalized with sorted object keys and preserved JSON numbers. Volatile
+request fields and session identity are excluded. Extensions can cache
+replacements by `(session_id, request_hash)` but must return the replacements
+on every request. There is no host cache or special `cached: true` behavior.
+The hash covers the exposed segments only, not skipped bytes or the HTTP body.
+
+Go SDK registration (before `Run`):
+
+```go
+e.InterceptBeforeRequest(ext.RequestTransformOptions{},
+    func(ctx context.Context, ev ext.RequestTransformEvent) (map[string]json.RawMessage, error) {
+        replacements := make(map[string]json.RawMessage)
+        for _, segment := range ev.Segments {
+            if segment.Skipped != "" {
+                return nil, fmt.Errorf("complete inspection required")
+            }
+            if segment.Kind == "text" {
+                text := strings.ReplaceAll(segment.Text, "SECRET", "<REDACTED>")
+                value, err := json.Marshal(text)
+                if err != nil {
+                    return nil, err
+                }
+                replacements[segment.ID] = value
+            }
+        }
+        return replacements, nil
+    })
+```
+
+Handlers should honor context cancellation. Panics and handler errors become
+content-free rejection responses. The SDK supports negotiated large frames and
+continues reading protocol traffic while handlers run.
 
 #### `event_intercept_response`
 
@@ -956,15 +1108,18 @@ Frames are serialized per extension, including notifications and interception
 requests. Notification enqueue does not wait for the subprocess. Each
 extension has a bounded outbound queue (256 frames or 16 MiB of queued bytes,
 plus one in-flight frame); overflow disconnects it rather than silently dropping
-an event and continuing. Synchronous writes are bounded to five seconds.
+an event and continuing. Synchronous writes are bounded to five seconds, except
+negotiated request transforms, which use their dedicated deadline and larger
+byte queue.
 Graceful shutdown attempts to drain queued frames, including `session_end`,
 before sending `shutdown`, within the shutdown grace period.
 
 Delivery is best-effort, not a durable or exactly-once audit log. There is no
 acknowledgement, replay, or crash recovery for notifications. A crash, forced
 termination, slow consumer, or broken pipe can prevent delivery. The protocol's
-4 MiB frame limit still applies. Slow event handlers can delay later
-interception requests, so extension handlers should hand lengthy work to their
+4 MiB frame limit applies unless `request_transform` is negotiated. Slow event
+handlers can delay later interception requests, so extension handlers should
+hand lengthy work to their
 own bounded queue. Existing interception response and failure policies remain
 unchanged.
 

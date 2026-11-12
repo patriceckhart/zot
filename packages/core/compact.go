@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -173,15 +174,16 @@ func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, inst
 			Content: []provider.Content{provider.TextBlock{Text: "Summarize the preceding conversation now. Do not continue the task or call tools. Output only the summary.\n\n" + prompt}},
 			Time:    time.Now(),
 		})
-		summary, err := a.streamSummary(ctx, inPlace, sink)
+		summary, err := a.streamSummary(ctx, "compaction_in_place", inPlace, sink)
 		if err == nil {
 			return summary, len(transcript) / 4, nil
 		}
-		if ctx.Err() != nil || !provider.IsContextOverflowError(err) {
+		var transformErr *RequestTransformError
+		if ctx.Err() != nil || errors.As(err, &transformErr) || !provider.IsContextOverflowError(err) {
 			return "", 0, err
 		}
 	}
-	summary, err := a.streamSummary(ctx, req, sink)
+	summary, err := a.streamSummary(ctx, "compaction_side", req, sink)
 	if err != nil {
 		return "", 0, err
 	}
@@ -190,7 +192,11 @@ func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, inst
 
 // streamSummary never executes local tool calls. A tool-call response fails without
 // replacing the transcript, even when tools are advertised for prefix reuse.
-func (a *Agent) streamSummary(ctx context.Context, req provider.Request, sink func(string)) (string, error) {
+func (a *Agent) streamSummary(ctx context.Context, purpose string, req provider.Request, sink func(string)) (string, error) {
+	req, err := a.transformRequest(ctx, purpose, req)
+	if err != nil {
+		return "", err
+	}
 	stream, err := a.Client.Stream(ctx, req)
 	if err != nil {
 		return "", err

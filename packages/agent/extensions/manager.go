@@ -40,14 +40,16 @@ import (
 // extension's executable. It tells zot how to launch the extension
 // and provides display metadata.
 type Manifest struct {
-	Name        string   `json:"name"`
-	Version     string   `json:"version,omitempty"`
-	Exec        string   `json:"exec"`               // executable path, relative to manifest dir
-	Args        []string `json:"args,omitempty"`     // extra argv passed to exec
-	Language    string   `json:"language,omitempty"` // informational ("go", "python", "typescript", ...)
-	Enabled     *bool    `json:"enabled,omitempty"`  // nil = enabled
-	Description string   `json:"description,omitempty"`
-	Skills      []string `json:"skills,omitempty"`
+	// Declaring a transform here also fails closed when startup fails.
+	RequestTransform *extproto.RequestTransformOptions `json:"request_transform,omitempty"`
+	Name             string                            `json:"name"`
+	Version          string                            `json:"version,omitempty"`
+	Exec             string                            `json:"exec"`               // executable path, relative to manifest dir
+	Args             []string                          `json:"args,omitempty"`     // extra argv passed to exec
+	Language         string                            `json:"language,omitempty"` // informational ("go", "python", "typescript", ...)
+	Enabled          *bool                             `json:"enabled,omitempty"`  // nil = enabled
+	Description      string                            `json:"description,omitempty"`
+	Skills           []string                          `json:"skills,omitempty"`
 }
 
 // IsEnabled returns the manifest's effective enabled state. Default
@@ -70,10 +72,15 @@ type Extension struct {
 	logFile  *os.File
 	helloAck bool
 	// Set during the handshake, before the extension is published.
-	toolCancel bool
-	callTool   bool
-	commands   []extproto.RegisterCommandFromExt
-	tools      []extproto.RegisterToolFromExt
+	toolCancel       bool
+	callTool         bool
+	requestTransform bool
+	requestHandshake bool
+	requestClosed    bool
+	requestOptions   extproto.RequestTransformOptions
+	pendingTransform map[string]chan extproto.RequestTransformResponseFromExt
+	commands         []extproto.RegisterCommandFromExt
+	tools            []extproto.RegisterToolFromExt
 
 	// readyCh is closed when the extension sends a ReadyFromExt
 	// frame, or when the host gives up waiting (registrationGrace).
@@ -162,11 +169,12 @@ type Manager struct {
 	model      string
 	hooks      HostHooks
 
-	mu        sync.RWMutex
-	ext       map[string]*Extension // keyed by manifest name
-	extOrder  []*Extension          // successful load order
-	builtins  map[string]Builtin
-	builtinMu sync.Mutex // serializes built-in reload and shutdown
+	mu                sync.RWMutex
+	ext               map[string]*Extension // keyed by manifest name
+	extOrder          []*Extension          // successful load order
+	requestTransforms []*Extension          // retained across crashes and failed reloads
+	builtins          map[string]Builtin
+	builtinMu         sync.Mutex // serializes built-in reload and shutdown
 
 	// commandIndex maps a lower-cased slash-command name (without the
 	// leading /) to its canonical registration. First-come-first-served:
@@ -457,6 +465,10 @@ func (m *Manager) loadOne(ctx context.Context, dir string) error {
 		pendingIntercept: map[string]chan extproto.EventInterceptResponseFromExt{},
 		eventSubs:        map[string]struct{}{},
 		interceptSubs:    map[string]struct{}{},
+	}
+	if mf.RequestTransform != nil {
+		ext.requestOptions = *mf.RequestTransform
+		m.registerRequestTransform(ext)
 	}
 	if mf.Exec != "" {
 		if err := m.spawn(ctx, ext); err != nil {
@@ -772,14 +784,16 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	started = true
 	ext.cmd = cmd
 	stdin = newOrderedPipe(stdin)
+	ext.mu.Lock()
 	ext.stdin = stdin
+	ext.mu.Unlock()
 	ext.stdout = stdout
 
 	// Hello handshake. Read the extension's HelloFromExt synchronously
 	// so we can fail fast on a broken extension; everything after is
 	// processed in the read goroutine.
 	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), extproto.RequestTransformFrameLimit)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			return fmt.Errorf("read hello (stderr log: %s): %w", logPath, err)
@@ -790,6 +804,9 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 			return fmt.Errorf("extension exited before hello: %s (stderr log: %s)", status, logPath)
 		}
 		return fmt.Errorf("extension closed stdout before hello without exiting (stderr log: %s)", logPath)
+	}
+	if len(scanner.Bytes()) >= 4*1024*1024 {
+		return fmt.Errorf("hello exceeds frame limit")
 	}
 	var hello extproto.HelloFromExt
 	if err := json.Unmarshal(scanner.Bytes(), &hello); err != nil {
@@ -802,8 +819,21 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	ext.helloAck = true
 	ext.toolCancel = slices.Contains(hello.Capabilities, "tool_cancel")
 	ext.callTool = slices.Contains(hello.Capabilities, "call_tool")
+	ext.mu.Lock()
+	ext.requestTransform = slices.Contains(hello.Capabilities, "request_transform")
+	if ext.Manifest.RequestTransform == nil && hello.RequestTransform != nil {
+		ext.requestOptions = *hello.RequestTransform
+	}
+	ext.mu.Unlock()
+	if ext.requestTransform {
+		pipe := stdin.(*orderedPipe)
+		pipe.mu.Lock()
+		pipe.limit = extproto.RequestTransformFrameLimit
+		pipe.mu.Unlock()
+		m.registerRequestTransform(ext)
+	}
 
-	capabilities := []string{"call_tool"}
+	capabilities := []string{"call_tool", "request_transform"}
 	if m.durableToolCalls.Load() {
 		capabilities = append(capabilities, "call_tool_durable")
 	}
@@ -821,6 +851,9 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	if _, err := stdin.Write(ack); err != nil {
 		return fmt.Errorf("send hello_ack (stderr log: %s): %w", logPath, err)
 	}
+	ext.mu.Lock()
+	ext.requestHandshake = true
+	ext.mu.Unlock()
 
 	cleanup = false
 
@@ -904,6 +937,11 @@ func (m *Manager) assumeReadyAfterIdle(ext *Extension) {
 func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 	defer func() {
 		ext.mu.Lock()
+		ext.requestClosed = true
+		for id, ch := range ext.pendingTransform {
+			ch <- extproto.RequestTransformResponseFromExt{Error: "extension disconnected"}
+			delete(ext.pendingTransform, id)
+		}
 		for _, cancel := range ext.inboundCalls {
 			cancel()
 		}
@@ -932,6 +970,9 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		if !ext.requestTransform && len(line) >= 4*1024*1024 {
+			break
+		}
 		ext.mu.Lock()
 		ext.lastFrameTime = time.Now()
 		ext.mu.Unlock()
@@ -1012,12 +1053,14 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 				}
 				for _, ev := range sub.Intercept {
 					switch ev {
-					case "tool_call", "turn_start", "assistant_message", "before_agent_start":
+					case "tool_call", "turn_start", "assistant_message", "before_agent_start", "before_request":
 						ext.interceptSubs[ev] = struct{}{}
 					}
 				}
 				ext.mu.Unlock()
 			}
+		case "request_transform_response":
+			m.receiveRequestTransform(ext, line)
 		case "event_intercept_response":
 			var er extproto.EventInterceptResponseFromExt
 			if err := json.Unmarshal(line, &er); err == nil {
