@@ -208,6 +208,34 @@ or repository docs only if no cache exists. Plain `go build` and `go install`
 embed whatever docs are available locally without downloading. Go dependencies
 must still be available locally. Release builds require a successful docs download.
 
+### Compaction mode
+
+Choose the compaction mode in `$ZOT_HOME/config.json`, then restart zot:
+
+```json
+{
+  "compaction_mode": "in_place"
+}
+```
+
+- `side` (default): send the transcript as text to a separate summarization request
+  with its own system prompt and no tools. This preserves existing behavior.
+- `in_place`: keep the active model, system prompt, tool definitions, reasoning
+  settings, and structured message prefix, then append a summary instruction.
+  This makes provider prompt-cache reuse possible, but cache hits and speedups
+  depend on the provider. When recent messages are retained verbatim, only the
+  older prefix is sent for summarization. Context-window or payload-size rejection
+  retries once using the side request. That fallback can still fail if it is too large.
+
+Both modes apply to manual and automatic compaction and continuous-host summaries.
+Zot never executes local tools during summarization. An unexpected tool call fails
+the compaction without replacing history. Provider-hosted tools remain advertised
+in in-place mode and may run remotely despite the no-tools instruction. Use side
+mode to avoid advertising them. In-place mode uses the active model, not a
+separately configured compaction model. The mode is a startup setting, not a live
+`/settings` toggle or a per-request RPC option. Direct core users can set
+`Agent.CompactionMode` to `"side"` or `"in_place"` before use.
+
 ### Compaction instructions
 
 Create `$ZOT_HOME/COMPACT.md` to replace the built-in summary template for manual
@@ -220,14 +248,16 @@ zot --append-compaction-prompt "Reference Markdown documents by path instead of 
 
 A nonblank `COMPACT.md` replaces the built-in summary template. Missing or blank
 files use the built-in template. Flag values are appended to the selected template
-in command-line order. The separate summarization system prompt still requires
-summarizing rather than continuing the conversation, but does not impose the
-built-in format when a custom template is used. Other file-read failures stop
+in command-line order. In side mode, the separate summarization system prompt
+still requires summarizing rather than continuing the conversation, but does not
+impose the built-in format when a custom template is used. In-place mode puts
+that requirement in the final summary instruction instead. Other file-read failures stop
 startup with an error.
 Instructions are loaded when the agent is configured, so restart zot after
 editing the file. They also apply to resumed sessions, but are not stored as
 session settings. Normal system-prompt overrides and `AGENTS.md` do not configure
-this separate summarization request.
+the side summarization request. In-place mode retains the active system prompt,
+including its normal overrides and loaded instructions.
 
 For example, `COMPACT.md` could contain:
 
@@ -239,8 +269,8 @@ Reference existing Markdown documents by exact path instead of repeating their
 contents. Preserve essential context that is not recorded in those documents.
 ```
 
-The summarizer receives the transcript without tools. It cannot open referenced
-files or verify that their contents are sufficient for resuming work.
+The summarizer cannot execute local tools in either mode. It cannot open local
+referenced files or verify that their contents are sufficient for resuming work.
 The Go SDK exposes `Config.AppendCompactionPrompt`. Direct core users can set
 `Agent.CompactionPrompt` to replace the template and `Agent.CompactionInstructions`
 to append guidance before use. Continuous-mode summaries use the same

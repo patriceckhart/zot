@@ -71,6 +71,30 @@ func TestCompactionPromptFlag(t *testing.T) {
 	}
 }
 
+func TestResolveCompactionMode(t *testing.T) {
+	for _, mode := range []string{"", "side", "in_place", "typo"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("ZOT_HOME", t.TempDir())
+			if err := SaveConfig(Config{CompactionMode: mode}); err != nil {
+				t.Fatal(err)
+			}
+			r, err := Resolve(Args{Provider: "openai", Model: "gpt-5", APIKey: "synthetic-key", CWD: t.TempDir(), NoTools: true, NoSkill: true, NoContextFiles: true}, false)
+			if mode == "typo" {
+				if err == nil || !strings.Contains(err.Error(), "compaction_mode") {
+					t.Fatalf("invalid mode accepted: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.CompactionMode != mode || r.NewAgent().CompactionMode != mode {
+				t.Fatal("compaction mode not wired to agent")
+			}
+		})
+	}
+}
+
 func TestResolveWiresCompactionInstructions(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ZOT_HOME", home)
