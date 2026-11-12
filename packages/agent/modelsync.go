@@ -111,13 +111,13 @@ func ValidateAndRepairConfig() {
 			// Gateway providers can serve routed model ids like
 			// "deepseek/deepseek-v4-flash" even when the local catalog does not
 			// know them. Preserve only routed ids; plain typos are still repaired.
-			if cfg.Provider == "cheaperinference" || cfg.Provider == "opper" || cfg.Provider == "cloudgpu" || cfg.Provider == provider.LMStudioProviderID || isDiscoverableCustomProvider(cfg.Provider) || ((isGatewayProvider(cfg.Provider) || cfg.Provider == "runcrate") && isGatewayRoutedModelID(cfg.Model)) {
+			if cfg.Provider == "cheaperinference" || cfg.Provider == "opper" || cfg.Provider == "cloudgpu" || cfg.Provider == provider.LMStudioProviderID || isDiscoverableCustomProvider(cfg.Provider) || ((isGatewayProvider(cfg.Provider) || cfg.Provider == "runcrate" || cfg.Provider == "uberllm") && isGatewayRoutedModelID(cfg.Model)) {
 				// Local discovery is transient. Preserve the selected LM Studio
 				// or discovery-enabled custom provider ID even if another
-				// provider has an identically named model. Routed gateway and
-				// Runcrate IDs are also valid without a catalog entry. Cheaper
-				// Inference, Opper, and CloudGPU use plain IDs, which must
-				// survive until discovery finishes.
+				// provider has an identically named model. Routed gateway,
+				// Runcrate, and UberLLM IDs are also valid without a catalog
+				// entry. Cheaper Inference, Opper, and CloudGPU use plain IDs,
+				// which must survive until discovery finishes.
 			} else if m, err := provider.FindModel("", cfg.Model); err == nil {
 				fix := defaultModelForProvider(cfg.Provider)
 				fmt.Fprintf(os.Stderr,
@@ -320,6 +320,16 @@ func refreshModels() {
 	if !cacheFresh || !slices.ContainsFunc(cached.Models, func(m provider.Model) bool { return m.Provider == "cloudgpu" }) {
 		if _, _, err := resolveCredentialForBackground(ctx, "cloudgpu"); err == nil {
 			if live, err := provider.DiscoverCloudGPU(ctx, ""); err == nil {
+				all = append(all, live...)
+			}
+		}
+	}
+
+	// A fresh shared cache may predate UberLLM login. Discover its public
+	// catalog when missing, without refreshing unrelated providers or their TTL.
+	if !cacheFresh || !slices.ContainsFunc(cached.Models, func(m provider.Model) bool { return m.Provider == "uberllm" }) {
+		if _, _, err := resolveCredentialForBackground(ctx, "uberllm"); err == nil {
+			if live, err := provider.DiscoverUberLLM(ctx, ""); err == nil {
 				all = append(all, live...)
 			}
 		}

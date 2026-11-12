@@ -309,6 +309,7 @@ show instructions and should be configured with environment variables.
 | Opper | `OPPER_API_KEY` | `opper` |
 | Runcrate | `RUNCRATE_API_KEY` | `runcrate` |
 | CloudGPU | `CLOUDGPU_API_KEY` | `cloudgpu` |
+| UberLLM | `UBERLLM_API_KEY` | `uberllm` |
 | Mistral | `MISTRAL_API_KEY` | `mistral` |
 | ZAI | `ZAI_API_KEY` | `zai` |
 | Xiaomi MiMo | `XIAOMI_API_KEY` | `xiaomi` |
@@ -490,6 +491,33 @@ validated by the API. Without catalog metadata, requests use a conservative
 ```bash
 export CLOUDGPU_API_KEY=...
 zot --provider cloudgpu --model glm-5.2
+```
+
+## UberLLM
+
+Use `UBERLLM_API_KEY` or `/login` with provider `uberllm`. UberLLM is an
+OpenAI-compatible gateway at `https://api.uberllm.dev/v1` with models from
+OpenAI, Anthropic, Google, DeepSeek, Qwen, GLM, Kimi and others. Model IDs are
+`vendor/model`, and the offline default is `deepseek/deepseek-v4-flash`.
+
+UberLLM's model list is public. When an UberLLM key is configured, catalog
+discovery adds its tool-capable chat models to `/model`, including published
+context/output limits, vision, reasoning, and token prices (including published
+cache-read and cache-write rates). If the shared catalog cache has no UberLLM
+models, discovery runs even while that cache is fresh. Models marked
+unavailable are excluded. The key probe uses the same
+list, so a mistyped key is reported by the first request rather than by
+`/login`.
+
+Explicit and saved `vendor/model` IDs are preserved before discovery finishes
+and are validated by the API. Without catalog metadata, requests use a
+conservative 4,096-token output limit. Keys come from
+https://uberllm.dev/signup, and per-model prices are listed at
+https://uberllm.dev/models.
+
+```bash
+export UBERLLM_API_KEY=...
+zot --provider uberllm --model anthropic/claude-sonnet-4.6
 ```
 
 ## Local LM Studio server
