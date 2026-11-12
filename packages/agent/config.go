@@ -84,6 +84,9 @@ type Config struct {
 	// nil/missing means 85; zero disables percentage-based triggers.
 	AutoCompactThreshold *int `json:"auto_compact_threshold,omitempty"`
 
+	// CompactionMode selects side (default) or in_place summarization.
+	CompactionMode string `json:"compaction_mode,omitempty"`
+
 	// JailByDefault confines tools to the session working directory when
 	// a new agent starts. Off by default; nil/missing means disabled.
 	// The live session can still override this with /jail or /unjail.

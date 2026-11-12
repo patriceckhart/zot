@@ -32,6 +32,10 @@ type Agent struct {
 	// Configure before use. They apply to both Compact and Summarize.
 	CompactionInstructions string
 
+	// CompactionMode selects "side" (the default) or "in_place".
+	// Configure before use. In-place summaries preserve the request prefix.
+	CompactionMode string
+
 	// MaxTokens caps the model's output tokens per turn. Zero leaves
 	// the field unset on the provider request, letting each provider
 	// apply its own default (which can be conservative, e.g. Bedrock

@@ -114,10 +114,16 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 // transcript. Durable hosts use it as one model request between two commits
 // and publish the summary themselves. CompactionPrompt selects the template.
 // CompactionInstructions and then any per-call instructions are appended to it.
+// CompactionMode selects a separate request or a cache-friendly in-place request
+// with the active system, tools, and structured messages. In-place requests fall
+// back to the separate request only on context-window or payload-size rejection.
 // It returns the summary and a rough token estimate of the summarized text.
 func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, instructions string, sink func(delta string)) (string, int, error) {
 	if len(messages) == 0 {
 		return "", 0, fmt.Errorf("nothing to summarize")
+	}
+	if a.CompactionMode != "" && a.CompactionMode != "side" && a.CompactionMode != "in_place" {
+		return "", 0, fmt.Errorf("invalid compaction mode %q: expected side or in_place", a.CompactionMode)
 	}
 	// Serialize the summarizable transcript to text and wrap it in tags
 	// so the model treats it as material to summarize, not to continue.
@@ -129,7 +135,7 @@ func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, inst
 	} else {
 		system = customSummarizationSystem
 	}
-	prompt := "<conversation>\n" + transcript + "\n</conversation>\n\n" + template
+	prompt := template
 	for _, extra := range []string{a.CompactionInstructions, instructions} {
 		if text := strings.TrimSpace(extra); text != "" {
 			prompt += "\n\nAdditional instructions: " + text
@@ -144,16 +150,53 @@ func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, inst
 		Messages: []provider.Message{
 			{
 				Role:    provider.RoleUser,
-				Content: []provider.Content{provider.TextBlock{Text: prompt}},
+				Content: []provider.Content{provider.TextBlock{Text: "<conversation>\n" + transcript + "\n</conversation>\n\n" + prompt}},
 				Time:    time.Now(),
 			},
 		},
 	}
-	stream, err := a.Client.Stream(ctx, req)
+	if a.CompactionMode == "in_place" {
+		if err := a.prepareStart(ctx); err != nil {
+			return "", 0, err
+		}
+		inPlace := req
+		a.mu.Lock()
+		inPlace.System = a.System
+		inPlace.Tools = a.Tools.Specs()
+		inPlace.Reasoning = a.Reasoning
+		inPlace.StreamReasoning = a.streamReasoning
+		inPlace.MaxTokens = a.MaxTokens
+		inPlace.MaxToolCalls = a.MaxToolCalls
+		a.mu.Unlock()
+		inPlace.Messages = append(repairToolUseResultPairs(withoutToolDisplay(messages)), provider.Message{
+			Role:    provider.RoleUser,
+			Content: []provider.Content{provider.TextBlock{Text: "Summarize the preceding conversation now. Do not continue the task or call tools. Output only the summary.\n\n" + prompt}},
+			Time:    time.Now(),
+		})
+		summary, err := a.streamSummary(ctx, inPlace, sink)
+		if err == nil {
+			return summary, len(transcript) / 4, nil
+		}
+		if ctx.Err() != nil || !provider.IsContextOverflowError(err) {
+			return "", 0, err
+		}
+	}
+	summary, err := a.streamSummary(ctx, req, sink)
 	if err != nil {
 		return "", 0, err
 	}
+	return summary, len(transcript) / 4, nil
+}
+
+// streamSummary never executes local tool calls. A tool-call response fails without
+// replacing the transcript, even when tools are advertised for prefix reuse.
+func (a *Agent) streamSummary(ctx context.Context, req provider.Request, sink func(string)) (string, error) {
+	stream, err := a.Client.Stream(ctx, req)
+	if err != nil {
+		return "", err
+	}
 	var sb strings.Builder
+	toolCall := false
 	for ev := range stream {
 		switch e := ev.(type) {
 		case provider.EventTextDelta:
@@ -161,6 +204,8 @@ func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, inst
 			if sink != nil {
 				sink(e.Delta)
 			}
+		case provider.EventToolStart, provider.EventToolArgs, provider.EventToolEnd:
+			toolCall = true
 		case provider.EventUsage:
 			a.mu.Lock()
 			lastTurn := a.cost.LastTurn
@@ -172,19 +217,29 @@ func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, inst
 			}
 		case provider.EventDone:
 			if e.Err != nil {
-				return "", 0, e.Err
+				return "", e.Err
+			}
+			if e.Stop == provider.StopToolUse {
+				toolCall = true
+			}
+			for _, content := range e.Message.Content {
+				if _, ok := content.(provider.ToolCallBlock); ok {
+					toolCall = true
+				}
 			}
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return "", 0, err
+		return "", err
+	}
+	if toolCall {
+		return "", fmt.Errorf("model requested a tool instead of completing the summary")
 	}
 	summary := strings.TrimSpace(sb.String())
 	if summary == "" {
-		return "", 0, fmt.Errorf("empty summary from model")
+		return "", fmt.Errorf("empty summary from model")
 	}
-	// Rough estimate: 1 token is about 4 characters.
-	return summary, len(transcript) / 4, nil
+	return summary, nil
 }
 
 // repairOrphanedToolResults removes tool_result content blocks (and

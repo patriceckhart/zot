@@ -41,6 +41,7 @@ type Resolved struct {
 	SystemPrompt           string
 	CompactionPrompt       string
 	CompactionInstructions string
+	CompactionMode         string
 	MaxSteps               int
 	Sandbox                *tools.Sandbox
 
@@ -737,6 +738,9 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		}, nil
 	}
 
+	if cfg.CompactionMode != "" && cfg.CompactionMode != "side" && cfg.CompactionMode != "in_place" {
+		return Resolved{}, fmt.Errorf("invalid compaction_mode %q: expected side or in_place", cfg.CompactionMode)
+	}
 	compactionPrompt, compactionInstructions, err := resolveCompactionInstructions(ZotHome(), args.AppendCompactionPrompt)
 	if err != nil {
 		return Resolved{}, err
@@ -862,6 +866,7 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		SystemPrompt:           sys,
 		CompactionPrompt:       compactionPrompt,
 		CompactionInstructions: compactionInstructions,
+		CompactionMode:         cfg.CompactionMode,
 		MaxSteps:               max,
 		MaxOutput:              resolvedModel.MaxOutput,
 		Sandbox:                sandbox,
@@ -1205,6 +1210,7 @@ func (r Resolved) NewAgent() *core.Agent {
 	a.Temperature = r.Temperature
 	a.CompactionPrompt = r.CompactionPrompt
 	a.CompactionInstructions = r.CompactionInstructions
+	a.CompactionMode = r.CompactionMode
 	if hasOpenRouterServerTools(r.ToolRegistry) {
 		a.MaxToolCalls = openRouterServerToolCallLimit()
 	}
