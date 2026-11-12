@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -71,6 +72,42 @@ func TestDiscoverUberLLMMapsChatModels(t *testing.T) {
 	}
 	if wire.Model != kimi.ID || wire.MaxCompletionTok == nil || *wire.MaxCompletionTok != 16384 || wire.ReasoningEffort != "high" {
 		t.Errorf("wire request = %+v", wire)
+	}
+}
+
+func TestDiscoverUberLLMCachePricing(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pricing string
+		read    float64
+		write   float64
+	}{
+		{"published", `"cache_read_usd":0.1,"cache_write_usd":1.25`, 0.1, 1.25},
+		{"missing", `"input_usd":1`, 0, 0},
+		{"negative", `"cache_read_usd":-0.1,"cache_write_usd":-1.25`, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, `{"data":[{"id":"vendor/model","input_modalities":["text"],"output_modalities":["text"],"supports_tools":true,"pricing":{%s}}]}`, tc.pricing)
+			}))
+			defer srv.Close()
+			models, err := DiscoverUberLLM(context.Background(), srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(models) != 1 {
+				t.Fatalf("models = %+v, want one model", models)
+			}
+			m := models[0]
+			if m.PriceCacheRead != tc.read || m.PriceCacheWrite != tc.write {
+				t.Errorf("cache prices = %g/%g, want %g/%g", m.PriceCacheRead, m.PriceCacheWrite, tc.read, tc.write)
+			}
+			got := ComputeCost(m, Usage{CacheReadTokens: 1000000, CacheWriteTokens: 2000000})
+			want := tc.read + 2*tc.write
+			if math.Abs(got-want) > 1e-12 {
+				t.Errorf("cached token cost = %g, want %g", got, want)
+			}
+		})
 	}
 }
 

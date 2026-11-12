@@ -13,8 +13,8 @@ import (
 
 // DiscoverUberLLM lists tool-capable chat models from UberLLM's public
 // catalog. Models marked unavailable and non-text outputs are excluded.
-// UberLLM reports pricing.input_usd and pricing.output_usd in USD per 1M
-// tokens.
+// UberLLM reports input, output, cache-read, and cache-write prices in USD
+// per 1M tokens.
 func DiscoverUberLLM(ctx context.Context, baseURL string) ([]Model, error) {
 	if baseURL == "" {
 		baseURL = uberllmDefaultBaseURL
@@ -46,8 +46,10 @@ func DiscoverUberLLM(ctx context.Context, baseURL string) ([]Model, error) {
 			SupportsTools     bool     `json:"supports_tools"`
 			SupportsReasoning bool     `json:"supports_reasoning"`
 			Pricing           struct {
-				InputUSD  float64 `json:"input_usd"`
-				OutputUSD float64 `json:"output_usd"`
+				InputUSD      float64 `json:"input_usd"`
+				OutputUSD     float64 `json:"output_usd"`
+				CacheReadUSD  float64 `json:"cache_read_usd"`
+				CacheWriteUSD float64 `json:"cache_write_usd"`
 			} `json:"pricing"`
 		} `json:"data"`
 	}
@@ -93,6 +95,8 @@ func DiscoverUberLLM(ctx context.Context, baseURL string) ([]Model, error) {
 			AdaptiveThinking: usesAdaptiveThinking(Model{ID: id}),
 			PriceInput:       max(d.Pricing.InputUSD, 0),
 			PriceOutput:      max(d.Pricing.OutputUSD, 0),
+			PriceCacheRead:   max(d.Pricing.CacheReadUSD, 0),
+			PriceCacheWrite:  max(d.Pricing.CacheWriteUSD, 0),
 			BaseURL:          baseURL,
 			Source:           "live",
 		})

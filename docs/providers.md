@@ -502,9 +502,10 @@ OpenAI, Anthropic, Google, DeepSeek, Qwen, GLM, Kimi and others. Model IDs are
 
 UberLLM's model list is public. When an UberLLM key is configured, catalog
 discovery adds its tool-capable chat models to `/model`, including published
-context/output limits, vision, reasoning, and token prices. If the shared
-catalog cache has no UberLLM models, discovery runs even while that cache is
-fresh. Models marked unavailable are excluded. The key probe uses the same
+context/output limits, vision, reasoning, and token prices (including published
+cache-read and cache-write rates). If the shared catalog cache has no UberLLM
+models, discovery runs even while that cache is fresh. Models marked
+unavailable are excluded. The key probe uses the same
 list, so a mistyped key is reported by the first request rather than by
 `/login`.
 
