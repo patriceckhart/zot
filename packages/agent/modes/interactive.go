@@ -1437,6 +1437,7 @@ func (i *Interactive) redraw() {
 
 	// Dialogs (login or model picker) render between chat and the editor.
 	var dialog []string
+	mcpVisible := false
 	btwVisible := false
 	var sideChat []string
 	btwCursorRow, btwCursorCol := -1, -1
@@ -1448,6 +1449,7 @@ func (i *Interactive) redraw() {
 	case i.llamaDialog.Active():
 		dialog = i.llamaDialog.Render(i.cfg.Theme, cols)
 	case i.mcpDialog.Active():
+		mcpVisible = true
 		dialog = i.mcpDialog.Render(i.cfg.Theme, cols)
 	case i.rescueDialog.Active():
 		dialog = i.rescueDialog.Render(i.cfg.Theme, cols)
@@ -1758,6 +1760,15 @@ func (i *Interactive) redraw() {
 	}
 
 	_, rows := i.cfg.Terminal.Size()
+	if mcpVisible {
+		// Leave a row for the renderer's bottom margin. Measure the actual
+		// editor, status, and queue rather than assuming a fixed height.
+		budget := rows - (len(bottom) - len(dialog)) - 1
+		fitted := i.mcpDialog.fitAuthRows(i.cfg.Theme, cols, budget, dialog)
+		reflowed := append([]string(nil), bottom[:1]...)
+		reflowed = append(reflowed, fitted...)
+		bottom = append(reflowed, bottom[1+len(dialog):]...)
+	}
 	if i.skillsDialog.Active() && i.skillsDialog.viewing != nil {
 		// Reflow after the editor, status, and queue are known so the
 		// scrollable skill content fits above them even on short terminals.

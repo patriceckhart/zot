@@ -21,7 +21,21 @@ func managerFixture(servers ...mcp.ServerInfo) *mcpManagerDialog {
 func key(r rune) tui.Key { return tui.Key{Kind: tui.KeyRune, Rune: r} }
 
 func renderPlain(d *mcpManagerDialog) string {
-	return stripANSIBytes(strings.Join(d.Render(tui.Theme{}, 100), "\n"))
+	return plainMCPRow(strings.Join(d.Render(tui.Theme{}, 100), "\n"))
+}
+
+func plainMCPRow(s string) string {
+	for {
+		start := strings.Index(s, "\x1b]8;")
+		if start < 0 {
+			return stripANSIBytes(s)
+		}
+		end := strings.Index(s[start:], "\x1b\\")
+		if end < 0 {
+			return stripANSIBytes(s)
+		}
+		s = s[:start] + s[start+end+2:]
+	}
 }
 
 var (
@@ -347,12 +361,7 @@ func TestMCPManagerPasteViewFitsNarrowWidth(t *testing.T) {
 	d.HandleKey(tui.Key{Kind: tui.KeyEnter})
 	for _, line := range d.Render(tui.Dark, 40) {
 		for _, row := range strings.Split(line, "\n") {
-			plain := stripANSIBytes(row)
-			// The authorization URL is printed whole on purpose, so the
-			// terminal can detect and copy it as one link.
-			if strings.Contains(plain, "auth.example.test") {
-				continue
-			}
+			plain := plainMCPRow(row)
 			if w := runewidth.StringWidth(plain); w > 40 {
 				t.Fatalf("row width %d > 40: %q", w, plain)
 			}
