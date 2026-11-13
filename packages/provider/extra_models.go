@@ -47,6 +47,21 @@ var supplementCatalog = []Model{
 		PriceInput: 1.25, PriceOutput: 2.5, PriceCacheRead: 0.2,
 		BaseURL: "https://api.x.ai/v1"},
 
+	// Direct xAI metadata: https://docs.x.ai/developers/models/grok-4.6
+	// and https://docs.x.ai/developers/models/grok-4.7. MaxOutput stays unset
+	// because these pages do not publish an output limit. The higher price
+	// starts at 200,000 prompt tokens, so the exclusive threshold is 199,999.
+	{Provider: "xai", ID: "grok-4.6", DisplayName: "Grok 4.6", API: APIResponses,
+		Input: []string{"text", "image"}, ContextWindow: 500000, Reasoning: true,
+		PriceInput: 2, PriceOutput: 6, PriceCacheRead: 0.5,
+		PriceTierInputTokens: 199999, PriceInputAbove: 4, PriceOutputAbove: 12, PriceCacheReadAbove: 1,
+		BaseURL: "https://api.x.ai/v1"},
+	{Provider: "xai", ID: "grok-4.7", DisplayName: "Grok 4.7", API: APIResponses,
+		Input: []string{"text", "image"}, ContextWindow: 500000, Reasoning: true,
+		PriceInput: 2, PriceOutput: 6, PriceCacheRead: 0.5,
+		PriceTierInputTokens: 199999, PriceInputAbove: 4, PriceOutputAbove: 12, PriceCacheReadAbove: 1,
+		BaseURL: "https://api.x.ai/v1"},
+
 	// ----- GPT-6.1 Terra Responses endpoints -----
 	{Provider: "azure-openai-responses", ID: "gpt-6.1-terra", DisplayName: "GPT-6.1 Terra", API: APIResponses,
 		ContextWindow: 272000, MaxOutput: 128000, Reasoning: true,

@@ -327,6 +327,46 @@ show instructions and should be configured with environment variables.
 | Cloudflare AI Gateway | `CLOUDFLARE_API_KEY` | `cloudflare-ai-gateway` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 
+xAI supports `grok-4.6` and `grok-4.7` through the Responses API:
+
+```sh
+zot --provider xai --model grok-4.7 -p "hello"
+```
+
+Both have a 500,000-token context window, text and image input, and reasoning
+levels `low`, `medium`, `high`, and `xhigh`. An unset or off reasoning setting
+omits the effort parameter and leaves xAI's default (`high`) in effect.
+Cost estimates use direct xAI pricing: $2 input, $6 output, and $0.50 cached
+input per million tokens below 200,000 prompt tokens. At or above 200,000
+prompt tokens, all three rates double. No maximum output limit is recorded
+because xAI's model pages do not publish one, so output length is left to the
+API. Gateway limits and pricing are separate.
+
+The xAI default remains `grok-4.5`, and older catalog IDs remain available.
+With an API key or OAuth credential, background catalog refresh queries
+`https://api.x.ai/v1/models` and adds chat model IDs and aliases to `/model`.
+Image generation, video, audio, and embedding models are excluded. Discovery
+reads published context lengths, token prices, long-context tiers, and reasoning
+capabilities. Known catalog metadata fills fields omitted by the endpoint.
+For new models without context metadata, zot uses a conservative 32,768-token
+estimate. Unpublished output limits stay unset. Unknown prices and capabilities
+are not inferred from other providers. Explicit
+[custom model configuration](#custom-providers-and-models) overrides discovery.
+
+xAI discovery runs even when the six-hour shared catalog cache is fresh. The
+last discovered metadata is cached for startup resolution, but failed refreshes
+or logout remove credential-scoped discovered entries, leaving built-in models
+as the offline fallback. Providers disabled in configuration are not queried,
+and background discovery never executes `api_key_command` credentials. OAuth
+accounts whose tokens cannot list models still work with the offline catalog.
+
+Explicit and saved xAI model IDs are preserved before discovery completes,
+including unlisted IDs. Unlisted models use Responses with the conservative
+context estimate, no invented output limit, and the API's default reasoning.
+The API validates these IDs, so typos produce an API error rather than silently
+switching to a different model. Cloud discovery is asynchronous, so one-shot
+model-list exports may not include newly discovered models yet.
+
 MiniMax defaults to `MiniMax-M3.1-Flash` in both direct regions, with
 `MiniMax-M3` as the other ordinary text choice. Saved legacy model IDs and
 explicit `models.json` entries still resolve. Flash always uses adaptive

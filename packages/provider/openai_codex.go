@@ -188,6 +188,9 @@ func (c *codexClient) findModel(id string) (Model, error) {
 		if m, err := FindModel(c.providerName, id); err == nil {
 			return m, nil
 		}
+		if c.providerName == "xai" {
+			return UnlistedXAIModel(id), nil
+		}
 	}
 	if m, err := FindModel("openai-codex", id); err == nil {
 		return m, nil

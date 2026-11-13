@@ -507,6 +507,12 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		}
 	}
 	resolvedModel, err := provider.FindModel(provName, model)
+	if err != nil && provName == "xai" {
+		// Discovery is asynchronous. Preserve explicit and saved IDs, leaving
+		// unpublished output limits unset and validation to the API.
+		resolvedModel = provider.UnlistedXAIModel(model)
+		err = nil
+	}
 	if err != nil && (provName == "ollama" || provName == provider.LlamaCPPProviderID || provName == provider.LMStudioProviderID) {
 		// Local providers are intentionally open-catalogue: any model id the
 		// configured server understands is valid, even if it is not cached.

@@ -111,7 +111,7 @@ func ValidateAndRepairConfig() {
 			// Gateway providers can serve routed model ids like
 			// "deepseek/deepseek-v4-flash" even when the local catalog does not
 			// know them. Preserve only routed ids; plain typos are still repaired.
-			if cfg.Provider == "cheaperinference" || cfg.Provider == "opper" || cfg.Provider == "cloudgpu" || cfg.Provider == provider.LMStudioProviderID || isDiscoverableCustomProvider(cfg.Provider) || ((isGatewayProvider(cfg.Provider) || cfg.Provider == "runcrate" || cfg.Provider == "uberllm") && isGatewayRoutedModelID(cfg.Model)) {
+			if cfg.Provider == "xai" || cfg.Provider == "cheaperinference" || cfg.Provider == "opper" || cfg.Provider == "cloudgpu" || cfg.Provider == provider.LMStudioProviderID || isDiscoverableCustomProvider(cfg.Provider) || ((isGatewayProvider(cfg.Provider) || cfg.Provider == "runcrate" || cfg.Provider == "uberllm") && isGatewayRoutedModelID(cfg.Model)) {
 				// Local discovery is transient. Preserve the selected LM Studio
 				// or discovery-enabled custom provider ID even if another
 				// provider has an identically named model. Routed gateway,
@@ -241,6 +241,15 @@ func refreshModels() {
 	}
 	opperCancel()
 
+	// xAI's list is credential-scoped. Refresh independently of the shared
+	// cache, and do not execute credential commands in the background.
+	xaiCtx, xaiCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	var xaiModels []provider.Model
+	if cred, _, err := resolveCredentialForBackground(xaiCtx, "xai"); err == nil {
+		xaiModels, _ = provider.DiscoverXAI(xaiCtx, cred, "")
+	}
+	xaiCancel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var all []provider.Model
@@ -348,6 +357,7 @@ func refreshModels() {
 	all = mergeYoloAutoModels(all, yoloModels)
 	all = mergeCheaperInferenceModels(all, cheaperModels)
 	all = mergeOpperModels(all, opperModels)
+	all = mergeXAIModels(all, xaiModels)
 	provider.SetLiveModels(all)
 	// Keep explicit metadata overrides above refreshed server catalogs.
 	LoadUserModels()
@@ -392,6 +402,18 @@ func mergeOpperModels(existing, live []provider.Model) []provider.Model {
 	out := make([]provider.Model, 0, len(existing)+len(live))
 	for _, model := range existing {
 		if model.Provider != "opper" {
+			out = append(out, model)
+		}
+	}
+	return append(out, live...)
+}
+
+// mergeXAIModels removes old credential-scoped metadata on failure or logout.
+// Built-in entries remain the offline fallback through SetLiveModels.
+func mergeXAIModels(existing, live []provider.Model) []provider.Model {
+	out := make([]provider.Model, 0, len(existing)+len(live))
+	for _, model := range existing {
+		if model.Provider != "xai" {
 			out = append(out, model)
 		}
 	}

@@ -24,7 +24,8 @@ type modelRouter struct {
 }
 
 // NewModelRouter creates a client that dispatches requests using Model.API.
-// Models with no API override, and models absent from the catalog, use fallback.
+// Models with no API override use fallback. Models absent from the catalog
+// also use fallback, except xAI selections awaiting discovery use Responses.
 func NewModelRouter(name string, fallback Client, byAPI map[string]Client) Client {
 	return &modelRouter{name: name, fallback: fallback, byAPI: byAPI}
 }
@@ -33,7 +34,11 @@ func (c *modelRouter) Name() string { return c.name }
 
 func (c *modelRouter) Stream(ctx context.Context, req Request) (<-chan Event, error) {
 	client := c.fallback
-	if model, err := FindModel(c.name, req.Model); err == nil && model.API != "" {
+	model, err := FindModel(c.name, req.Model)
+	if err != nil && c.name == "xai" {
+		model, err = UnlistedXAIModel(req.Model), nil
+	}
+	if err == nil && model.API != "" {
 		routed := c.byAPI[model.API]
 		if routed == nil {
 			return nil, fmt.Errorf("provider %q has no client for model API %q", c.name, model.API)
