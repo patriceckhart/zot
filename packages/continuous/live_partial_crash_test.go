@@ -13,9 +13,12 @@ import (
 )
 
 func TestLivePartialProcessCrashRetainsOnlyCheckpoint(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	// Race-instrumented SQLite startup can be slow on loaded CI runners.
+	// Give each backend its own budget rather than sharing one deadline.
+	const timeout = time.Minute
 	if path := os.Getenv("ZOT_TEST_PARTIAL_CRASH_STORE"); path != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
 		store, err := openCrashStore(ctx, os.Getenv("ZOT_TEST_PARTIAL_CRASH_BACKEND"), path)
 		if err != nil {
 			t.Fatal(err)
@@ -39,13 +42,15 @@ func TestLivePartialProcessCrashRetainsOnlyCheckpoint(t *testing.T) {
 	}
 	for _, backend := range crashBackends() {
 		t.Run(backend, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
 			path := filepath.Join(t.TempDir(), "store")
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLivePartialProcessCrashRetainsOnlyCheckpoint$")
 			cmd.Env = append(os.Environ(), "ZOT_TEST_PARTIAL_CRASH_STORE="+path, "ZOT_TEST_PARTIAL_CRASH_BACKEND="+backend)
 			out, err := cmd.CombinedOutput()
 			var exited *exec.ExitError
 			if !errors.As(err, &exited) || exited.ExitCode() != 23 {
-				t.Fatalf("child did not reach the crash point: %v\n%s", err, out)
+				t.Fatalf("child did not reach the crash point: %v (context: %v)\n%s", err, ctx.Err(), out)
 			}
 			store, err := openCrashStore(ctx, backend, path)
 			if err != nil {
