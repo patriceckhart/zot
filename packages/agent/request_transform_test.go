@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,12 +18,16 @@ import (
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
+// The escaped-frame fixture serializes multi-megabyte payloads repeatedly.
+// Its race-instrumented runtime is not a check of production timeout defaults.
+const requestTransformTestTimeout = 2 * time.Minute
+
 func TestRequestTransformProcessHelper(t *testing.T) {
 	if os.Getenv("ZOT_TEST_REQUEST_TRANSFORM") != "1" {
 		return
 	}
 	e := ext.New("transform-test", "1")
-	e.InterceptBeforeRequest(ext.RequestTransformOptions{}, func(ctx context.Context, event ext.RequestTransformEvent) (map[string]json.RawMessage, error) {
+	e.InterceptBeforeRequest(ext.RequestTransformOptions{TimeoutMS: int(requestTransformTestTimeout / time.Millisecond)}, func(ctx context.Context, event ext.RequestTransformEvent) (map[string]json.RawMessage, error) {
 		out := make(map[string]json.RawMessage)
 		for _, s := range event.Segments {
 			if s.Skipped != "" {
@@ -62,11 +67,13 @@ func TestRequestTransformModeWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	manifest, _ := json.Marshal(map[string]any{"name": "transform-test", "exec": exe, "args": []string{"-test.run=^TestRequestTransformProcessHelper$"}, "request_transform": map[string]any{}})
+	manifest, _ := json.Marshal(map[string]any{"name": "transform-test", "exec": exe, "args": []string{"-test.run=^TestRequestTransformProcessHelper$"}, "request_transform": extproto.RequestTransformOptions{TimeoutMS: int(requestTransformTestTimeout / time.Millisecond)}})
 	if err := os.WriteFile(filepath.Join(dir, "extension.json"), manifest, 0600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// This context also controls the extension process lifetime. Allow all
+	// three large transforms (chat and both compaction modes) to complete.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	mgr := extensions.New(t.TempDir(), dir, "test", "test", "model", nil)
 	defer mgr.Stop(time.Second)
@@ -97,7 +104,7 @@ func TestRequestTransformModeWiring(t *testing.T) {
 				text += strings.Repeat("\x00", 3<<20)
 			}
 			if err := a.Prompt(ctx, text, nil, nil); err != nil {
-				t.Fatal(err)
+				t.Fatalf("prompt failed: %v (cause: %v, context: %v, extensions: %+v)", err, errors.Unwrap(err), ctx.Err(), mgr.Diagnostics())
 			}
 			if len(client.requests) != 1 || client.requests[0].System != "system CLEAN" {
 				t.Fatal("mode sent untransformed system")
@@ -111,7 +118,7 @@ func TestRequestTransformModeWiring(t *testing.T) {
 			for _, compactionMode := range []string{"side", "in_place"} {
 				a.CompactionMode = compactionMode
 				if _, _, err := a.Summarize(ctx, a.Messages(), "SECRET", nil); err != nil {
-					t.Fatal(err)
+					t.Fatalf("%s compaction failed: %v (cause: %v, context: %v, extensions: %+v)", compactionMode, err, errors.Unwrap(err), ctx.Err(), mgr.Diagnostics())
 				}
 				last := client.requests[len(client.requests)-1]
 				segments, err := core.RequestSegments(last)
