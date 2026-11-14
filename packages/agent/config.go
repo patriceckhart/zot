@@ -38,6 +38,9 @@ type Config struct {
 	// Empty preserves platform-specific shell auto-detection.
 	Shell []string `json:"shell,omitempty"`
 
+	// ShellTimeoutSeconds caps shell execution time. Zero means unlimited.
+	ShellTimeoutSeconds int `json:"shell_timeout_seconds,omitempty"`
+
 	// DisabledProviders blocks inference, credential resolution, and discovery.
 	DisabledProviders []string `json:"disabled_providers,omitempty"`
 
@@ -279,11 +282,17 @@ func LoadConfig() (Config, error) {
 	if err := tools.ValidateShell(c.Shell); err != nil {
 		return c, err
 	}
+	if err := tools.ValidateShellTimeout(c.ShellTimeoutSeconds); err != nil {
+		return c, err
+	}
 	return c, nil
 }
 
 // SaveConfig writes the config file, creating parent dirs.
 func SaveConfig(c Config) error {
+	if err := tools.ValidateShellTimeout(c.ShellTimeoutSeconds); err != nil {
+		return err
+	}
 	if err := tools.ValidateShell(c.Shell); err != nil {
 		return err
 	}

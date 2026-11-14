@@ -444,6 +444,22 @@ In the interactive UI on Unix, a leading `cd <cwd> &&` in a Bash command is show
 
 When the sandbox is on (see `/jail`), filesystem tools refuse paths outside the session cwd, except that `read` and `glob` can access loaded extension directories. `bash` applies best-effort command checks. Jail mode is an accident-prevention guardrail, not a security boundary.
 
+### Shell execution timeout
+
+Set an optional maximum execution time in seconds in `$ZOT_HOME/config.json`:
+
+```json
+{
+  "shell_timeout_seconds": 120
+}
+```
+
+Restart zot after editing this setting. Omitted or `0` means unlimited. Positive integers up to 9223372036 are accepted. Negative, fractional, and overflowing values are rejected. The limit applies to the built-in `bash` and optional `powershell` tools, including shell calls from codemode and subagents, interactive `!` commands, and .zot agent shell pre-hooks. Continuous workers use their own config.
+
+A tool call's optional `timeout` argument can shorten the configured limit, but cannot extend or disable it. The execution timer starts after permission checks, not while waiting for approval. Caller cancellation and earlier caller deadlines still apply. Expired commands return an error with `timed_out` status and captured output. Other tools, MCP servers, and extension subprocesses are unaffected.
+
+On Unix, cancellation targets the local process group. On Windows, it terminates the direct shell and bounds output draining, but does not guarantee descendant termination. Commands running inside containers or on remote hosts may continue after the local client stops. This is not a security boundary.
+
 ### Configured shell and container execution
 
 Set `shell` in `$ZOT_HOME/config.json` to an argv prefix. zot appends each command as one final argument, without splitting or interpolating the configured arguments. For a local shell:

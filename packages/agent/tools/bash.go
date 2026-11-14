@@ -33,6 +33,8 @@ type BashTool struct {
 	StartupFile string
 	// Shell is an optional argv prefix. The command is appended as one argument.
 	Shell []string
+	// TimeoutSeconds caps execution time. Zero leaves execution unlimited.
+	TimeoutSeconds int
 }
 
 type bashArgs struct {
@@ -55,7 +57,7 @@ func (t *BashTool) OutputSchema() json.RawMessage { return json.RawMessage(shell
 const shellOutputSchema = `{"type":"object","properties":{"output":{"type":"string"},"truncated":{"type":"boolean"},"full_output_path":{"type":"string"},"exit_code":{"type":"integer"},"wall_time_seconds":{"type":"number"}},"required":["output","truncated","exit_code","wall_time_seconds"]}`
 
 func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
-	return executeShell(ctx, raw, progress, t.CWD, "$", func(command string) error {
+	return executeShell(ctx, raw, progress, t.CWD, "$", t.TimeoutSeconds, func(command string) error {
 		if err := t.Sandbox.CheckCommand(command); err != nil {
 			return err
 		}
@@ -66,7 +68,7 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 }
 
 // executeShell shares output streaming, timeouts and result formatting across shells.
-func executeShell(ctx context.Context, raw json.RawMessage, progress func(string), cwd, prompt string, check func(string) error, newCommand func(context.Context, string) (*exec.Cmd, error)) (core.ToolResult, error) {
+func executeShell(ctx context.Context, raw json.RawMessage, progress func(string), cwd, prompt string, timeoutSeconds int, check func(string) error, newCommand func(context.Context, string) (*exec.Cmd, error)) (core.ToolResult, error) {
 	var a bashArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return core.ToolResult{}, fmt.Errorf("invalid args: %w", err)
@@ -81,10 +83,14 @@ func executeShell(ctx context.Context, raw json.RawMessage, progress func(string
 		cwd, _ = os.Getwd()
 	}
 
+	timeout, err := shellTimeout(timeoutSeconds, a.Timeout)
+	if err != nil {
+		return core.ToolResult{}, err
+	}
 	runCtx := ctx
 	var cancel context.CancelFunc
-	if a.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, time.Duration(a.Timeout)*time.Second)
+	if timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 
@@ -264,6 +270,7 @@ func executeShell(ctx context.Context, raw json.RawMessage, progress func(string
 	status := ""
 	if runCtx.Err() == context.DeadlineExceeded {
 		status = "timed_out"
+		sb.WriteString("\nCommand timed out.")
 	}
 	if runCtx.Err() == context.Canceled {
 		status = "cancelled"

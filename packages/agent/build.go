@@ -1288,9 +1288,13 @@ func buildConfiguredToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, 
 	reg := buildToolRegistry(args, cwd, sandbox)
 	if bash, ok := reg["bash"].(*tools.BashTool); ok {
 		bash.Shell = append([]string(nil), cfg.Shell...)
+		bash.TimeoutSeconds = cfg.ShellTimeoutSeconds
 	}
 	if goos == "windows" && !args.NoTools && len(args.Tools) == 0 && cfg.PowerShellEnabled != nil && *cfg.PowerShellEnabled {
 		reg["powershell"] = &tools.PowerShellTool{CWD: cwd, Sandbox: sandbox}
+	}
+	if powershell, ok := reg["powershell"].(*tools.PowerShellTool); ok {
+		powershell.TimeoutSeconds = cfg.ShellTimeoutSeconds
 	}
 	settings := cfg.Codemode
 	if args.CodemodeSettings != nil {

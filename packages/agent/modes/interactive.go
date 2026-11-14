@@ -29,18 +29,19 @@ import (
 
 // InteractiveConfig configures the interactive loop.
 type InteractiveConfig struct {
-	Terminal     tui.Terminal
-	Theme        tui.Theme
-	Model        string
-	Provider     string
-	AuthMethod   string // "apikey" | "oauth" — used to tag cost as (sub) in status bar
-	BaseURL      string
-	Reasoning    string
-	SystemPrompt string
-	Tools        core.Registry
-	MaxSteps     int
-	CWD          string
-	Shell        []string // optional argv prefix for shell escapes
+	Terminal            tui.Terminal
+	Theme               tui.Theme
+	Model               string
+	Provider            string
+	AuthMethod          string // "apikey" | "oauth" — used to tag cost as (sub) in status bar
+	BaseURL             string
+	Reasoning           string
+	SystemPrompt        string
+	Tools               core.Registry
+	MaxSteps            int
+	CWD                 string
+	Shell               []string // optional argv prefix for shell escapes
+	ShellTimeoutSeconds int
 
 	// Startup resource fields are loaded inputs available to list before the
 	// transcript. They are never sent to the provider or persisted by the view.
@@ -6289,6 +6290,7 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 	sandbox := i.cfg.Sandbox
 	cwd := i.cfg.CWD
 	shell := append([]string(nil), i.cfg.Shell...)
+	timeoutSeconds := i.cfg.ShellTimeoutSeconds
 	startupFile := ""
 	if i.cfg.ZotHome != "" {
 		startupFile = filepath.Join(i.cfg.ZotHome, ".bashrc")
@@ -6299,7 +6301,7 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 	go func() {
 		defer cancel()
 		raw, _ := json.Marshal(map[string]any{"command": cmd})
-		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox, StartupFile: startupFile, Shell: shell}
+		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox, StartupFile: startupFile, Shell: shell, TimeoutSeconds: timeoutSeconds}
 		progress := func(chunk string) {
 			i.mu.Lock()
 			i.shellLive += chunk

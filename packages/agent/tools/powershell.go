@@ -18,6 +18,8 @@ import (
 type PowerShellTool struct {
 	CWD     string
 	Sandbox *Sandbox
+	// TimeoutSeconds caps execution time. Zero leaves execution unlimited.
+	TimeoutSeconds int
 }
 
 func (t *PowerShellTool) Name() string { return "powershell" }
@@ -28,7 +30,7 @@ func (t *PowerShellTool) Schema() json.RawMessage       { return json.RawMessage
 func (t *PowerShellTool) OutputSchema() json.RawMessage { return json.RawMessage(shellOutputSchema) }
 
 func (t *PowerShellTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
-	return executeShell(ctx, raw, progress, t.CWD, "PS>", t.checkPermission, func(ctx context.Context, command string) (*exec.Cmd, error) {
+	return executeShell(ctx, raw, progress, t.CWD, "PS>", t.TimeoutSeconds, t.checkPermission, func(ctx context.Context, command string) (*exec.Cmd, error) {
 		path, err := resolvePowerShell(runtime.GOOS, exec.LookPath)
 		if err != nil {
 			return nil, err
