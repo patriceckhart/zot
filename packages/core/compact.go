@@ -116,8 +116,9 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 // and publish the summary themselves. CompactionPrompt selects the template.
 // CompactionInstructions and then any per-call instructions are appended to it.
 // CompactionMode selects a separate request or a cache-friendly in-place request
-// with the active system, tools, and structured messages. In-place requests fall
-// back to the separate request only on context-window or payload-size rejection.
+// with the active system, tools, and structured messages. Unexpected tool calls
+// retry in place once with a stronger instruction, then fall back to the separate
+// request. Context-window or payload-size rejection falls back immediately.
 // It returns the summary and a rough token estimate of the summarized text.
 func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, instructions string, sink func(delta string)) (string, int, error) {
 	if len(messages) == 0 {
@@ -174,13 +175,29 @@ func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, inst
 			Content: []provider.Content{provider.TextBlock{Text: "Summarize the preceding conversation now. Do not continue the task or call tools. Output only the summary.\n\n" + prompt}},
 			Time:    time.Now(),
 		})
-		summary, err := a.streamSummary(ctx, "compaction_in_place", inPlace, sink)
-		if err == nil {
-			return summary, len(transcript) / 4, nil
-		}
-		var transformErr *RequestTransformError
-		if ctx.Err() != nil || errors.As(err, &transformErr) || !provider.IsContextOverflowError(err) {
-			return "", 0, err
+		for attempt := 0; attempt < 2; attempt++ {
+			summary, err := a.streamSummary(ctx, "compaction_in_place", inPlace, sink)
+			if err == nil {
+				return summary, len(transcript) / 4, nil
+			}
+			var transformErr *RequestTransformError
+			if ctx.Err() != nil || errors.As(err, &transformErr) {
+				return "", 0, err
+			}
+			if provider.IsContextOverflowError(err) {
+				break
+			}
+			if !errors.Is(err, errSummaryToolCall) {
+				return "", 0, err
+			}
+			if attempt == 1 {
+				break
+			}
+			// Retry from the original conversation, not the failed response, so
+			// no unexecuted tool calls enter the request or stored transcript.
+			inPlace.Messages = append([]provider.Message(nil), inPlace.Messages...)
+			last := len(inPlace.Messages) - 1
+			inPlace.Messages[last].Content = []provider.Content{provider.TextBlock{Text: prompt + "\n\nNo tools now. Just summarize. Do not continue the task. Output only the summary."}}
 		}
 	}
 	summary, err := a.streamSummary(ctx, "compaction_side", req, sink)
@@ -189,6 +206,8 @@ func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, inst
 	}
 	return summary, len(transcript) / 4, nil
 }
+
+var errSummaryToolCall = errors.New("model requested a tool instead of completing the summary")
 
 // streamSummary never executes local tool calls. A tool-call response fails without
 // replacing the transcript, even when tools are advertised for prefix reuse.
@@ -239,7 +258,7 @@ func (a *Agent) streamSummary(ctx context.Context, purpose string, req provider.
 		return "", err
 	}
 	if toolCall {
-		return "", fmt.Errorf("model requested a tool instead of completing the summary")
+		return "", errSummaryToolCall
 	}
 	summary := strings.TrimSpace(sb.String())
 	if summary == "" {

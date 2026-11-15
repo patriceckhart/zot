@@ -12,15 +12,24 @@ import (
 )
 
 type inPlaceClient struct {
-	requests []provider.Request
-	firstErr error
-	setupErr bool
-	toolCall bool
+	requests  []provider.Request
+	firstErr  error
+	setupErr  bool
+	toolCall  bool
+	responses [][]provider.Event
 }
 
 func (*inPlaceClient) Name() string { return "test" }
 func (c *inPlaceClient) Stream(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
 	c.requests = append(c.requests, req)
+	if index := len(c.requests) - 1; index < len(c.responses) {
+		ch := make(chan provider.Event, len(c.responses[index]))
+		for _, event := range c.responses[index] {
+			ch <- event
+		}
+		close(ch)
+		return ch, nil
+	}
 	var err error
 	if len(c.requests) == 1 {
 		err = c.firstErr
@@ -152,6 +161,140 @@ func TestInPlaceCompactionPreparesSystemAndRepairsToolPairs(t *testing.T) {
 	}
 }
 
+func TestInPlaceCompactionToolRecovery(t *testing.T) {
+	toolEvents := map[string][]provider.Event{
+		"start":   {provider.EventToolStart{ID: "unexpected", Name: "outcome"}},
+		"args":    {provider.EventToolArgs{Delta: "{}"}},
+		"end":     {provider.EventToolEnd{}},
+		"stop":    {provider.EventDone{Stop: provider.StopToolUse}},
+		"message": {provider.EventDone{Message: provider.Message{Content: []provider.Content{provider.ToolCallBlock{ID: "unexpected", Name: "outcome"}}}}},
+	}
+	for name, events := range toolEvents {
+		t.Run(name, func(t *testing.T) {
+			for _, fallback := range []bool{false, true} {
+				t.Run("fallback="+strconv.FormatBool(fallback), func(t *testing.T) {
+					failed := append([]provider.Event{
+						provider.EventTextDelta{Delta: "discarded partial summary"},
+						provider.EventUsage{Usage: provider.Usage{InputTokens: 10}},
+					}, events...)
+					client := &inPlaceClient{responses: [][]provider.Event{failed}}
+					if fallback {
+						client.responses = append(client.responses, failed)
+					}
+					tool := &outcomeTool{}
+					a := NewAgent(client, "test", "active system", NewRegistry(tool))
+					var inputTokens int
+					a.OnUsage = func(usage provider.Usage) { inputTokens = usage.InputTokens }
+					a.CompactionMode = "in_place"
+					a.CompactionPrompt = "Keep paths."
+					a.CompactionInstructions = "Keep blockers."
+					before := []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "work"}}}}
+					a.SetMessages(before)
+					var purposes []string
+					a.BeforeRequest = func(_ context.Context, purpose string, req provider.Request) (provider.Request, error) {
+						purposes = append(purposes, purpose)
+						return req, nil
+					}
+					summary, err := a.Compact(context.Background(), 0, nil)
+					if err != nil || summary != "summary" {
+						t.Fatalf("recovery failed: summary=%q, err=%v", summary, err)
+					}
+					wantPurposes := []string{"compaction_in_place", "compaction_in_place"}
+					if fallback {
+						wantPurposes = append(wantPurposes, "compaction_side")
+						last := client.requests[len(client.requests)-1]
+						if len(last.Tools) != 0 || last.System != customSummarizationSystem {
+							t.Fatal("fallback did not use tool-free side request")
+						}
+					}
+					if !reflect.DeepEqual(purposes, wantPurposes) {
+						t.Fatalf("purposes=%v, want %v", purposes, wantPurposes)
+					}
+					first, retry := client.requests[0], client.requests[1]
+					if first.System != retry.System || !reflect.DeepEqual(first.Tools, retry.Tools) || !reflect.DeepEqual(first.Messages[:len(before)], retry.Messages[:len(before)]) {
+						t.Fatal("retry changed cache prefix")
+					}
+					instruction := extractText(retry.Messages[len(before)])
+					for _, want := range []string{"No tools now. Just summarize.", a.CompactionPrompt, a.CompactionInstructions} {
+						if !strings.Contains(instruction, want) {
+							t.Fatalf("retry missing %q: %s", want, instruction)
+						}
+					}
+					if strings.Contains(extractText(first.Messages[len(before)]), "No tools now. Just summarize.") {
+						t.Fatal("retry mutated original request")
+					}
+					if got := a.Messages(); len(got) != 1 || extractText(got[0]) != "## Context Summary (compacted)\n\nsummary" {
+						t.Fatalf("summary not committed or failed output retained: %+v", got)
+					}
+					wantInputTokens := 10
+					if fallback {
+						wantInputTokens = 20
+					}
+					if tool.called || inputTokens != wantInputTokens {
+						t.Fatalf("tool called=%v, input tokens=%d, want %d", tool.called, inputTokens, wantInputTokens)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestInPlaceCompactionToolRecoveryErrors(t *testing.T) {
+	for _, mode := range []string{"overflow", "authentication", "transform", "cancelled", "fallback_failure"} {
+		t.Run(mode, func(t *testing.T) {
+			tool := []provider.Event{provider.EventToolStart{ID: "unexpected", Name: "test"}}
+			client := &inPlaceClient{responses: [][]provider.Event{tool}}
+			switch mode {
+			case "overflow":
+				client.responses = append(client.responses, []provider.Event{provider.EventDone{Err: errors.New("maximum context length exceeded")}})
+			case "authentication":
+				client.responses = append(client.responses, []provider.Event{provider.EventDone{Err: errors.New("authentication failed")}})
+			case "fallback_failure":
+				client.responses = append(client.responses, tool, []provider.Event{provider.EventDone{Err: errors.New("side failed")}})
+			}
+			a := NewAgent(client, "test", "system", nil)
+			a.CompactionMode = "in_place"
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			a.BeforeRequest = func(_ context.Context, _ string, req provider.Request) (provider.Request, error) {
+				calls++
+				if calls == 2 {
+					if mode == "transform" {
+						return req, errors.New("maximum context length exceeded")
+					}
+					if mode == "cancelled" {
+						cancel()
+						return req, ctx.Err()
+					}
+				}
+				return req, nil
+			}
+			before := []provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "work"}}}}
+			a.SetMessages(before)
+			_, err := a.Compact(ctx, 0, nil)
+			wantRequests := 2
+			switch mode {
+			case "overflow":
+				wantRequests = 3
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "fallback_failure":
+				wantRequests = 3
+			case "transform", "cancelled":
+				wantRequests = 1
+			}
+			if len(client.requests) != wantRequests {
+				t.Fatalf("requests=%d, want %d", len(client.requests), wantRequests)
+			}
+			if mode != "overflow" && (err == nil || !reflect.DeepEqual(a.Messages(), before)) {
+				t.Fatalf("failed recovery changed transcript or succeeded: %v", err)
+			}
+		})
+	}
+}
+
 func TestInPlaceCompactionFailurePreservesTranscript(t *testing.T) {
 	for _, mode := range []string{"cancelled", "tool", "invalid"} {
 		t.Run(mode, func(t *testing.T) {
@@ -171,8 +314,12 @@ func TestInPlaceCompactionFailurePreservesTranscript(t *testing.T) {
 			if _, err := a.Compact(ctx, 0, nil); err == nil || !reflect.DeepEqual(a.Messages(), before) {
 				t.Fatalf("failed compaction changed transcript or succeeded: %v", err)
 			}
-			if len(client.requests) > 1 {
-				t.Fatal("unexpected fallback")
+			if mode == "tool" {
+				if len(client.requests) != 3 {
+					t.Fatalf("requests=%d, want two in-place attempts and one side fallback", len(client.requests))
+				}
+			} else if len(client.requests) > 1 {
+				t.Fatal("unexpected retry or fallback")
 			}
 		})
 	}

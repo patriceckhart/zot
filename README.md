@@ -225,11 +225,15 @@ Choose the compaction mode in `$ZOT_HOME/config.json`, then restart zot:
   This makes provider prompt-cache reuse possible, but cache hits and speedups
   depend on the provider. When recent messages are retained verbatim, only the
   older prefix is sent for summarization. Context-window or payload-size rejection
-  retries once using the side request. That fallback can still fail if it is too large.
+  retries once using the side request. An unexpected tool call retries in place once
+  with a stronger no-tools instruction, then falls back to the side request if the
+  model requests tools again. The side fallback can still fail, including if it is too large.
 
 Both modes apply to manual and automatic compaction and continuous-host summaries.
-Zot never executes local tools during summarization. An unexpected tool call fails
-the compaction without replacing history. Provider-hosted tools remain advertised
+Zot never executes local tools during summarization. Failed attempts do not replace
+history, and failed tool-call responses are not included in retries. Cancellation,
+authentication errors, and request-transform failures do not trigger recovery.
+Provider-hosted tools remain advertised
 in in-place mode and may run remotely despite the no-tools instruction. Use side
 mode to avoid advertising them. In-place mode uses the active model, not a
 separately configured compaction model. The mode is a startup setting, not a live
