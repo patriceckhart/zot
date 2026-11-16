@@ -2652,6 +2652,10 @@ type StatusBarParams struct {
 
 	// Compactions counts successful compactions since the last user turn.
 	Compactions int
+	// CompactionFallbacks counts in-place operations that attempted side recovery.
+	CompactionFallbacks int
+	// FailedCompactions counts terminal failures, excluding cancellation.
+	FailedCompactions int
 
 	// Telegram true when the telegram bridge is connected. Adds a
 	// small "- tg -" tag to the cwd line so the user can tell at a
@@ -2724,8 +2728,18 @@ func StatusBar(p StatusBarParams) []string {
 		stats = append(stats, th.FG256(ctxColor, ctx))
 	}
 
-	if p.Compactions > 0 {
-		stats = append(stats, fmt.Sprintf("compactions: %d", p.Compactions))
+	if p.Compactions > 0 || p.CompactionFallbacks > 0 || p.FailedCompactions > 0 {
+		compact := fmt.Sprintf("compactions: %d", p.Compactions)
+		if p.CompactionFallbacks > 0 {
+			compact += fmt.Sprintf(", %d side fallback", p.CompactionFallbacks)
+			if p.CompactionFallbacks > 1 {
+				compact += "s"
+			}
+		}
+		if p.FailedCompactions > 0 {
+			compact += fmt.Sprintf(", %d failed", p.FailedCompactions)
+		}
+		stats = append(stats, compact)
 	}
 
 	// Layout uses exactly 2 spaces of horizontal padding everywhere:
@@ -2844,13 +2858,20 @@ func StatusBar(p StatusBarParams) []string {
 }
 
 func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, reasoningText, statsText string, cols int) []string {
+	var statsLines []string
+	if statsText != "" {
+		width := visibleWidth(statsText)
+		if cols > 0 {
+			width = max(1, cols-visibleWidth(pad))
+		}
+		for _, line := range WrapStyledANSILine(statsText, width) {
+			statsLines = append(statsLines, pad+th.FG256(th.Muted, line))
+		}
+	}
 	modelLine := pad + th.FG256(th.Muted, modelText)
 	if reasoningText == "" {
 		lines = append(lines, modelLine)
-		if statsText != "" {
-			lines = append(lines, pad+th.FG256(th.Muted, statsText))
-		}
-		return lines
+		return append(lines, statsLines...)
 	}
 
 	modelReasoningPlain := pad + modelText + pad + reasoningText
@@ -2861,10 +2882,7 @@ func appendWrappedStatusLines(lines []string, th Theme, pad, modelText, reasonin
 		lines = append(lines, modelLine)
 		lines = append(lines, pad+th.FG256(reasoningColor, reasoningText))
 	}
-	if statsText != "" {
-		lines = append(lines, pad+th.FG256(th.Muted, statsText))
-	}
-	return lines
+	return append(lines, statsLines...)
 }
 
 func reasoningStatusColor(th Theme, reasoningText string) int {

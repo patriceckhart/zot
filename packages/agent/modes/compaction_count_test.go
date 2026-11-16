@@ -28,6 +28,13 @@ func TestCompactionCountSuccessfulReplacements(t *testing.T) {
 			if i.compactionsSinceInput != want {
 				t.Fatalf("count = %d, want %d", i.compactionsSinceInput, want)
 			}
+			wantFailed := 0
+			if failure != nil && !errors.Is(failure, context.Canceled) {
+				wantFailed = attempt
+			}
+			if i.failedCompactionsSinceInput != wantFailed || i.compactionFallbacksSinceInput != 0 {
+				t.Fatalf("failed = %d, fallbacks = %d, want %d and 0", i.failedCompactionsSinceInput, i.compactionFallbacksSinceInput, wantFailed)
+			}
 		}
 	}
 }
@@ -35,6 +42,8 @@ func TestCompactionCountSuccessfulReplacements(t *testing.T) {
 func TestCompactionCountUserBoundaries(t *testing.T) {
 	i := NewInteractive(InteractiveConfig{})
 	i.compactionsSinceInput = 2
+	i.failedCompactionsSinceInput = 1
+	i.compactionFallbacksSinceInput = 1
 	i.awaitingInitialUserMessage = true
 	// A pre-turn compaction belongs to the pending prompt, whose initial
 	// user_message event must not erase it when the prompt finally resumes.
@@ -48,11 +57,11 @@ func TestCompactionCountUserBoundaries(t *testing.T) {
 	}
 	i.handleEvent(core.EvTurnStart{Step: 2})
 	i.handleEvent(core.EvDone{})
-	if i.compactionsSinceInput != 2 {
+	if i.compactionsSinceInput != 2 || i.failedCompactionsSinceInput != 1 || i.compactionFallbacksSinceInput != 1 {
 		t.Fatal("continuation or completion erased count")
 	}
 	i.handleEvent(core.EvUserMessage{})
-	if i.compactionsSinceInput != 0 {
+	if i.compactionsSinceInput != 0 || i.failedCompactionsSinceInput != 0 || i.compactionFallbacksSinceInput != 0 {
 		t.Fatal("executed queued message did not reset count")
 	}
 }
@@ -67,6 +76,8 @@ func TestCompactionCountPreTurnAndNextRequest(t *testing.T) {
 	agent.SetMessages(messages)
 	i := NewInteractive(InteractiveConfig{Agent: agent, Provider: "anthropic", Model: "claude-sonnet-4-5"})
 	i.compactionsSinceInput = 7
+	i.failedCompactionsSinceInput = 2
+	i.compactionFallbacksSinceInput = 3
 	i.lastCtxInput = 180000
 	i.startTurn(context.Background(), "new request")
 	deadline := time.NewTimer(2 * time.Second)
@@ -77,8 +88,12 @@ func TestCompactionCountPreTurnAndNextRequest(t *testing.T) {
 		i.mu.Lock()
 		done := !i.busy && !i.awaitingInitialUserMessage
 		count := i.compactionsSinceInput
+		failed, fallbacks := i.failedCompactionsSinceInput, i.compactionFallbacksSinceInput
 		i.mu.Unlock()
 		if done {
+			if failed != 0 || fallbacks != 0 {
+				t.Fatalf("new request retained failed = %d, fallbacks = %d", failed, fallbacks)
+			}
 			if count != 1 {
 				t.Fatalf("pre-turn count = %d, want 1", count)
 			}
@@ -101,10 +116,12 @@ func TestCompactionCountPreTurnAndNextRequest(t *testing.T) {
 
 func TestCompactionCountClear(t *testing.T) {
 	i := NewInteractive(InteractiveConfig{})
+	i.failedCompactionsSinceInput = 1
+	i.compactionFallbacksSinceInput = 2
 	i.compactionsSinceInput = 3
 	i.awaitingInitialUserMessage = true
 	i.runSlash(context.Background(), "/clear")
-	if i.compactionsSinceInput != 0 || i.awaitingInitialUserMessage {
+	if i.compactionsSinceInput != 0 || i.failedCompactionsSinceInput != 0 || i.compactionFallbacksSinceInput != 0 || i.awaitingInitialUserMessage {
 		t.Fatal("clear retained compaction state")
 	}
 }
@@ -124,10 +141,12 @@ func TestCompactionCountBetweenToolBatches(t *testing.T) {
 
 func TestCompactionCountNewSession(t *testing.T) {
 	i := NewInteractive(InteractiveConfig{NewSession: func(string, string) error { return nil }})
+	i.failedCompactionsSinceInput = 1
+	i.compactionFallbacksSinceInput = 2
 	i.compactionsSinceInput = 3
 	i.awaitingInitialUserMessage = true
 	i.runSlash(context.Background(), "/new")
-	if i.compactionsSinceInput != 0 || i.awaitingInitialUserMessage {
+	if i.compactionsSinceInput != 0 || i.failedCompactionsSinceInput != 0 || i.compactionFallbacksSinceInput != 0 || i.awaitingInitialUserMessage {
 		t.Fatal("new session retained compaction state")
 	}
 }
@@ -138,5 +157,43 @@ func TestCompactionCountNoAgent(t *testing.T) {
 	i.startTurn(context.Background(), "cannot execute")
 	if i.compactionsSinceInput != 3 {
 		t.Fatal("unexecuted request erased count")
+	}
+}
+
+type compactionFallbackClient struct{ failure error }
+
+func (*compactionFallbackClient) Name() string { return "test" }
+
+func (c *compactionFallbackClient) Stream(_ context.Context, req provider.Request) (<-chan provider.Event, error) {
+	ch := make(chan provider.Event, 2)
+	if req.System == "active system" {
+		ch <- provider.EventDone{Err: errors.New("maximum context length exceeded")}
+	} else {
+		ch <- provider.EventTextDelta{Delta: "summary"}
+		ch <- provider.EventDone{Err: c.failure}
+	}
+	close(ch)
+	return ch, nil
+}
+
+func TestCompactionCountSideFallback(t *testing.T) {
+	for _, failure := range []error{nil, errors.New("side failed"), context.Canceled} {
+		agent := core.NewAgent(&compactionFallbackClient{failure: failure}, "test", "active system", nil)
+		agent.CompactionMode = "in_place"
+		agent.SetMessages([]provider.Message{{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "work"}}}})
+		i := NewInteractive(InteractiveConfig{Agent: agent})
+		_, err := i.compactTranscript(context.Background(), 0, nil)
+		if !errors.Is(err, failure) || i.compactionFallbacksSinceInput != 1 {
+			t.Fatalf("fallbacks = %d, err = %v", i.compactionFallbacksSinceInput, err)
+		}
+		wantCompleted, wantFailed := 0, 0
+		if failure == nil {
+			wantCompleted = 1
+		} else if !errors.Is(failure, context.Canceled) {
+			wantFailed = 1
+		}
+		if i.compactionsSinceInput != wantCompleted || i.failedCompactionsSinceInput != wantFailed {
+			t.Fatalf("completed = %d, failed = %d, want %d and %d", i.compactionsSinceInput, i.failedCompactionsSinceInput, wantCompleted, wantFailed)
+		}
 	}
 }

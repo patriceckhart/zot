@@ -572,8 +572,10 @@ type Interactive struct {
 
 	// Display-only count for the current input. The initial user_message
 	// must preserve compactions performed before sending that input.
-	compactionsSinceInput      int
-	awaitingInitialUserMessage bool
+	compactionsSinceInput         int
+	compactionFallbacksSinceInput int
+	failedCompactionsSinceInput   int
+	awaitingInitialUserMessage    bool
 
 	// updateInfo is the result of the async update check. Zero value
 	// while the check hasn't completed or nothing is available.
@@ -1630,24 +1632,26 @@ func (i *Interactive) redraw() {
 		statusBusyPrefix = busyPrefix
 	}
 	statusLines := tui.StatusBar(tui.StatusBarParams{
-		Theme:          i.cfg.Theme,
-		Provider:       i.cfg.Provider,
-		Model:          i.cfg.Model,
-		Reasoning:      i.cfg.Reasoning,
-		Busy:           i.busy,
-		BusyPrefix:     statusBusyPrefix,
-		CWD:            i.cfg.CWD,
-		Locked:         i.cfg.Sandbox.Locked(),
-		NoYolo:         i.cfg.NoYolo,
-		Usage:          i.cumUsage,
-		Subscription:   i.cfg.AuthMethod == "oauth",
-		ContextUsed:    i.lastCtxInput,
-		ContextMax:     ctxMax,
-		AutoCompacting: i.autoCompacting,
-		Compactions:    i.compactionsSinceInput,
-		Telegram:       i.telegramBridge != nil && i.telegramBridge.Active(),
-		Execution:      i.executionTag(),
-		Cols:           cols,
+		Theme:               i.cfg.Theme,
+		Provider:            i.cfg.Provider,
+		Model:               i.cfg.Model,
+		Reasoning:           i.cfg.Reasoning,
+		Busy:                i.busy,
+		BusyPrefix:          statusBusyPrefix,
+		CWD:                 i.cfg.CWD,
+		Locked:              i.cfg.Sandbox.Locked(),
+		NoYolo:              i.cfg.NoYolo,
+		Usage:               i.cumUsage,
+		Subscription:        i.cfg.AuthMethod == "oauth",
+		ContextUsed:         i.lastCtxInput,
+		ContextMax:          ctxMax,
+		AutoCompacting:      i.autoCompacting,
+		Compactions:         i.compactionsSinceInput,
+		CompactionFallbacks: i.compactionFallbacksSinceInput,
+		FailedCompactions:   i.failedCompactionsSinceInput,
+		Telegram:            i.telegramBridge != nil && i.telegramBridge.Active(),
+		Execution:           i.executionTag(),
+		Cols:                cols,
 	})
 	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
 	if inputStyle == tui.InputStyleLines || inputStyle == tui.InputStyleBlock {
@@ -4943,7 +4947,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.pendingRescueImages = nil
 		i.statusErr = ""
 		i.statusOK = "started new session"
-		i.compactionsSinceInput = 0
+		i.resetCompactionCountsLocked()
 		i.awaitingInitialUserMessage = false
 		i.helpBlock = nil
 		i.parkedTurn = 0
@@ -4983,7 +4987,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.scrollOffset = 0
 		i.extNotes = nil
 		i.startupNotes = nil
-		i.compactionsSinceInput = 0
+		i.resetCompactionCountsLocked()
 		i.awaitingInitialUserMessage = false
 		i.reloadErrors = nil
 		i.view.InvalidateRenderCache()
@@ -5798,7 +5802,7 @@ func (i *Interactive) applySessionSelection(path string) {
 			i.invalidate()
 			return
 		}
-		i.compactionsSinceInput = 0
+		i.resetCompactionCountsLocked()
 		i.awaitingInitialUserMessage = false
 		i.view.ForgetShellCWD()
 		i.statusOK = "resumed session: " + path
@@ -6415,7 +6419,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 	// Reset before pre-turn compaction, but not when resuming its pending
 	// request or recovering the same input after context overflow.
 	if newInput {
-		i.compactionsSinceInput = 0
+		i.resetCompactionCountsLocked()
 		i.awaitingInitialUserMessage = true
 	}
 	i.agent.SetStreamReasoning(i.cfg.ShowReasoning)
@@ -6757,7 +6761,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	switch e := ev.(type) {
 	case core.EvUserMessage:
 		if !i.awaitingInitialUserMessage {
-			i.compactionsSinceInput = 0
+			i.resetCompactionCountsLocked()
 		}
 		i.awaitingInitialUserMessage = false
 	case core.EvAssistantStart:
@@ -7683,7 +7687,7 @@ func (i *Interactive) doSessionImport(src string) {
 		return
 	}
 	i.mu.Lock()
-	i.compactionsSinceInput = 0
+	i.resetCompactionCountsLocked()
 	i.awaitingInitialUserMessage = false
 	i.view.ForgetShellCWD()
 	i.statusOK = "imported and switched to session " + friendlyPath(newPath)
@@ -7860,7 +7864,7 @@ func (i *Interactive) applySessionTreeMessageSelection(src string, msgIdx, turnN
 	}
 	i.scrollToBottom()
 	i.mu.Lock()
-	i.compactionsSinceInput = 0
+	i.resetCompactionCountsLocked()
 	i.awaitingInitialUserMessage = false
 	i.view.ForgetShellCWD()
 	if role == provider.RoleUser {
@@ -7925,7 +7929,7 @@ func (i *Interactive) applyForkSelection(msgIdx int) {
 		return
 	}
 	i.mu.Lock()
-	i.compactionsSinceInput = 0
+	i.resetCompactionCountsLocked()
 	i.awaitingInitialUserMessage = false
 	i.view.ForgetShellCWD()
 	i.statusOK = "forked and switched to new branch at " + friendlyPath(newPath)

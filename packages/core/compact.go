@@ -23,7 +23,26 @@ import (
 // The method blocks until the summary request completes. Emitted
 // events via sink are limited to text deltas from the summary call so
 // the UI can show progress.
-func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta string)) (summary string, err error) {
+func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta string)) (string, error) {
+	summary, _, err := a.CompactWithStats(ctx, keepTail, sink)
+	return summary, err
+}
+
+// CompactionStats describes recovery within a compaction operation.
+type CompactionStats struct {
+	// SideFallback reports whether in-place compaction fell back to a side request,
+	// even if that request failed. Explicit side mode does not count as a fallback.
+	SideFallback bool
+}
+
+// CompactWithStats behaves like Compact and also reports fallback activity.
+func (a *Agent) CompactWithStats(ctx context.Context, keepTail int, sink func(string)) (string, CompactionStats, error) {
+	var stats CompactionStats
+	summary, err := a.compact(ctx, keepTail, sink, &stats)
+	return summary, stats, err
+}
+
+func (a *Agent) compact(ctx context.Context, keepTail int, sink func(string), stats *CompactionStats) (summary string, err error) {
 	a.mu.Lock()
 	msgs := append([]provider.Message(nil), a.messages...)
 	a.mu.Unlock()
@@ -54,7 +73,7 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 		return "", fmt.Errorf("nothing to compact: keep-tail covers the whole transcript")
 	}
 
-	summary, tokensBefore, err := a.Summarize(ctx, summarizable, "", sink)
+	summary, tokensBefore, err := a.summarize(ctx, summarizable, "", sink, stats)
 	if err != nil {
 		return "", err
 	}
@@ -121,6 +140,10 @@ func (a *Agent) Compact(ctx context.Context, keepTail int, sink func(delta strin
 // request. Context-window or payload-size rejection falls back immediately.
 // It returns the summary and a rough token estimate of the summarized text.
 func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, instructions string, sink func(delta string)) (string, int, error) {
+	return a.summarize(ctx, messages, instructions, sink, nil)
+}
+
+func (a *Agent) summarize(ctx context.Context, messages []provider.Message, instructions string, sink func(string), stats *CompactionStats) (string, int, error) {
 	if len(messages) == 0 {
 		return "", 0, fmt.Errorf("nothing to summarize")
 	}
@@ -198,6 +221,9 @@ func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, inst
 			inPlace.Messages = append([]provider.Message(nil), inPlace.Messages...)
 			last := len(inPlace.Messages) - 1
 			inPlace.Messages[last].Content = []provider.Content{provider.TextBlock{Text: prompt + "\n\nNo tools now. Just summarize. Do not continue the task. Output only the summary."}}
+		}
+		if stats != nil {
+			stats.SideFallback = true
 		}
 	}
 	summary, err := a.streamSummary(ctx, "compaction_side", req, sink)
