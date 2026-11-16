@@ -161,22 +161,27 @@ func TestInPlaceCompactionPreparesSystemAndRepairsToolPairs(t *testing.T) {
 	}
 }
 
-func TestInPlaceCompactionToolRecovery(t *testing.T) {
-	toolEvents := map[string][]provider.Event{
-		"start":   {provider.EventToolStart{ID: "unexpected", Name: "outcome"}},
-		"args":    {provider.EventToolArgs{Delta: "{}"}},
-		"end":     {provider.EventToolEnd{}},
-		"stop":    {provider.EventDone{Stop: provider.StopToolUse}},
-		"message": {provider.EventDone{Message: provider.Message{Content: []provider.Content{provider.ToolCallBlock{ID: "unexpected", Name: "outcome"}}}}},
+func TestInPlaceCompactionSummaryRecovery(t *testing.T) {
+	failedResponses := map[string][]provider.Event{
+		"empty":      {provider.EventDone{}},
+		"whitespace": {provider.EventTextDelta{Delta: " \n\t"}, provider.EventDone{}},
+		"no events":  {},
+		"reasoning":  {provider.EventReasoningDelta{Delta: "planning a summary"}, provider.EventDone{Stop: provider.StopLength}},
+		"start":      {provider.EventToolStart{ID: "unexpected", Name: "outcome"}},
+		"args":       {provider.EventToolArgs{Delta: "{}"}},
+		"end":        {provider.EventToolEnd{}},
+		"stop":       {provider.EventDone{Stop: provider.StopToolUse}},
+		"message":    {provider.EventDone{Message: provider.Message{Content: []provider.Content{provider.ToolCallBlock{ID: "unexpected", Name: "outcome"}}}}},
 	}
-	for name, events := range toolEvents {
+	for name, events := range failedResponses {
 		t.Run(name, func(t *testing.T) {
 			for _, fallback := range []bool{false, true} {
 				t.Run("fallback="+strconv.FormatBool(fallback), func(t *testing.T) {
-					failed := append([]provider.Event{
-						provider.EventTextDelta{Delta: "discarded partial summary"},
-						provider.EventUsage{Usage: provider.Usage{InputTokens: 10}},
-					}, events...)
+					failed := []provider.Event{provider.EventUsage{Usage: provider.Usage{InputTokens: 10}}}
+					if name != "empty" && name != "whitespace" && name != "no events" && name != "reasoning" {
+						failed = append(failed, provider.EventTextDelta{Delta: "discarded partial summary"})
+					}
+					failed = append(failed, events...)
 					client := &inPlaceClient{responses: [][]provider.Event{failed}}
 					if fallback {
 						client.responses = append(client.responses, failed)
@@ -215,7 +220,7 @@ func TestInPlaceCompactionToolRecovery(t *testing.T) {
 						t.Fatal("retry changed cache prefix")
 					}
 					instruction := extractText(retry.Messages[len(before)])
-					for _, want := range []string{"No tools now. Just summarize.", a.CompactionPrompt, a.CompactionInstructions} {
+					for _, want := range []string{"No tools now. Just summarize.", "non-empty", a.CompactionPrompt, a.CompactionInstructions} {
 						if !strings.Contains(instruction, want) {
 							t.Fatalf("retry missing %q: %s", want, instruction)
 						}

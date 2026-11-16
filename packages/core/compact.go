@@ -136,8 +136,9 @@ func (a *Agent) compact(ctx context.Context, keepTail int, sink func(string), st
 // CompactionInstructions and then any per-call instructions are appended to it.
 // CompactionMode selects a separate request or a cache-friendly in-place request
 // with the active system, tools, and structured messages. Unexpected tool calls
-// retry in place once with a stronger instruction, then fall back to the separate
-// request. Context-window or payload-size rejection falls back immediately.
+// or empty summaries retry in place once with a stronger instruction, then fall
+// back to the separate request. Context-window or payload-size rejection falls
+// back immediately.
 // It returns the summary and a rough token estimate of the summarized text.
 func (a *Agent) Summarize(ctx context.Context, messages []provider.Message, instructions string, sink func(delta string)) (string, int, error) {
 	return a.summarize(ctx, messages, instructions, sink, nil)
@@ -210,7 +211,7 @@ func (a *Agent) summarize(ctx context.Context, messages []provider.Message, inst
 			if provider.IsContextOverflowError(err) {
 				break
 			}
-			if !errors.Is(err, errSummaryToolCall) {
+			if !errors.Is(err, errSummaryToolCall) && !errors.Is(err, errSummaryEmpty) {
 				return "", 0, err
 			}
 			if attempt == 1 {
@@ -220,7 +221,7 @@ func (a *Agent) summarize(ctx context.Context, messages []provider.Message, inst
 			// no unexecuted tool calls enter the request or stored transcript.
 			inPlace.Messages = append([]provider.Message(nil), inPlace.Messages...)
 			last := len(inPlace.Messages) - 1
-			inPlace.Messages[last].Content = []provider.Content{provider.TextBlock{Text: prompt + "\n\nNo tools now. Just summarize. Do not continue the task. Output only the summary."}}
+			inPlace.Messages[last].Content = []provider.Content{provider.TextBlock{Text: prompt + "\n\nNo tools now. Just summarize. Do not continue the task. Output only a non-empty summary in plain text, not reasoning alone."}}
 		}
 		if stats != nil {
 			stats.SideFallback = true
@@ -234,6 +235,7 @@ func (a *Agent) summarize(ctx context.Context, messages []provider.Message, inst
 }
 
 var errSummaryToolCall = errors.New("model requested a tool instead of completing the summary")
+var errSummaryEmpty = errors.New("empty summary from model")
 
 // streamSummary never executes local tool calls. A tool-call response fails without
 // replacing the transcript, even when tools are advertised for prefix reuse.
@@ -288,7 +290,7 @@ func (a *Agent) streamSummary(ctx context.Context, purpose string, req provider.
 	}
 	summary := strings.TrimSpace(sb.String())
 	if summary == "" {
-		return "", fmt.Errorf("empty summary from model")
+		return "", errSummaryEmpty
 	}
 	return summary, nil
 }
