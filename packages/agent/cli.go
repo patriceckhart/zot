@@ -1632,6 +1632,14 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			}
 			return sess.Path
 		},
+		CurrentSessionIdentity: func() (string, string) {
+			persistMu.Lock()
+			defer persistMu.Unlock()
+			if sess == nil {
+				return "", ""
+			}
+			return sess.ID, sess.Meta.Alias
+		},
 		FlushSession: func() {
 			// Append any not-yet-persisted agent messages to the
 			// current session file, then advance the baseline so

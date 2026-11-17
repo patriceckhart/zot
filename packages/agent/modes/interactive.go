@@ -298,6 +298,11 @@ type InteractiveConfig struct {
 	// no session is open.
 	CurrentSessionPath func() string
 
+	// CurrentSessionIdentity returns the persisted session ID and optional alias.
+	// It must reflect session switches and return empty values with --no-session.
+	// Like CurrentSessionPath, it must not call back into Interactive.
+	CurrentSessionIdentity func() (id, alias string)
+
 	// FlushSession writes any in-memory agent messages to the
 	// session file that haven't been persisted yet. Called by
 	// /session export right before reading the file so the
@@ -1334,7 +1339,7 @@ func (i *Interactive) timelineData() timelineData {
 // timelineDataLocked snapshots the current provider-neutral context for the
 // read-only timeline. The caller must hold i.mu.
 func (i *Interactive) timelineDataLocked() timelineData {
-	data := timelineData{ContextUsed: i.lastCtxInput}
+	data := timelineData{ContextUsed: i.lastCtxInput, Session: i.currentSessionIdentity()}
 	if model, err := provider.FindModel(i.cfg.Provider, i.cfg.Model); err == nil {
 		data.ContextMax = model.ContextWindow
 	}
@@ -1508,7 +1513,7 @@ func (i *Interactive) redraw() {
 		i.settingsDialog.MaxRows = avail
 		dialog = i.settingsDialog.Render(i.cfg.Theme, cols)
 	case i.sessionOpsDialog.Active():
-		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, cols)
+		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, cols, i.currentSessionIdentity())
 	case i.sessionTreeDialog.Active():
 		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, cols)
 	}
@@ -2614,7 +2619,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 		act := i.sessionOpsDialog.HandleKey(k)
 		if act.Select {
-			i.doSessionOp(act.Action, "")
+			i.doSessionOp(ctx, act.Action, "")
 		}
 		i.invalidate()
 		return false
@@ -5190,7 +5195,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 			if len(parts) >= 3 {
 				arg = strings.Join(parts[2:], " ")
 			}
-			i.doSessionOp(action, arg)
+			i.doSessionOp(ctx, action, arg)
 			break
 		}
 		i.openSessionOpsDialog()
@@ -7542,7 +7547,7 @@ func (h *telegramHost) Notify(level, message string) {
 }
 
 // openSessionOpsDialog shows the picker for `/session` with no arg.
-// Always offers timeline, export, import, fork, and tree. The handlers bail
+// Always offers timeline, export, import, fork, tree, and copy-id. The handlers bail
 // with a clear status message when a precondition is not met (empty transcript
 // on fork; no parent/siblings on tree).
 func (i *Interactive) openSessionOpsDialog() {
@@ -7552,18 +7557,21 @@ func (i *Interactive) openSessionOpsDialog() {
 		{label: "import", action: "import", hint: "load a .zotsession file into this directory"},
 		{label: "fork", action: "fork", hint: "branch from a past user message into a new session"},
 		{label: "tree", action: "tree", hint: "switch between branches in this directory"},
+		{label: "copy session ID", action: "copy-id", hint: "copy the full current session UUID to the clipboard"},
 	}
 	i.sessionOpsDialog.Open(items)
 	i.invalidate()
 }
 
-// doSessionOp dispatches timeline, export, import, fork, or tree. arg is the
+// doSessionOp dispatches timeline, export, import, fork, tree, or copy-id. arg is the
 // optional positional argument from e.g. /session export <path>
 // or /session import <path>; timeline, fork, and tree ignore it.
-func (i *Interactive) doSessionOp(action, arg string) {
+func (i *Interactive) doSessionOp(ctx context.Context, action, arg string) {
 	switch action {
 	case "timeline":
 		i.openTimeline()
+	case "copy-id":
+		i.copySessionID(ctx, tui.WriteClipboardText)
 	case "export":
 		i.doSessionExport(arg)
 	case "import":
@@ -7574,7 +7582,7 @@ func (i *Interactive) doSessionOp(action, arg string) {
 		i.doSessionTree()
 	default:
 		i.mu.Lock()
-		i.statusErr = "unknown /session action: " + action + " (use timeline, export, import, fork, or tree)"
+		i.statusErr = "unknown /session action: " + action + " (use timeline, export, import, fork, tree, or copy-id)"
 		i.mu.Unlock()
 		i.invalidate()
 	}

@@ -18,7 +18,7 @@ type sessionOpsDialog struct {
 
 type sessionOpsItem struct {
 	label  string
-	action string // "timeline" | "export" | "import" | "fork" | "tree"
+	action string // "timeline" | "export" | "import" | "fork" | "tree" | "copy-id"
 	hint   string
 }
 
@@ -74,12 +74,13 @@ func (d *sessionOpsDialog) HandleKey(k tui.Key) sessionOpsAction {
 }
 
 // Render returns the dialog lines.
-func (d *sessionOpsDialog) Render(th tui.Theme, width int) []string {
+func (d *sessionOpsDialog) Render(th tui.Theme, width int, session sessionIdentity) []string {
 	if !d.Active() {
 		return nil
 	}
 	var lines []string
 	lines = append(lines, frameHeader(th, "session", width))
+	lines = append(lines, renderSessionIdentity(th, width, session)...)
 	lines = append(lines, th.FG256(th.Muted, "pick an action (\u2191/\u2193, enter, esc to cancel):"))
 	for i, it := range d.items {
 		text := "  " + it.label

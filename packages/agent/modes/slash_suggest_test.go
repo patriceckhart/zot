@@ -73,6 +73,7 @@ func TestSlashSuggesterCompletesSessionActions(t *testing.T) {
 		"/session import",
 		"/session fork",
 		"/session tree",
+		"/session copy-id",
 	}; !slices.Equal(got, want) {
 		t.Fatalf("matches = %v, want %v", got, want)
 	}
