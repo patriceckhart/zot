@@ -1600,7 +1600,11 @@ For development, point `zot --ext <path>` at a working directory and skip the in
 
 ### Updating extensions
 
-`zot update` refreshes the zot binary **and** every installed extension that lives in a git checkout. Per-extension behaviour:
+`zot ext update` refreshes global extensions under `$ZOT_HOME/extensions/` that live in git checkouts, without updating the zot binary. It also works with development builds. Project-local extensions are not updated.
+
+`zot update` also refreshes these extensions after installing the binary or when zot is already up to date. `zot update --check` installs nothing and does not update extensions. If the binary update fails, extensions are not updated.
+
+Both commands use the same per-extension behaviour:
 
 - Disabled extensions are skipped.
 - Extensions without a `.git/` directory (installed by `zot ext install ./local-path`) are skipped — there is no remote to pull from.

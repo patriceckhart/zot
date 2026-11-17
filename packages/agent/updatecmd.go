@@ -61,7 +61,7 @@ func printUpdateHelp() {
 	fmt.Fprintln(os.Stderr, `zot update — replace the current zot binary with the latest release
 
 usage:
-  zot update           download and install the newest release
+  zot update           install the newest release and update global extensions
   zot update --check   show what update is available; install nothing
   zot update --help    show this help
 
@@ -72,15 +72,17 @@ notes:
     a local source build and shouldn't be silently replaced with a
     release binary.
   * Honours $GITHUB_TOKEN if set, so private-repo releases work.
-  * After the binary is installed, every extension under
-    $ZOT_HOME/extensions/ that is a git checkout is fast-forward
-    pulled (no merge, no rebase). Dirty worktrees are stashed and
+  * After the binary is installed, or if it is already up to date,
+    every extension under $ZOT_HOME/extensions/ that is a git checkout
+    is fast-forward pulled (no merge, no rebase). Dirty worktrees are stashed and
     restored. Extensions without a .git directory, disabled
     extensions, and pulls that fail (offline, diverged, etc.) are
     skipped per-extension and never abort the overall update. zot
     does NOT run any build step after pulling — authors are expected
     to commit a working binary, or you can rebuild manually and
-    /reload-ext.`)
+    /reload-ext.
+  * Use 'zot ext update' to update only global extensions, including
+    when running a dev build. --check never updates extensions.`)
 }
 
 // runUpdateCheck just prints what would happen without doing the
@@ -126,6 +128,7 @@ func runUpdate(version string) error {
 
 	if !versionLess(current, latest) {
 		fmt.Printf("zot %s is already up to date.\n", current)
+		updateAllExtensions(ZotHome())
 		return nil
 	}
 	fmt.Printf("zot update: %s -> %s\n", current, latest)

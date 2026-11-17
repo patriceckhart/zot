@@ -1186,6 +1186,7 @@ Reply with `shutdown_ack` and then exit.
 ```
 zot ext list                    list installed extensions and their state
 zot ext doctor                  diagnose load, registration, and conflict issues
+zot ext update                  update global git-installed extensions
 zot ext install <path|git-url>  copy / clone into $ZOT_HOME/extensions/
 zot ext remove <name>           delete an extension directory
 zot ext enable <name>           re-enable a disabled extension
@@ -1221,6 +1222,25 @@ warnings, and each extension's stderr log path.
 `zot ext install <path>` does a recursive copy; `<git-url>` does a
 shallow clone. Both validate that the destination contains an
 `extension.json` and roll back if not.
+
+### Updating extensions
+
+`zot ext update` updates git-installed extensions under `$ZOT_HOME/extensions/`
+without replacing the zot binary. It works with development builds too.
+Project-local extensions are not updated. The command takes no names or flags
+other than `--help` or `-h`.
+
+Disabled extensions and installations without a git checkout are skipped.
+For each eligible extension, zot stashes dirty worktree state (including
+untracked files), runs `git pull --ff-only`, and restores the stash. Conflicts
+when restoring are reported and must be resolved manually. Failures are reported
+per extension and do not stop the remaining updates or cause a nonzero exit
+status. No build or dependency-install step is run. Rebuild manually if needed
+and use `/reload-ext` in a running session to load the updated extension.
+
+`zot update` runs the same extension update after installing the binary or
+finding zot already up to date. A failed binary update does not update
+extensions. `zot update --check` remains read-only.
 
 ## Loading an extension for one run
 
