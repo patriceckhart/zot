@@ -847,11 +847,13 @@ These settings do not cancel an already running turn or revoke credentials held 
 
 When a turn fails because of a recoverable provider error — expired token (`401`), permission denied (`403`), rate limit (`429`), provider outage (`502`/`503`/`504`), or a transient network failure — zot opens a **rescue** picker over the chat instead of just painting a red banner.
 
-The picker is the same vertical list / fuzzy filter UI as `/model`, but it only shows models from providers you're currently logged in to (env vars, `auth.json`, Kimi CLI fallback, ollama). The failed model is excluded. Press `↑`/`↓` to choose, `enter` to retry the **same prompt** on the new model, `esc` to dismiss.
+The first action, **Retry current model**, resumes the existing turn without writing another user message. It keeps the active model, credentials, custom endpoint, original image attachments, and completed tool results. It is available even when no alternative models are configured. Partial output stays in history, and zot does not automatically re-execute completed tools. If the request fails again, the picker reopens.
+
+Below that action, the picker has the same vertical list / fuzzy filter UI as `/model`, showing alternative models from providers you're currently logged in to (env vars, `auth.json`, Kimi CLI fallback, ollama). The failed model is excluded from this alternative list. Press `↑`/`↓` to choose, `enter` to retry or switch models, and `esc` to dismiss. Typing filters alternatives and selects the first match.
 
 Before the actual provider request fires, the OpenAI / Anthropic / Kimi / DeepSeek / Google / OpenAI-Codex clients also do up to two silent retries with short backoff (250ms, 750ms) on `502`/`503`/`504` and connection-reset / EOF-before-headers errors. Most edge-proxy blips disappear without you ever seeing the rescue picker.
 
-A rescue retry always **drops launch-time `--api-key` and `--base-url`** before rebuilding the agent. Those overrides are usually the reason the rescue triggered (bad key, typo'd base URL, corporate gateway only valid for the originally-picked provider), so the retry re-resolves credentials from env vars / `auth.json` / provider defaults instead. Use `/model` if you want overrides to stick.
+Choosing an **alternative model** retries the saved prompt and **drops launch-time `--api-key` and `--base-url`** before rebuilding the agent. Those overrides can be the reason rescue triggered (bad key, typo'd base URL, corporate gateway only valid for the originally picked provider), so switching models re-resolves credentials from env vars / `auth.json` / provider defaults instead. **Retry current model** does not rebuild the client and preserves those overrides. Use `/model` if you want overrides to stick when switching models.
 
 No configuration is required — the candidate list is built dynamically from your active credentials. Bad-request / context-length / serialization errors are NOT routed to the rescue picker, because switching models won't fix them; those still surface as a normal error.
 

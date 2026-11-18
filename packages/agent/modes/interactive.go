@@ -2522,7 +2522,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return false
 		}
 		act := i.rescueDialog.HandleKey(k)
-		if act.Select {
+		if act.Retry {
+			i.retryRescueTurn()
+		} else if act.Select {
 			i.applyRescueSelection(act.Provider, act.Model, act.Prompt)
 		}
 		i.invalidate()
@@ -6394,6 +6396,13 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 }
 
 func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt string, images []provider.ImageBlock, overflowRecoveryAttempted bool, tool *toolPromptRequest, newInput bool) {
+	i.startTurnRun(parent, prompt, images, overflowRecoveryAttempted, tool, newInput, overflowRecoveryAttempted)
+}
+
+// continueExisting resumes history without appending another user message.
+// It is independent of overflowRecoveryAttempted so manual retries can still
+// recover a subsequent context overflow through compaction.
+func (i *Interactive) startTurnRun(parent context.Context, prompt string, images []provider.ImageBlock, overflowRecoveryAttempted bool, tool *toolPromptRequest, newInput, continueExisting bool) {
 	i.finishStartup()
 	if i.rejectAttachedImagePrompt(images) {
 		return
@@ -6401,7 +6410,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 	if tool != nil && i.rejectAttachedAction("extension tool_prompt", "submit a plain prompt for the host to execute") {
 		return
 	}
-	if overflowRecoveryAttempted && i.rejectAttachedAction("local continuation", "context recovery is managed by the host") {
+	if continueExisting && i.rejectAttachedAction("local continuation", "continuation is managed by the host") {
 		return
 	}
 	if i.agent == nil {
@@ -6430,10 +6439,14 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 	i.agent.SetStreamReasoning(i.cfg.ShowReasoning)
 	needsPreCompact := !overflowRecoveryAttempted && !i.autoCompacting && i.shouldAutoCompactLocked()
 	if needsPreCompact {
-		i.pendingCompactPrompt = prompt
-		i.pendingCompactImages = append([]provider.ImageBlock(nil), images...)
-		i.pendingCompactTool = tool
-		i.hasPendingCompactPrompt = true
+		if continueExisting {
+			i.continueAfterCompact = true
+		} else {
+			i.pendingCompactPrompt = prompt
+			i.pendingCompactImages = append([]provider.ImageBlock(nil), images...)
+			i.pendingCompactTool = tool
+			i.hasPendingCompactPrompt = true
+		}
 		i.statusErr = ""
 		i.extNotes = append(i.extNotes, autoCompactNoteLine(i.cfg.Theme, "context near limit — condensing history before sending..."))
 		i.pendingPostCompactNote = "context auto-compacted; sending your last message"
@@ -6446,7 +6459,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 
 	ctx, cancel := context.WithCancel(parent)
 	i.mu.Lock()
-	if !overflowRecoveryAttempted && !i.awaitingStartupPre {
+	if !continueExisting && !i.awaitingStartupPre {
 		prompt = i.preloadPinnedPromptLocked(prompt)
 	}
 	i.busy = true
@@ -6516,7 +6529,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 			err = i.cfg.PromptDriverWithImages(ctx, i.agent, prompt, images, sink)
 		} else if i.cfg.PromptDriver != nil {
 			err = i.cfg.PromptDriver(ctx, i.agent, prompt, sink)
-		} else if overflowRecoveryAttempted {
+		} else if continueExisting {
 			err = i.agent.Continue(ctx, sink)
 		} else if tool != nil {
 			stopTracking := i.cfg.Extensions.TrackToolCall(tool.call.ID, tool.origin)
@@ -6658,11 +6671,16 @@ func (i *Interactive) openRescueDialog(activeProvider, failedProvider, failedMod
 	if fprov == "" {
 		fprov = activeProvider
 	}
+	// Catalog callbacks may take their own locks. Build outside i.mu, then
+	// publish the dialog with the pending input as one state update.
+	dialog := newRescueDialog()
+	dialog.catalog = i.rescueDialog.catalog
+	dialog.Open(failedModel, loggedIn, fprov, failedModel, reason, prompt)
 	i.mu.Lock()
 	i.pendingRescuePrompt = prompt
 	i.pendingRescueImages = images
+	*i.rescueDialog = *dialog
 	i.mu.Unlock()
-	i.rescueDialog.Open(failedModel, loggedIn, fprov, failedModel, reason, prompt)
 	i.invalidate()
 }
 
