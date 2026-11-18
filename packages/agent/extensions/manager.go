@@ -833,7 +833,7 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 		m.registerRequestTransform(ext)
 	}
 
-	capabilities := []string{"call_tool", "request_transform"}
+	capabilities := []string{"call_tool", "request_transform", "prepend_user_context"}
 	if m.durableToolCalls.Load() {
 		capabilities = append(capabilities, "call_tool_durable")
 	}

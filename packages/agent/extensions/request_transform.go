@@ -102,6 +102,9 @@ func (m *Manager) TransformRequest(ctx context.Context, sessionID, providerID, p
 				var next provider.Request
 				next, err = core.ReplaceRequestSegments(current, response.Replacements)
 				if err == nil {
+					next, err = prependRequestUserContext(next, purpose, response.PrependUserContext)
+				}
+				if err == nil {
 					candidate = next
 				}
 			}
@@ -125,6 +128,29 @@ func (m *Manager) TransformRequest(ctx context.Context, sessionID, providerID, p
 		}
 	}
 	return current, nil
+}
+
+// prependRequestUserContext adds ephemeral instructions without modifying the
+// persisted transcript, message roles, or tool-call/result pairs in history.
+func prependRequestUserContext(req provider.Request, purpose string, raw json.RawMessage) (provider.Request, error) {
+	if len(raw) == 0 {
+		return req, nil
+	}
+	var text string
+	if len(raw) > extproto.RequestUserContextLimit || raw[0] != '"' || json.Unmarshal(raw, &text) != nil {
+		return req, errors.New("invalid user context")
+	}
+	if purpose != "chat" {
+		return req, errors.New("user context is only supported for chat requests")
+	}
+	if text == "" {
+		return req, nil
+	}
+	messages := make([]provider.Message, len(req.Messages)+1)
+	messages[0] = provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: text}}}
+	copy(messages[1:], req.Messages)
+	req.Messages = messages
+	return req, nil
 }
 
 func (m *Manager) askRequestTransform(ctx context.Context, ext *Extension, payload extproto.RequestTransformFromHost) (extproto.RequestTransformResponseFromExt, error) {

@@ -6,6 +6,9 @@ import "encoding/json"
 // It applies only after request_transform capability negotiation.
 const RequestTransformFrameLimit = 128 << 20
 
+// RequestUserContextLimit bounds the encoded JSON string added to a chat request.
+const RequestUserContextLimit = 1 << 20
+
 // RequestTransformOptions applies to all transform failures, not only timeouts.
 // OnTimeout is retained as the wire name for the failure policy. Empty means
 // fail. TimeoutMS defaults to 30000 and must be between 1 and 300000.
@@ -35,8 +38,9 @@ type RequestTransformFromHost struct {
 }
 
 type RequestTransformResponseFromExt struct {
-	Type         string                     `json:"type"`
-	ID           string                     `json:"id"`
-	Replacements map[string]json.RawMessage `json:"replacements,omitempty"`
-	Error        string                     `json:"error,omitempty"`
+	Type               string                     `json:"type"`
+	ID                 string                     `json:"id"`
+	Replacements       map[string]json.RawMessage `json:"replacements,omitempty"`
+	PrependUserContext json.RawMessage            `json:"prepend_user_context,omitempty"`
+	Error              string                     `json:"error,omitempty"`
 }

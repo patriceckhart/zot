@@ -511,6 +511,39 @@ Return replacements by segment ID, or `error` to reject the request:
   response never partially applies. Local transcripts, persisted sessions and
   the live tool registry are not rewritten.
 
+#### Ephemeral user context
+
+Hosts advertising `prepend_user_context` in `hello_ack.capabilities` also accept
+an optional `prepend_user_context` JSON string in a transform response:
+
+```json
+{"type":"request_transform_response","id":"rt-1","prepend_user_context":"Session workflow instructions"}
+```
+
+For `purpose: "chat"`, a nonempty value prepends one user-role text message to
+the outgoing request. The system prompt and existing messages, including tool
+call/result pairs, remain unchanged. The added message is not persisted in the
+session or transcript. It is not present in later requests unless the extension
+returns it again, so bootstrap extensions must supply it on every chat request,
+including after compaction. An empty string is a no-op. Non-string values,
+`null`, values whose encoded JSON string exceeds 1 MiB, and this field on
+non-chat requests are rejected under the normal transform failure policy.
+
+Context is applied after segment replacements and validated atomically with
+them. Later extensions see the prepended message as ordinary request segments.
+If multiple extensions prepend context, each prepends before the previous
+extension's output. Deduplication is the extension's responsibility. This field
+cannot insert tool calls or results and does not change tool permissions.
+The existing Go SDK `InterceptBeforeRequest` handler remains replacements-only.
+The context field is available through the subprocess wire protocol.
+
+Older hosts ignore unknown response fields. Extensions using this feature must
+check both `request_transform` and `prepend_user_context` in the host's
+capabilities before declaring readiness. Declare `request_transform` with
+`on_timeout: "fail"` in the manifest as well to prevent a failed subprocess
+from silently dropping the bootstrap on hosts supporting required transforms.
+Hosts predating required transforms may still fail open and are not supported.
+
 Transforms run once per core `Client.Stream` invocation, including each core
 retry, every tool-loop turn, side compaction, in-place compaction and its
 context-overflow fallback. `purpose` is `chat`, `compaction_side` or

@@ -41,6 +41,13 @@ change invalidate it for the next prompt. Failures keep the current prompt and
 surface as `ext_notify` warnings. See [System prompt replacement](extensions.md#system-prompt-replacement)
 for chaining, deadlines, size limits, and privacy considerations.
 
+Request-transform extensions can also supply ephemeral user-role context using
+`prepend_user_context` on chat requests. This leaves the system prompt and
+`get_messages` history unchanged and must be supplied again for each request.
+It uses the extension subprocess protocol, not a new RPC client command.
+See [Ephemeral user context](extensions.md#ephemeral-user-context) for capability
+negotiation, limits, and failure handling.
+
 ## Auth
 
 If the environment variable `ZOTCORE_RPC_TOKEN` is set on the spawned process, the first line on stdin **must** be a `hello` command containing the matching token:
