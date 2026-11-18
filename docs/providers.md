@@ -281,6 +281,35 @@ picker only shows it when enabled in the account's model listing.
 zot --provider github-copilot --model gpt-6.1-terra
 ```
 
+## GPT-6.2 models
+
+Select `gpt-6.2-sol` or `gpt-6.2-astra` with `openai`, `openai-responses`,
+`openai-codex`, or `azure-openai-responses`, subject to account or deployment
+access:
+
+```bash
+zot --provider openai-codex --model gpt-6.2-sol
+zot --provider openai --model gpt-6.2-astra
+```
+
+Both use the Responses API, accept text and images, and allow up to 128,000
+output tokens. Reasoning supports `low`, `medium`, `high`, `xhigh`, and `max`.
+Reasoning cannot be disabled, so `off` and `minimum` are clamped to `low`.
+Existing provider defaults are unchanged.
+
+OpenAI API-key entries use a 272,000-token context window. Codex uses 500,000
+for Sol and 272,000 for Astra. Azure entries use 1,050,000 tokens.
+Standard prices in USD per million tokens are:
+
+| Model | Input | Output | Cache read | Cache write |
+|---|---|---|---|---|
+| GPT-6.2 Sol | $2 | $10 | $0.10 | $2.50 |
+| GPT-6.2 Astra | $8 | $40 | $0.40 | $10 |
+
+Above 272,000 input tokens, input and cache prices double and output prices
+increase by 50 percent. Subscription prices are API-equivalent estimates,
+not subscription invoices. Catalog availability does not grant model access.
+
 ## API-key providers
 
 These providers can use environment variables. Simple API-key providers can
