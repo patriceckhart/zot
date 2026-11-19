@@ -53,6 +53,27 @@ permissions:
 	}
 }
 
+func TestParseFrontmatterBlockDescription(t *testing.T) {
+	for _, marker := range []string{">", ">- # summary", "|", "|+"} {
+		t.Run(marker, func(t *testing.T) {
+			front := "name: ponytail\ndescription: " + marker + `
+  Lazy senior dev mode: the smallest change that fully solves the task,
+  and a reply a busy human understands in one read.
+
+disable-model-invocation: true
+`
+			s := &Skill{}
+			parseFrontmatter(front, s)
+			if want := "Lazy senior dev mode: the smallest change that fully solves the task, and a reply a busy human understands in one read."; s.Description != want {
+				t.Errorf("description = %q, want %q", s.Description, want)
+			}
+			if !s.DisableModelInvocation {
+				t.Error("field after block description was not parsed")
+			}
+		})
+	}
+}
+
 func TestDiscoverProjectAndGlobalPriorityAndDedup(t *testing.T) {
 	t.Setenv("ZOT_AGENT_SKILLS", "")
 	tmp := t.TempDir()

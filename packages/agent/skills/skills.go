@@ -547,6 +547,7 @@ func splitFrontmatter(raw string) (string, string) {
 
 // parseFrontmatter handles the small subset of YAML zot recognizes:
 //   - simple `key: value` lines
+//   - block scalars for one-line descriptions
 //   - `key: [a, b, c]` flow-style lists
 //   - `key:` followed by indented `- item` block lists
 //   - nested `key:` followed by indented `subkey: [...]` for permissions
@@ -577,6 +578,23 @@ func parseFrontmatter(front string, s *Skill) {
 				s.Name = unquote(value)
 			case "description":
 				s.Description = unquote(value)
+				header, _, _ := strings.Cut(value, " #")
+				switch strings.TrimSpace(header) {
+				case ">", ">-", ">+", "|", "|-", "|+":
+					var parts []string
+					for i+1 < len(lines) {
+						next := lines[i+1]
+						text := strings.TrimSpace(next)
+						if text != "" && next[0] != ' ' && next[0] != '\t' {
+							break
+						}
+						i++
+						if text != "" {
+							parts = append(parts, text)
+						}
+					}
+					s.Description = strings.Join(parts, " ")
+				}
 			case "disable-model-invocation", "disable_model_invocation":
 				s.DisableModelInvocation = strings.EqualFold(unquote(value), "true")
 			case "allowed-tools", "allowed_tools":

@@ -41,6 +41,10 @@ When asked to review code, ...
 | `allowed-tools` | optional | list of tool names the skill is meant to use; informational |
 | `permissions` | optional | per-tool patterns; informational |
 
+For `description`, you can use an indented `>` or `|` block, with an
+optional `+` or `-` suffix. zot joins nonblank lines with spaces to make
+one summary.
+
 `allowed-tools` and `permissions` are **parsed but not enforced** in
 this version. They appear in the rendered skill body so the model can
 see them and self-regulate. Future versions may enforce.
