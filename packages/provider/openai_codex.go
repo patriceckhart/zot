@@ -259,6 +259,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 
 	msgIdx := 0
 	req.Messages = RepairOrphanedToolResults(req.Messages)
+	var toolImages []any
 	for msgIndex, msg := range req.Messages {
 		switch msg.Role {
 		case RoleUser:
@@ -336,7 +337,6 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 				}
 			}
 		case RoleTool:
-			var images []any
 			for _, c := range msg.Content {
 				if tr, ok := c.(ToolResultBlock); ok {
 					var text strings.Builder
@@ -351,16 +351,11 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 						case ImageBlock:
 							imageCount++
 							url := "data:" + v.MimeType + ";base64," + base64.StdEncoding.EncodeToString(v.Data)
-							images = append(images, codexInputImage{Type: "input_image", Detail: "auto", ImageURL: url})
+							toolImages = append(toolImages, codexInputImage{Type: "input_image", Detail: "auto", ImageURL: url})
 						}
 					}
-					// The Responses API function_call_output only carries a
-					// string, so image bytes cannot ride along here. The agent
-					// loop mirrors any tool-result images into the following
-					// user message (which this client does serialize as
-					// input_image). Leave a short text note so an image-only
-					// result is not an empty output the API may reject, and so
-					// the model knows the image arrives next.
+					// Leave a text placeholder for image-only results. The
+					// images are sent separately after the tool outputs.
 					out := text.String()
 					if out == "" && imageCount > 0 {
 						if imageCount == 1 {
@@ -381,13 +376,17 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 					})
 				}
 			}
-			// function_call_output carries text only. Deliver tool images in a
-			// following user message unless the transcript already persists one.
-			hasMirror := msgIndex+1 < len(req.Messages) && isOpenAIToolImageMirror(req.Messages[msgIndex+1])
-			if len(images) > 0 && !hasMirror {
-				content := append([]any{codexInputText{Type: "input_text", Text: "Tool output included the following image content:"}}, images...)
+			// Keep all consecutive tool outputs together before delivering images.
+			next := msgIndex + 1
+			if next < len(req.Messages) && req.Messages[next].Role == RoleTool {
+				continue
+			}
+			hasMirror := next < len(req.Messages) && isOpenAIToolImageMirror(req.Messages[next])
+			if len(toolImages) > 0 && !hasMirror {
+				content := append([]any{codexInputText{Type: "input_text", Text: "Tool output included the following image content:"}}, toolImages...)
 				body.Input = append(body.Input, codexInputMessage{Role: "user", Content: content})
 			}
+			toolImages = nil
 		}
 	}
 

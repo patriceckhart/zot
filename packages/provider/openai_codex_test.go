@@ -74,8 +74,12 @@ func TestCopilotResponsesToolImagesReachModelOnce(t *testing.T) {
 	image := ImageBlock{MimeType: "image/png", Data: []byte("png-bytes")}
 	messages := []Message{
 		{Role: RoleUser, Content: []Content{TextBlock{Text: "look"}}},
-		{Role: RoleAssistant, Content: []Content{ToolCallBlock{ID: "call_1", Name: "read", Arguments: []byte(`{"path":"x.png"}`)}}},
+		{Role: RoleAssistant, Content: []Content{
+			ToolCallBlock{ID: "call_1", Name: "read", Arguments: []byte(`{"path":"x.png"}`)},
+			ToolCallBlock{ID: "call_2", Name: "read", Arguments: []byte(`{"path":"y.txt"}`)},
+		}},
 		{Role: RoleTool, Content: []Content{ToolResultBlock{CallID: "call_1", Content: []Content{image}}}},
+		{Role: RoleTool, Content: []Content{ToolResultBlock{CallID: "call_2", Content: []Content{TextBlock{Text: "text result"}}}}},
 	}
 	for _, tc := range []struct {
 		name     string
@@ -90,11 +94,18 @@ func TestCopilotResponsesToolImagesReachModelOnce(t *testing.T) {
 				t.Fatal(err)
 			}
 			images := 0
+			var outputs []string
 			for _, item := range wire.Input {
+				if output, ok := item.(codexFunctionCallOutput); ok {
+					outputs = append(outputs, output.CallID)
+				}
 				if message, ok := item.(codexInputMessage); ok {
 					for _, content := range message.Content {
 						if _, ok := content.(codexInputImage); ok {
 							images++
+							if len(outputs) != 2 || outputs[0] != "call_1" || outputs[1] != "call_2" {
+								t.Errorf("tool outputs before image = %v, want [call_1 call_2]", outputs)
+							}
 						}
 					}
 				}
