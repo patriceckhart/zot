@@ -259,7 +259,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 
 	msgIdx := 0
 	req.Messages = RepairOrphanedToolResults(req.Messages)
-	for _, msg := range req.Messages {
+	for msgIndex, msg := range req.Messages {
 		switch msg.Role {
 		case RoleUser:
 			content := []any{}
@@ -336,6 +336,7 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 				}
 			}
 		case RoleTool:
+			var images []any
 			for _, c := range msg.Content {
 				if tr, ok := c.(ToolResultBlock); ok {
 					var text strings.Builder
@@ -349,6 +350,8 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 							text.WriteString(v.Text)
 						case ImageBlock:
 							imageCount++
+							url := "data:" + v.MimeType + ";base64," + base64.StdEncoding.EncodeToString(v.Data)
+							images = append(images, codexInputImage{Type: "input_image", Detail: "auto", ImageURL: url})
 						}
 					}
 					// The Responses API function_call_output only carries a
@@ -377,6 +380,13 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 						Output: out,
 					})
 				}
+			}
+			// function_call_output carries text only. Deliver tool images in a
+			// following user message unless the transcript already persists one.
+			hasMirror := msgIndex+1 < len(req.Messages) && isOpenAIToolImageMirror(req.Messages[msgIndex+1])
+			if len(images) > 0 && !hasMirror {
+				content := append([]any{codexInputText{Type: "input_text", Text: "Tool output included the following image content:"}}, images...)
+				body.Input = append(body.Input, codexInputMessage{Role: "user", Content: content})
 			}
 		}
 	}
