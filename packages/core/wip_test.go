@@ -103,6 +103,40 @@ func TestWIPContinuationAndCompaction(t *testing.T) {
 	}
 }
 
+func TestWIPQueuedPhaseSnapshot(t *testing.T) {
+	a := NewAgent(nil, "", "", nil)
+	a.QueueMessage("normal")
+	a.SetWIP(true)
+	a.WIPSettings.Instruction = "original"
+	a.QueueMessage("draft")
+	a.SetWIP(false)
+	a.appendQueuedAsUser(a.drainQueuedMessages(), nil)
+	msgs := a.Messages()
+	if msgs[0].WIP || !msgs[1].WIP || msgs[1].WIPInstruction != "original" {
+		t.Fatal(msgs)
+	}
+}
+
+func TestWIPBaselineAfterRepeatedCompaction(t *testing.T) {
+	a := NewAgent(&wipClient{}, "model", "", nil)
+	for range 3 {
+		if err := a.Prompt(context.Background(), "turn", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tail := range []int{2, 0} {
+		if _, err := a.Compact(context.Background(), tail, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resumed := NewAgent(nil, "", "", nil)
+	resumed.SetMessages(a.Messages())
+	resumed.SetWIP(true)
+	if got := resumed.WIPState().BaselineTurn; got != 3 {
+		t.Fatalf("baseline = %d, want 3", got)
+	}
+}
+
 func TestWIPSessionRoundTrip(t *testing.T) {
 	s, err := NewSession(t.TempDir(), t.TempDir(), "test", "model", "test")
 	if err != nil {
@@ -174,6 +208,8 @@ func TestWIPResetAndValidation(t *testing.T) {
 	if err := (WIPSettings{Instruction: "</wip-mode>"}).Validate(); err == nil {
 		t.Fatal("accepted wrapper")
 	}
+	a.WIPSettings.DefaultOn = false
+	a.ResetWIP()
 	if a.WIPDonePrompt() != DefaultWIPDonePrompt {
 		t.Fatal("missing default cleanup")
 	}

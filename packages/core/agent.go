@@ -175,7 +175,7 @@ type Agent struct {
 	// boundaries: before the next model call after a tool batch, or
 	// after a text-only assistant turn finishes. It never interrupts
 	// a running tool or cancels an in-flight provider request.
-	queued []string
+	queued []provider.Message
 }
 
 // NewAgent returns an Agent with sensible defaults.
@@ -201,11 +201,15 @@ func (a *Agent) QueueMessage(text string) bool {
 	if text == "" {
 		return false
 	}
+	msg := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: text}}, Time: time.Now()}
+	a.mu.Lock()
+	a.markWIPLocked(&msg)
+	a.mu.Unlock()
 	if a.OnEvent != nil {
-		a.OnEvent(EvPromptSubmit{Text: text, Queued: true, WIP: a.WIPState().Active})
+		a.OnEvent(EvPromptSubmit{Text: text, Queued: true, WIP: msg.WIP})
 	}
 	a.mu.Lock()
-	a.queued = append(a.queued, text)
+	a.queued = append(a.queued, msg)
 	a.mu.Unlock()
 	return true
 }
@@ -216,8 +220,14 @@ func (a *Agent) QueueMessage(text string) bool {
 func (a *Agent) PendingQueuedMessages() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	out := make([]string, len(a.queued))
-	copy(out, a.queued)
+	return queuedTexts(a.queued)
+}
+
+func queuedTexts(messages []provider.Message) []string {
+	out := make([]string, len(messages))
+	for i, msg := range messages {
+		out[i] = MessageText(msg)
+	}
 	return out
 }
 
@@ -238,7 +248,7 @@ func (a *Agent) PopQueuedMessage() (string, bool) {
 	if n == 0 {
 		return "", false
 	}
-	text := a.queued[n-1]
+	text := MessageText(a.queued[n-1])
 	a.queued = a.queued[:n-1]
 	return text, true
 }
@@ -247,27 +257,20 @@ func (a *Agent) PopQueuedMessage() (string, bool) {
 // Hosts use this on explicit cancel/clear so stale follow-ups do
 // not run after the user aborted the turn.
 func (a *Agent) DrainQueuedMessages() []string {
-	return a.drainQueuedMessages()
+	return queuedTexts(a.drainQueuedMessages())
 }
 
-func (a *Agent) drainQueuedMessages() []string {
+func (a *Agent) drainQueuedMessages() []provider.Message {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	out := make([]string, len(a.queued))
-	copy(out, a.queued)
+	out := a.queued
 	a.queued = nil
 	return out
 }
 
-func (a *Agent) appendQueuedAsUser(texts []string, sink func(AgentEvent)) {
-	for _, text := range texts {
-		msg := provider.Message{
-			Role:    provider.RoleUser,
-			Content: []provider.Content{provider.TextBlock{Text: text}},
-			Time:    time.Now(),
-		}
+func (a *Agent) appendQueuedAsUser(messages []provider.Message, sink func(AgentEvent)) {
+	for _, msg := range messages {
 		a.mu.Lock()
-		a.markWIPLocked(&msg)
 		a.messages = append(a.messages, msg)
 		a.rev++
 		a.mu.Unlock()

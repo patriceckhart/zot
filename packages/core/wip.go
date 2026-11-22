@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"maps"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,18 +72,31 @@ func (a *Agent) SetWIP(active bool) {
 	}
 	a.wip.Active = active
 	if active {
-		turn := 0
-		for _, m := range a.messages {
-			if m.Role == provider.RoleUser && m.Meta["compaction"] != "true" {
-				turn++
-			}
-		}
+		turn := acceptedUserTurns(a.messages)
 		a.wip = WIPState{Active: true, Since: time.Now().UTC(), BaselineTurn: turn, BaselineCommit: commit}
 	}
 	state := a.wip
 	a.rev++
 	a.mu.Unlock()
 	a.publishWIP(state)
+}
+
+func acceptedUserTurns(messages []provider.Message) int {
+	turns := 0
+	for _, m := range messages {
+		if m.Role != provider.RoleUser {
+			continue
+		}
+		if m.Meta["compaction"] == "true" {
+			n, err := strconv.Atoi(m.Meta["compacted_user_turns"])
+			if err == nil && n > 0 {
+				turns += n
+			}
+		} else {
+			turns++
+		}
+	}
+	return turns
 }
 
 func (a *Agent) publishWIP(state WIPState) {
@@ -111,10 +125,18 @@ func (a *Agent) ResetWIP() {
 }
 
 func (a *Agent) WIPDonePrompt() string {
-	if strings.TrimSpace(a.WIPSettings.DonePrompt) != "" {
-		return a.WIPSettings.DonePrompt
+	prompt := a.WIPSettings.DonePrompt
+	if strings.TrimSpace(prompt) == "" {
+		prompt = DefaultWIPDonePrompt
 	}
-	return DefaultWIPDonePrompt
+	state := a.WIPState()
+	if !state.Since.IsZero() {
+		prompt += fmt.Sprintf("\n\nReview only the WIP phase that began at %s, after %d user turns.", state.Since.Format(time.RFC3339Nano), state.BaselineTurn)
+		if state.BaselineCommit != "" {
+			prompt += " Baseline HEAD: " + state.BaselineCommit + "."
+		}
+	}
+	return prompt
 }
 
 // markWIPLocked snapshots the instructions so exports do not depend on settings.

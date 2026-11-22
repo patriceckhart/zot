@@ -65,6 +65,10 @@ func TestWIPSlashCommandsAndExtension(t *testing.T) {
 func TestWIPDoneQueuesConfiguredCleanupOnce(t *testing.T) {
 	a := core.NewAgent(nil, "model", "system", nil)
 	a.WIPSettings.DonePrompt = "clean draft leftovers"
+	a.WIPBaseline = func() string { return "baseline-2" }
+	a.SetWIP(true)
+	a.SetWIP(false)
+	a.SetMessages([]provider.Message{{Role: provider.RoleUser}})
 	a.SetWIP(true)
 	i := NewInteractive(InteractiveConfig{Agent: a})
 	// An active run queues the cleanup rather than requiring terminal/provider IO.
@@ -74,7 +78,7 @@ func TestWIPDoneQueuesConfiguredCleanupOnce(t *testing.T) {
 		t.Fatal("done did not disable mode")
 	}
 	prompts := a.PendingQueuedMessages()
-	if len(prompts) != 1 || prompts[0] != "clean draft leftovers" {
+	if len(prompts) != 1 || !strings.HasPrefix(prompts[0], "clean draft leftovers\n") || !strings.Contains(prompts[0], "after 1 user turns") || !strings.Contains(prompts[0], "baseline-2") {
 		t.Fatalf("queued=%v", prompts)
 	}
 }

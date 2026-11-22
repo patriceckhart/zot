@@ -53,6 +53,7 @@ func TestWIPSubviewActions(t *testing.T) {
 	i.agent.SetWIP(true)
 	i.agent.WIPSettings.DonePrompt = "clean up the draft"
 	i.busy = true
+	want := i.agent.WIPDonePrompt()
 	i.runSlash(i.runCtx, "/wip")
 	i.handleKey(i.runCtx, tui.Key{Kind: tui.KeyDown})
 	i.handleKey(i.runCtx, tui.Key{Kind: tui.KeyDown})
@@ -61,7 +62,7 @@ func TestWIPSubviewActions(t *testing.T) {
 		t.Fatal("done action did not disable WIP and close the subview")
 	}
 	prompts := i.agent.PendingQueuedMessages()
-	if len(prompts) != 1 || prompts[0] != "clean up the draft" {
+	if len(prompts) != 1 || prompts[0] != want {
 		t.Fatalf("done queued %v", prompts)
 	}
 }

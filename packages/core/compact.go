@@ -103,8 +103,9 @@ func (a *Agent) compact(ctx context.Context, keepTail int, sink func(string), st
 		},
 		Time: time.Now(),
 		Meta: map[string]string{
-			"compaction":    "true",
-			"tokens_before": strconv.Itoa(tokensBefore),
+			"compaction":           "true",
+			"tokens_before":        strconv.Itoa(tokensBefore),
+			"compacted_user_turns": strconv.Itoa(acceptedUserTurns(summarizable)),
 		},
 	}
 

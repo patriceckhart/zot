@@ -46,6 +46,8 @@ While active, zot asks the model to replace abandoned attempts cleanly, remove
 unused draft code, and avoid change-history comments or compatibility shims for
 drafts. Existing code still requires normal care. `/wip done` disables the mode
 and submits one visible cleanup request, without intentionally changing behavior.
+The cleanup request includes the phase start time, baseline turn, and Git HEAD when available.
+Queued prompts retain the draft instructions in effect when submitted.
 Tests remain encouraged throughout the WIP phase.
 
 A warning-colored `WIP` badge marks active sessions. The transcript brackets
