@@ -6049,13 +6049,30 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 	case "error":
 		i.dialog.ShowResult(false, ev.Message)
 	case "success":
-		// Rebuild the agent with the fresh credential.
-		ag, prov, model, err := i.cfg.BuildAgent()
+		// Refresh credentials without implicitly routing an active session
+		// to a different provider or model.
+		i.mu.Lock()
+		current, currentProvider, currentModel := i.agent, i.cfg.Provider, i.cfg.Model
+		i.mu.Unlock()
+		build := i.cfg.BuildAgent
+		if current != nil && i.cfg.BuildAgentFor != nil {
+			build = func() (*core.Agent, string, string, error) {
+				return i.cfg.BuildAgentFor(currentProvider, currentModel)
+			}
+		}
+		ag, prov, model, err := build()
 		if err != nil {
 			i.dialog.ShowResult(false, err.Error())
 			return
 		}
 		i.mu.Lock()
+		if current != nil && ag != nil {
+			// Hydrate in memory rather than appending to the session file.
+			ag.SetMessages(current.Messages())
+			ag.SeedCost(current.Cost())
+			ag.SeedLastTurnUsage(current.LastTurnUsage())
+			ag.SessionID = current.SessionID
+		}
 		i.agent = ag
 		i.cfg.Provider = prov
 		i.cfg.Model = model

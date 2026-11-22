@@ -572,7 +572,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | Command | Description |
 |---|---|
 | `/help` | Show key bindings and commands. |
-| `/login` | Log in via API key or subscription (opens a dialog). |
+| `/login` | Log in via API key or subscription without clearing the current conversation. |
 | `/logout [provider]` | Clear credentials for any logged-in provider, or all when omitted. `/logout openai-codex` clears ChatGPT/Codex subscription auth while preserving a public OpenAI API key; `/logout kimi` also disables fallback to the official Kimi Code CLI token until you log in to Kimi through zot again. |
 | `/model` | Pick a model from a list (or `/model <id>` to set directly). |
 | `/reasoning` | Set the reasoning level for subsequent model calls. |

@@ -3,11 +3,13 @@ package modes
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/patriceckhart/zot/packages/core"
+	"github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/provider/auth"
 	"github.com/patriceckhart/zot/packages/tui"
 )
@@ -50,6 +52,47 @@ func TestAPIKeyLoginCompletesThroughAuthEvents(t *testing.T) {
 	}
 	if creds.AdditionalAPIKeyCreds["test-terminal-login"].APIKey != "synthetic-secret-key" {
 		t.Fatal("key was not stored")
+	}
+}
+
+func TestAPIKeyLoginPreservesActiveSession(t *testing.T) {
+	messages := []provider.Message{
+		{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "hello"}}},
+		{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "hi"}}},
+	}
+	cost := provider.Usage{InputTokens: 50, OutputTokens: 12}
+	last := provider.Usage{InputTokens: 20, OutputTokens: 3}
+	current := core.NewAgent(nil, "test-model", "", nil)
+	current.SessionID = "resumed-session"
+	current.SetMessages(messages)
+	current.SeedCost(cost)
+	current.SeedLastTurnUsage(last)
+	replacement := core.NewAgent(nil, "test-model", "", nil)
+	replacement.OnMessageAppended = func(provider.Message) {
+		t.Error("login must not append hydrated messages again")
+	}
+	i := NewInteractive(InteractiveConfig{
+		Agent: current, Provider: "test-provider", Model: "test-model",
+		BuildAgent: func() (*core.Agent, string, string, error) {
+			t.Fatal("login must not fall back to default routing for an active session")
+			return nil, "", "", nil
+		},
+		BuildAgentFor: func(p, m string) (*core.Agent, string, string, error) {
+			if p != "test-provider" || m != "test-model" {
+				t.Fatalf("login rebuilt for %s/%s instead of the active model", p, m)
+			}
+			return replacement, p, m, nil
+		},
+	})
+	i.handleAuthEvent(auth.Event{Kind: "success", Provider: "test-provider", Method: "apikey"})
+	if i.agent != replacement {
+		t.Fatal("login did not install the rebuilt agent")
+	}
+	if !reflect.DeepEqual(replacement.Messages(), messages) {
+		t.Fatal("login did not preserve the active transcript")
+	}
+	if replacement.SessionID != current.SessionID || replacement.Cost() != cost || replacement.LastTurnUsage() != last {
+		t.Fatal("login did not preserve session identity and usage")
 	}
 }
 
