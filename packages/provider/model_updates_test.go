@@ -6,7 +6,7 @@ import (
 )
 
 func TestGPT61TerraCatalogAndRequest(t *testing.T) {
-	for _, name := range []string{"openai", "openai-responses", "openai-codex", "azure-openai-responses"} {
+	for _, name := range []string{"openai", "openai-responses", "openai-codex", "azure-openai-responses", "github-copilot"} {
 		t.Run(name, func(t *testing.T) {
 			m, err := FindModel(name, "gpt-6.1-terra")
 			if err != nil {
@@ -15,6 +15,11 @@ func TestGPT61TerraCatalogAndRequest(t *testing.T) {
 			contextWindow := 272000
 			if name == "openai-codex" {
 				contextWindow = 500000
+			} else if name == "github-copilot" {
+				contextWindow = 1050000
+				if m.BaseURL != copilotDefaultBaseURL {
+					t.Fatalf("Copilot endpoint = %q", m.BaseURL)
+				}
 			}
 			if m.API != APIResponses || m.ContextWindow != contextWindow || m.MaxOutput != 128000 || !m.Reasoning || m.Speculative {
 				t.Fatalf("capabilities = %+v", m)
@@ -28,10 +33,16 @@ func TestGPT61TerraCatalogAndRequest(t *testing.T) {
 				t.Fatalf("levels = %q", got)
 			}
 			client := &codexClient{providerName: name}
+			if name == "github-copilot" {
+				client = NewGithubCopilotClient("synthetic-token").(*copilotClient).router.byAPI[APIResponses].(*codexClient)
+			}
 			for _, level := range append(levels, "off", "minimum") {
 				wire, err := client.buildRequest(Request{Model: m.ID, Reasoning: level})
 				if err != nil {
 					t.Fatal(err)
+				}
+				if wire.Model != m.ID {
+					t.Fatalf("wire model = %q, want %q", wire.Model, m.ID)
 				}
 				want := level
 				if level == "" || level == "off" {

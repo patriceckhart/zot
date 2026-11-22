@@ -9,6 +9,12 @@ import (
 // StartSession opens an active-conversation lifecycle, closing its predecessor
 // first. Empty IDs get a process-local identity for non-persisted sessions.
 func (m *Manager) StartSession(id, cwd, reason string) {
+	m.StartSessionWithAlias(id, "", cwd, reason)
+}
+
+// StartSessionWithAlias opens a lifecycle with an optional readable session alias.
+// The alias is metadata, not a replacement for the conversation ID.
+func (m *Manager) StartSessionWithAlias(id, alias, cwd, reason string) {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 	if m.stopping {
@@ -32,7 +38,18 @@ func (m *Manager) StartSession(id, cwd, reason string) {
 	if id == "" {
 		id = rand.Text()
 	}
-	m.sessionID, m.sessionCWD, m.sessionClosed = id, cwd, false
+	m.sessionID, m.sessionAlias, m.sessionCWD, m.sessionClosed = id, alias, cwd, false
+	m.emitEventLocked(extproto.EventFromHost{Event: "session_start"})
+}
+
+// replaySessionStart restores setup context for freshly reloaded subscribers.
+// It does not reopen the lifecycle or change the active conversation identity.
+func (m *Manager) replaySessionStart() {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if m.stopping || m.sessionClosed || m.sessionID == "" {
+		return
+	}
 	m.emitEventLocked(extproto.EventFromHost{Event: "session_start"})
 }
 

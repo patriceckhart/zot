@@ -13,11 +13,11 @@ import (
 )
 
 func startExtensionSession(mgr *extensions.Manager, ag *core.Agent, cwd, reason string) {
-	id := ""
+	id, alias := "", ""
 	if ag != nil {
-		id = ag.SessionID
+		id, alias = ag.SessionID, ag.SessionAlias
 	}
-	mgr.StartSession(id, cwd, reason)
+	mgr.StartSessionWithAlias(id, alias, cwd, reason)
 }
 
 func wireLifecycleEvents(ag *core.Agent, mgr *extensions.Manager) {

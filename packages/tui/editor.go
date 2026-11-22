@@ -212,6 +212,12 @@ func (e *Editor) HandleKey(k Key) (submit bool) {
 		e.deleteWord()
 	case KeyPaste:
 		paste := normalizeEditorText(k.Paste)
+		if e.Mask {
+			// Secret input is literal text, never a file attachment or a
+			// collapsed paste placeholder that could alter the credential.
+			e.insert(paste)
+			break
+		}
 		// Large multi-line pastes are collapsed to a short
 		// placeholder token so the editor doesn't balloon to
 		// hundreds of rows. The full body is stashed in e.pastes,
@@ -998,26 +1004,16 @@ func visibleWidth(s string) int {
 }
 
 func stripANSI(s string) string {
-	// Minimal ANSI stripper; handles CSI sequences (ESC [ ... final).
-	var out []rune
-	i := 0
-	runes := []rune(s)
-	for i < len(runes) {
-		if runes[i] == 0x1b && i+1 < len(runes) && runes[i+1] == '[' {
-			i += 2
-			for i < len(runes) {
-				c := runes[i]
-				i++
-				if c >= 0x40 && c <= 0x7e {
-					break
-				}
-			}
+	var out strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b {
+			i = skipEscapeSequence(s, i)
 			continue
 		}
-		out = append(out, runes[i])
+		out.WriteByte(s[i])
 		i++
 	}
-	return string(out)
+	return out.String()
 }
 
 // WrapANSILine is the exported form of wrapANSILine so other modes /

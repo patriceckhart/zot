@@ -29,6 +29,12 @@ const (
 type BashTool struct {
 	CWD     string
 	Sandbox *Sandbox
+	// StartupFile is an optional trusted Bash startup file. Empty disables loading.
+	StartupFile string
+	// Shell is an optional argv prefix. The command is appended as one argument.
+	Shell []string
+	// TimeoutSeconds caps execution time. Zero leaves execution unlimited.
+	TimeoutSeconds int
 }
 
 type bashArgs struct {
@@ -38,26 +44,31 @@ type bashArgs struct {
 
 const bashSchema = `{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]}`
 
-func (t *BashTool) Name() string                  { return "bash" }
-func (t *BashTool) Description() string           { return shellDescription(currentShell()) }
+func (t *BashTool) Name() string { return "bash" }
+func (t *BashTool) Description() string {
+	if len(t.Shell) > 0 {
+		return fmt.Sprintf("Run a command via configured shell argv %q, with the command appended as the final argument. stdout+stderr merged.", t.Shell)
+	}
+	return shellDescription(currentShell())
+}
 func (t *BashTool) Schema() json.RawMessage       { return json.RawMessage(bashSchema) }
 func (t *BashTool) OutputSchema() json.RawMessage { return json.RawMessage(shellOutputSchema) }
 
 const shellOutputSchema = `{"type":"object","properties":{"output":{"type":"string"},"truncated":{"type":"boolean"},"full_output_path":{"type":"string"},"exit_code":{"type":"integer"},"wall_time_seconds":{"type":"number"}},"required":["output","truncated","exit_code","wall_time_seconds"]}`
 
 func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage, progress func(string)) (core.ToolResult, error) {
-	return executeShell(ctx, raw, progress, t.CWD, "$", func(command string) error {
+	return executeShell(ctx, raw, progress, t.CWD, "$", t.TimeoutSeconds, func(command string) error {
 		if err := t.Sandbox.CheckCommand(command); err != nil {
 			return err
 		}
 		return t.Sandbox.CheckBashPermission(command)
 	}, func(ctx context.Context, command string) (*exec.Cmd, error) {
-		return newShellCmd(ctx, command), nil
+		return t.newCommand(ctx, currentShell(), command)
 	})
 }
 
 // executeShell shares output streaming, timeouts and result formatting across shells.
-func executeShell(ctx context.Context, raw json.RawMessage, progress func(string), cwd, prompt string, check func(string) error, newCommand func(context.Context, string) (*exec.Cmd, error)) (core.ToolResult, error) {
+func executeShell(ctx context.Context, raw json.RawMessage, progress func(string), cwd, prompt string, timeoutSeconds int, check func(string) error, newCommand func(context.Context, string) (*exec.Cmd, error)) (core.ToolResult, error) {
 	var a bashArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return core.ToolResult{}, fmt.Errorf("invalid args: %w", err)
@@ -72,10 +83,14 @@ func executeShell(ctx context.Context, raw json.RawMessage, progress func(string
 		cwd, _ = os.Getwd()
 	}
 
+	timeout, err := shellTimeout(timeoutSeconds, a.Timeout)
+	if err != nil {
+		return core.ToolResult{}, err
+	}
 	runCtx := ctx
 	var cancel context.CancelFunc
-	if a.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, time.Duration(a.Timeout)*time.Second)
+	if timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 
@@ -255,6 +270,7 @@ func executeShell(ctx context.Context, raw json.RawMessage, progress func(string
 	status := ""
 	if runCtx.Err() == context.DeadlineExceeded {
 		status = "timed_out"
+		sb.WriteString("\nCommand timed out.")
 	}
 	if runCtx.Err() == context.Canceled {
 		status = "cancelled"
@@ -357,9 +373,63 @@ func shellDescription(shell shellCommand) string {
 	return "Bash is unavailable; run a POSIX sh command via /bin/sh -c. stdout+stderr merged."
 }
 
-func newShellCmd(ctx context.Context, command string) *exec.Cmd {
-	shell := currentShell()
+// ValidateShell checks an optional argv prefix without requiring the executable
+// to be installed on the machine where configuration is saved.
+func ValidateShell(shell []string) error {
+	if len(shell) > 0 && strings.TrimSpace(shell[0]) == "" {
+		return fmt.Errorf("shell executable must not be empty")
+	}
+	for _, arg := range shell {
+		if strings.ContainsRune(arg, 0) {
+			return fmt.Errorf("shell arguments must not contain NUL")
+		}
+	}
+	return nil
+}
+
+func (t *BashTool) newCommand(ctx context.Context, shell shellCommand, command string) (*exec.Cmd, error) {
+	if err := ValidateShell(t.Shell); err != nil {
+		return nil, err
+	}
+	if len(t.Shell) > 0 {
+		// Only a direct Bash invocation can source a host startup file.
+		// Never inject host paths into a wrapper or a remote command.
+		base := strings.ToLower(filepath.Base(t.Shell[0]))
+		shell = shellCommand{path: t.Shell[0]}
+		if len(t.Shell) == 2 {
+			shell.flag = t.Shell[1]
+			shell.isBash = (base == "bash" || base == "bash.exe") && shell.flag == "-c"
+		}
+		if !shell.isBash {
+			argv := append([]string(nil), t.Shell[1:]...)
+			cmd := exec.CommandContext(ctx, t.Shell[0], append(argv, command)...)
+			if base == "cmd" || base == "cmd.exe" {
+				applyRawCmdLine(cmd, shell, command)
+			}
+			return cmd, nil
+		}
+	}
+	if shell.isBash && t.StartupFile != "" {
+		path, err := filepath.Abs(t.StartupFile)
+		if err != nil {
+			return nil, fmt.Errorf("bash startup path: %w", err)
+		}
+		info, err := os.Stat(path)
+		switch {
+		case os.IsNotExist(err):
+			// A startup file is optional.
+		case err != nil:
+			return nil, fmt.Errorf("bash startup file: %w", err)
+		case !info.Mode().IsRegular():
+			return nil, fmt.Errorf("bash startup file %q is not a regular file", path)
+		default:
+			// Bash reads inherited BASH_ENV before this script. Separate lines
+			// let aliases take effect before Bash parses the requested command.
+			quoted := "'" + strings.ReplaceAll(path, "'", "'\"'\"'") + "'"
+			command = "shopt -s expand_aliases\nsource " + quoted + " || exit $?\n" + command
+		}
+	}
 	cmd := exec.CommandContext(ctx, shell.path, shell.flag, command)
 	applyRawCmdLine(cmd, shell, command)
-	return cmd
+	return cmd, nil
 }

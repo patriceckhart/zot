@@ -1,6 +1,7 @@
 package modes
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -18,16 +19,18 @@ type loginStep int
 // dialog must default to closed so nothing shows up until Open() is
 // explicitly called.
 const (
-	loginStepClosed      loginStep = iota
-	loginStepMethod                // pick apikey vs subscription
-	loginStepProvider              // pick anthropic vs openai vs kimi
-	loginStepOAuthMethod           // pick browser or copy-code for Anthropic
-	loginStepLlamaURL              // enter and validate llama.cpp router URL
-	loginStepLlamaKey              // enter optional llama.cpp API key
-	loginStepWaiting               // browser open, waiting for callback
-	loginStepPasteCode             // user pastes the auth code here
-	loginStepInfo                  // informational setup guidance
-	loginStepDone                  // success or error, waiting for key to dismiss
+	loginStepClosed       loginStep = iota
+	loginStepMethod                 // pick apikey vs subscription
+	loginStepProvider               // pick anthropic vs openai vs kimi
+	loginStepOAuthMethod            // pick browser or copy-code for Anthropic
+	loginStepLlamaURL               // enter and validate llama.cpp router URL
+	loginStepLlamaKey               // enter optional llama.cpp API key
+	loginStepAPIKey                 // masked terminal API-key entry
+	loginStepAPIKeySaving           // validating and saving a key
+	loginStepWaiting                // browser open, waiting for callback
+	loginStepPasteCode              // user pastes the auth code here
+	loginStepInfo                   // informational setup guidance
+	loginStepDone                   // success or error, waiting for key to dismiss
 )
 
 const loginProviderPageSize = 8
@@ -44,6 +47,8 @@ type loginDialog struct {
 	cursor        int
 	providerQuery string
 	codeEd        *tui.Editor
+	keyEd         *tui.Editor
+	cancelKey     context.CancelFunc
 	llamaEd       *tui.Editor
 	llamaURL      string
 	infoTitle     string
@@ -72,6 +77,7 @@ func (d *loginDialog) Active() bool { return d != nil && d.step != loginStepClos
 // the agent package to call AuthPath()) avoids a cyclic import
 // between agent and agent/modes.
 func (d *loginDialog) Open(zotHome string) {
+	d.Close()
 	d.step = loginStepMethod
 	d.method = ""
 	d.provider = ""
@@ -81,6 +87,7 @@ func (d *loginDialog) Open(zotHome string) {
 	d.cursor = 0
 	d.providerQuery = ""
 	d.codeEd = nil
+	d.keyEd = nil
 	d.llamaEd = nil
 	d.llamaURL = ""
 	d.infoTitle = ""
@@ -119,6 +126,19 @@ func (d *loginDialog) Open(zotHome string) {
 
 // Close hides the dialog.
 func (d *loginDialog) Close() {
+	if d.cancelKey != nil {
+		d.cancelKey()
+		d.cancelKey = nil
+	}
+	if d.keyEd != nil {
+		d.keyEd.Clear()
+	}
+	if d.llamaEd != nil {
+		d.llamaEd.Clear()
+	}
+	if d.codeEd != nil {
+		d.codeEd.Clear()
+	}
 	d.step = loginStepClosed
 }
 
@@ -219,6 +239,23 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 		edLines, _, _ := d.llamaEd.Render(width - 2)
 		lines = append(lines, edLines...)
 		lines = append(lines, "", th.FG256(th.Muted, "enter saves - esc cancels"), frameRule(th, width))
+	case loginStepAPIKey:
+		lines = append(lines, frameHeader(th, "login - api key - "+providerLabel(d.provider), width))
+		lines = append(lines, th.FG256(th.Muted, "paste your API key (hidden):"))
+		if d.keyEd == nil {
+			d.keyEd = tui.NewEditor("")
+			d.keyEd.Mask = true
+		}
+		d.keyEd.Prompt = th.AccentBar(th.Accent)
+		edLines, _, _ := d.keyEd.Render(width - 2)
+		lines = append(lines, edLines...)
+		if d.message != "" {
+			lines = append(lines, th.FG256(th.Error, d.message))
+		}
+		lines = append(lines, "", th.FG256(th.Muted, "enter validates and saves - esc cancels"), frameRule(th, width))
+	case loginStepAPIKeySaving:
+		lines = append(lines, frameHeader(th, "login - api key - "+providerLabel(d.provider), width))
+		lines = append(lines, th.FG256(th.Muted, "validating and saving API key - esc cancels"), frameRule(th, width))
 	case loginStepWaiting:
 		lines = append(lines, frameHeader(th, "login - "+d.method+" - "+providerLabel(d.provider), width))
 		lines = append(lines, th.FG256(th.Muted, "open this URL in a browser:"))
@@ -244,6 +281,11 @@ func (d *loginDialog) Render(th tui.Theme, width int) []string {
 			lines = append(lines, l)
 		}
 		lines = append(lines, "")
+		for _, hint := range oauthRemoteHints(d.provider) {
+			for _, seg := range tui.WrapANSILine(hint, wrapW) {
+				lines = append(lines, th.FG256(th.Muted, seg))
+			}
+		}
 		lines = append(lines, th.FG256(th.Muted, "enter submits - esc cancels - waiting for browser callback in background"))
 		lines = append(lines, frameRule(th, width))
 	case loginStepPasteCode:
@@ -444,6 +486,7 @@ func (d *loginDialog) renderStatusLines(th tui.Theme) []string {
 // Key is the result of handling a key press.
 type loginDialogAction struct {
 	StartAPIKey bool
+	APIKey      string
 	StartOAuth  bool
 	StartManual bool
 	SaveLlama   bool
@@ -465,6 +508,8 @@ func (d *loginDialog) HandleKey(k tui.Key) loginDialogAction {
 		return d.handleOAuthMethodKey(k)
 	case loginStepLlamaURL, loginStepLlamaKey:
 		return d.handleLlamaKey(k)
+	case loginStepAPIKey, loginStepAPIKeySaving:
+		return d.handleAPIKey(k)
 	case loginStepWaiting:
 		return d.handleWaitingKey(k)
 	case loginStepPasteCode:
@@ -628,6 +673,56 @@ func (d *loginDialog) handleLlamaKey(k tui.Key) loginDialogAction {
 	}
 }
 
+// ShowAPIKeyEntry opens a masked input without starting a browser or listener.
+func (d *loginDialog) ShowAPIKeyEntry() {
+	if d.step == loginStepClosed {
+		return
+	}
+	d.step = loginStepAPIKey
+	d.message = ""
+	d.url = ""
+	d.keyEd = tui.NewEditor("")
+	d.keyEd.Mask = true
+}
+
+func (d *loginDialog) handleAPIKey(k tui.Key) loginDialogAction {
+	if k.Kind == tui.KeyEsc {
+		d.Close()
+		return loginDialogAction{Close: true}
+	}
+	if d.step == loginStepAPIKeySaving || d.keyEd == nil || !d.keyEd.HandleKey(k) {
+		return loginDialogAction{}
+	}
+	key := strings.TrimSpace(d.keyEd.SubmitValue())
+	d.keyEd.Clear()
+	if key == "" {
+		d.message = "API key cannot be empty"
+		return loginDialogAction{}
+	}
+	d.message = ""
+	d.step = loginStepAPIKeySaving
+	return loginDialogAction{APIKey: key, Provider: d.provider}
+}
+
+// oauthRemoteHints explains the existing fixed callback ports and the pasted
+// redirect fallback. Redirect ports cannot be changed independently of the
+// provider's registered OAuth client.
+func oauthRemoteHints(provider string) []string {
+	var port int
+	switch provider {
+	case "anthropic":
+		port = auth.AnthropicOAuth.RedirectPort
+	case "openai", "openai-codex":
+		port = auth.OpenAIOAuth.RedirectPort
+	default:
+		return nil
+	}
+	return []string{
+		"On SSH, open the authorization URL on your own computer. If the final localhost page fails, paste its full redirect URL here.",
+		fmt.Sprintf("Or connect with a tunnel first: ssh -L %d:localhost:%d user@host", port, port),
+	}
+}
+
 // ShowWaiting transitions to the waiting state with the given URL.
 // No-op if the user has already dismissed the dialog.
 func (d *loginDialog) ShowWaiting(url string) {
@@ -706,6 +801,10 @@ func (d *loginDialog) handlePasteCodeKey(k tui.Key) loginDialogAction {
 // -1 if the dialog is not in an input-expecting state. The host uses this to
 // place the real blinking cursor on the active input.
 func (d *loginDialog) CursorPos(width int) (row, col int) {
+	if d.step == loginStepAPIKey && d.keyEd != nil {
+		_, eRow, eCol := d.keyEd.Render(width - 2)
+		return 3 + eRow, eCol // header, frame padding, prompt
+	}
 	if d.step == loginStepLlamaURL || d.step == loginStepLlamaKey {
 		if d.llamaEd == nil {
 			return -1, -1

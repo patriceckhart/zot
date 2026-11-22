@@ -18,6 +18,7 @@ type orderedPipe struct {
 	mu     sync.Mutex
 	queue  []outboundFrame
 	bytes  int
+	limit  int
 	closed bool
 	wake   chan struct{}
 	done   chan struct{}
@@ -44,7 +45,11 @@ func (p *orderedPipe) enqueue(data []byte, ack chan error) error {
 		p.mu.Unlock()
 		return io.ErrClosedPipe
 	}
-	if len(p.queue) >= outboundFrames || p.bytes+len(data) > outboundBytes {
+	limit := p.limit
+	if limit == 0 {
+		limit = outboundBytes
+	}
+	if len(p.queue) >= outboundFrames || p.bytes+len(data) > limit {
 		p.closed = true
 		p.mu.Unlock()
 		p.Close()

@@ -325,6 +325,19 @@ var Catalog = []Model{
 		BaseURL: cloudgpuDefaultBaseURL,
 	},
 
+	// ---- UberLLM ----
+	// Seed entry only: deepseek/deepseek-v4-flash is the default returned by
+	// defaultModelForProvider so it resolves offline. UberLLM is an
+	// OpenAI-compatible gateway; limits and prices come from the public
+	// https://api.uberllm.dev/v1/models catalog (2026-11-10).
+	{
+		Provider: "uberllm", ID: "deepseek/deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash (UberLLM)",
+		Input:         []string{"text"},
+		ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 0.06643, PriceOutput: 0.13286,
+		BaseURL: uberllmDefaultBaseURL,
+	},
+
 	// ---- Anthropic / newer families ----
 	{
 		Provider: "anthropic", ID: "claude-haiku-5-5", DisplayName: "Claude Haiku 5.5",
@@ -387,6 +400,13 @@ var Catalog = []Model{
 		Provider: "anthropic", ID: "claude-fable-5-1", DisplayName: "Claude Fable 5.1",
 		ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true,
 		PriceInput: 10, PriceOutput: 50, PriceCacheRead: 0.25, PriceCacheWrite: 12.5,
+	},
+
+	{
+		Provider: "anthropic", ID: "claude-fable-5-2", DisplayName: "Claude Fable 5.2",
+		ContextWindow: 1000000, MaxOutput: 128000, Reasoning: true, AdaptiveThinking: true,
+		Input:      []string{"text", "image"},
+		PriceInput: 8, PriceOutput: 40, PriceCacheRead: 0.2, PriceCacheWrite: 10,
 	},
 
 	// ---- Speculative: OpenAI ----

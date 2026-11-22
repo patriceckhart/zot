@@ -126,7 +126,7 @@ Every release on the [releases page](https://github.com/patriceckhart/zot/releas
 
 ## Authenticate
 
-The easiest way is to just run `zot` and type `/login`. The TUI opens even without credentials and walks you through a browser-based login flow.
+The easiest way is to just run `zot` and type `/login`. The TUI opens even without credentials. API keys are entered directly in a hidden terminal input, including over SSH. Subscription login uses the provider's browser or device-code flow.
 
 ### Credential lookup order
 
@@ -179,11 +179,24 @@ zot runs the command only when that provider is selected, not while checking log
 
 Treat `auth.json` as executable configuration: anyone who can modify it can cause zot to run a program under your user account. zot does not interpret `!` prefixes or execute command strings through a shell.
 
+### Headless API-key setup
+
+Use `zot auth set <provider>` for a hidden terminal prompt without starting
+the TUI, or `zot auth set <provider> --stdin < /path/to/protected-key.txt`
+for scripts. Keys are not accepted as positional arguments, to avoid exposing
+them in process listings and shell history. Both forms validate the key where
+supported and save it to `$ZOT_HOME/auth.json`. Custom providers must already
+be configured in `models.json`.
+
+For subscription login over SSH, use the existing copy-code or device flows,
+or forward the provider's fixed callback port. See
+[headless and SSH authentication](docs/providers.md#headless-and-ssh-authentication).
+
 ### `/login` flow
 
 Run `zot` and type `/login`. Pick one of two methods:
 
-- **API key**: a small local web server starts on `127.0.0.1:<free-port>`, your browser opens a form, you pick a provider from the full API-key provider list, paste the key, and zot saves it to `auth.json` if accepted. Providers with a lightweight model-list endpoint are probed before saving; provider backends that need extra project/account env vars are saved directly.
+- **API key**: pick a provider, paste the key into the masked terminal input, and press Enter to validate and save it to `auth.json`. No browser or callback server is needed. Providers with a lightweight model-list endpoint are probed before saving. Providers needing extra project/account settings show setup guidance instead.
 - **Subscription**: use your Claude Pro/Max, ChatGPT Plus/Pro, Kimi Code, SuperGrok/X Premium, or GitHub Copilot subscription. DeepSeek and Google Gemini do **not** have a subscription login path. For those, use the API-key flow.
   - For Anthropic, choose browser callback (`localhost:53692`) or copy code before starting login. Browser callback also accepts a pasted code or full redirect URL from the same authorization link. Copy code uses Anthropic's hosted redirect and works over SSH or on headless machines without a local callback server. Anthropic uses the Claude Code OAuth flow. Messages go to `api.anthropic.com` with a bearer token and the Claude Code identity headers.
   - OpenAI uses the Codex CLI OAuth flow with a browser callback on `localhost:1455`. The same authorization link also accepts a pasted code or full redirect URL if the browser cannot reach zot's callback port (for example, over SSH). Copy the final redirect URL from the browser address bar, even if the page fails to load locally. The callback port must still be available on the machine running zot. Messages go to `chatgpt.com/backend-api/codex/responses` with the `chatgpt-account-id` extracted from the returned id_token.
@@ -212,13 +225,115 @@ $ZOT_HOME/
 ├── models-cache.json   # live /v1/models discovery cache (6h ttl)
 ├── AGENTS.md           # optional: global instructions appended to the prompt
 ├── SYSTEM.md           # optional: replaces the default system prompt
+├── COMPACT.md          # optional: replacement compaction template
 ├── skills/             # optional: user SKILL.md files
 ├── themes/             # optional: user theme JSON files
 ├── extensions/         # installed extensions, one dir per extension
+├── docs/               # bundled reference and website Markdown, start at index.md
 └── logs/               # app log files
 ```
 
 Drop a `SYSTEM.md` in `$ZOT_HOME` to replace the built-in identity and zot-docs guidance for every run. `--system-prompt` still wins per-invocation. Pass an empty value (`--system-prompt ""`) to intentionally omit the built-in identity. Custom prompts still receive appended instructions and generated context, including `AGENTS.md`, skills, auto-swarm guidance when enabled, and the date/cwd footer. Delete the file to revert to the default.
+
+The default identity is tool-independent. Built-in editing guidance follows the available tool set, including `--no-tools` and restricted `--tools` selections. The docs guidance mentions `read` only when available. Shell-based editing is discouraged only when `bash`, `edit`, and `write` are all available. On Windows, the cmd.exe shell hint is included only when `bash` is available. Custom prompts replace the built-in editing guidance as well as the identity and docs guidance.
+
+### Offline documentation
+
+Zot installs its bundled Markdown into `$ZOT_HOME/docs` when configuring the agent.
+Start with `index.md` for a catalog of all installed pages, including quickstart,
+tools, settings, sessions, providers, RPC, and extension development. Documentation
+is embedded in the binary, so reading it requires no network access or checkout.
+Matching files are left untouched, outdated bundled files are refreshed, and
+unrelated files are retained.
+
+The bundle combines repository reference docs with a build-time snapshot of
+[zot.sh documentation](https://www.zot.sh/docs). Repository references win when
+filenames overlap. Website-only pages may describe features newer than the binary.
+`website-source.txt` records downloaded-content hashes and `website-license.txt`
+contains the website documentation license. Links to bundled documentation pages
+are rewritten to local Markdown paths during installation.
+
+Website pages are downloaded during builds, not maintained as a second copy in
+this repository. GitHub release binaries include them. Local `make build` and
+`make install` warn and fall back to a validated cache if the website is unreachable,
+or repository docs only if no cache exists. Plain `go build` and `go install`
+embed whatever docs are available locally without downloading. Go dependencies
+must still be available locally. Release builds require a successful docs download.
+
+### Compaction mode
+
+Choose the compaction mode in `$ZOT_HOME/config.json`, then restart zot:
+
+```json
+{
+  "compaction_mode": "in_place"
+}
+```
+
+- `side` (default): send the transcript as text to a separate summarization request
+  with its own system prompt and no tools. This preserves existing behavior.
+- `in_place`: keep the active model, system prompt, tool definitions, reasoning
+  settings, and structured message prefix, then append a summary instruction.
+  This makes provider prompt-cache reuse possible, but cache hits and speedups
+  depend on the provider. When recent messages are retained verbatim, only the
+  older prefix is sent for summarization. Context-window or payload-size rejection
+  retries once using the side request. An unexpected tool call or an empty summary
+  retries in place once with a stronger instruction to output a non-empty summary
+  without tools, then falls back to the side request if either problem persists.
+  Recovery is limited to two in-place attempts and one side request. The side
+  fallback can still fail, including if it is too large or returns an empty summary.
+
+Both modes apply to manual and automatic compaction and continuous-host summaries.
+Zot never executes local tools during summarization. Failed attempts do not replace
+history, and failed tool-call responses are not included in retries. Cancellation,
+authentication errors, and request-transform failures do not trigger recovery.
+Provider-hosted tools remain advertised
+in in-place mode and may run remotely despite the no-tools instruction. Use side
+mode to avoid advertising them. In-place mode uses the active model, not a
+separately configured compaction model. The mode is a startup setting, not a live
+`/settings` toggle or a per-request RPC option. Direct core users can set
+`Agent.CompactionMode` to `"side"` or `"in_place"` before use.
+
+### Compaction instructions
+
+Create `$ZOT_HOME/COMPACT.md` to replace the built-in summary template for manual
+(`/compact`) and automatic compaction. The file controls the summary's content
+and format. For per-run additions, use the repeatable flag:
+
+```sh
+zot --append-compaction-prompt "Reference Markdown documents by path instead of repeating their contents."
+```
+
+A nonblank `COMPACT.md` replaces the built-in summary template. Missing or blank
+files use the built-in template. Flag values are appended to the selected template
+in command-line order. In side mode, the separate summarization system prompt
+still requires summarizing rather than continuing the conversation, but does not
+impose the built-in format when a custom template is used. In-place mode puts
+that requirement in the final summary instruction instead. Other file-read failures stop
+startup with an error.
+Instructions are loaded when the agent is configured, so restart zot after
+editing the file. They also apply to resumed sessions, but are not stored as
+session settings. Normal system-prompt overrides and `AGENTS.md` do not configure
+the side summarization request. In-place mode retains the active system prompt,
+including its normal overrides and loaded instructions.
+
+For example, `COMPACT.md` could contain:
+
+```markdown
+Summarize the conversation as a concise handoff for another coding assistant.
+Use sections for current work, completed changes, unresolved issues, key decisions,
+and next steps.
+Reference existing Markdown documents by exact path instead of repeating their
+contents. Preserve essential context that is not recorded in those documents.
+```
+
+The summarizer cannot execute local tools in either mode. It cannot open local
+referenced files or verify that their contents are sufficient for resuming work.
+The Go SDK exposes `Config.AppendCompactionPrompt`. Direct core users can set
+`Agent.CompactionPrompt` to replace the template and `Agent.CompactionInstructions`
+to append guidance before use. Continuous-mode summaries use the same
+configured instructions, followed by any per-request `conversation.compact`
+instructions. No customization leaves the existing compaction behavior unchanged.
 
 ### Configuration files
 
@@ -356,6 +471,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `--insecure` | Skip TLS certificate verification for the explicit `--base-url` endpoint or a `baseUrl` defined for a user model in `models.json` (self-signed local/internal inference servers). Built-in providers, auth, and model discovery keep normal TLS verification. |
 | `--system-prompt <text>` | Replace the default system prompt for this run (also overrides `$ZOT_HOME/SYSTEM.md`; pass `""` for no built-in identity). |
 | `--append-system-prompt <text>` | Append text to the system prompt (repeatable). |
+| `--append-compaction-prompt <text>` | Append compaction instructions after `$ZOT_HOME/COMPACT.md` (repeatable). |
 | `--reasoning off\|minimum\|low\|medium\|high\|xhigh\|max` | Set the reasoning level on supported models (default: off). `max` is a separate opt-in tier above `xhigh`. |
 | `--show-reasoning` | Show live reasoning and retain a compact tail before each reply in interactive mode. Explicitly opt in to `reasoning_delta` events in JSON/RPC mode. Does not change reasoning effort. |
 | `--stats <path>` | With `-p`/`--print`, write generation statistics as JSON. |
@@ -385,6 +501,61 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 In the interactive UI on Unix, a leading `cd <cwd> &&` in a Bash command is shown in muted colors when its literal path exactly matches the call's working directory. Quoted paths are supported. Expansions and ambiguous shell syntax are left unchanged. This only changes presentation, not execution or saved tool output. Calls restored from a saved session keep their original styling because their call-time working directory is not recorded.
 
 When the sandbox is on (see `/jail`), filesystem tools refuse paths outside the session cwd, except that `read` and `glob` can access loaded extension directories. `bash` applies best-effort command checks. Jail mode is an accident-prevention guardrail, not a security boundary.
+
+### Shell execution timeout
+
+Set an optional maximum execution time in seconds in `$ZOT_HOME/config.json`:
+
+```json
+{
+  "shell_timeout_seconds": 120
+}
+```
+
+Restart zot after editing this setting. Omitted or `0` means unlimited. Positive integers up to 9223372036 are accepted. Negative, fractional, and overflowing values are rejected. The limit applies to the built-in `bash` and optional `powershell` tools, including shell calls from codemode and subagents, interactive `!` commands, and .zot agent shell pre-hooks. Continuous workers use their own config.
+
+A tool call's optional `timeout` argument can shorten the configured limit, but cannot extend or disable it. The execution timer starts after permission checks, not while waiting for approval. Caller cancellation and earlier caller deadlines still apply. Expired commands return an error with `timed_out` status and captured output. Other tools, MCP servers, and extension subprocesses are unaffected.
+
+On Unix, cancellation targets the local process group. On Windows, it terminates the direct shell and bounds output draining, but does not guarantee descendant termination. Commands running inside containers or on remote hosts may continue after the local client stops. This is not a security boundary.
+
+### Configured shell and container execution
+
+Set `shell` in `$ZOT_HOME/config.json` to an argv prefix. zot appends each command as one final argument, without splitting or interpolating the configured arguments. For a local shell:
+
+```json
+{
+  "shell": ["/bin/zsh", "-c"]
+}
+```
+
+To run shell commands in an existing Apple container while keeping zot, extensions, codemode, and file tools on the host:
+
+```json
+{
+  "shell": ["container", "exec", "-i", "-w", "/absolute/path/to/project", "mydev", "bash", "-c"]
+}
+```
+
+For Docker, replace `"container"` with `"docker"`. Bind-mount the workspace into the container at the same absolute path, and set `-w` to that path. The path in the setting is literal, not a placeholder expanded by zot. Update it when switching projects. The container must already be running and have the selected shell installed. Do not allocate a TTY with `-t`.
+
+Restart zot after editing the setting. It applies to the `bash` tool (including calls from codemode), interactive `!` commands, .zot agent shell pre-hooks, and continuous workers using their own config. The optional PowerShell tool and extension subprocesses are unaffected. Omitting `shell`, or setting it to `null` or `[]`, preserves the default shell auto-detection. Invalid argv types, empty executable names, and NUL characters are rejected. An unavailable executable fails the call rather than falling back to a local shell.
+
+The subprocess still starts in the host session cwd and inherits the host environment. Container environment and working-directory forwarding depend on the wrapper's arguments. Timeouts and cancellation stop the local client process (and its local process group on Unix), but a command inside a container or on a remote host may keep running. Permission and jail checks still inspect the original command before execution. A configured shell is trusted executable configuration, not a security boundary.
+
+### Bash startup file
+
+To customize the agent's Bash commands, create a `.bashrc` in zot's global state directory (the resolved zot home described above). This respects `ZOT_HOME`, then `XDG_STATE_HOME`, then the platform default. For example:
+
+```bash
+alias la='ls -la'
+export PAGER=cat
+```
+
+When Bash is available, zot sources this optional file before each command, with alias expansion enabled. Bash remains non-interactive and does not automatically read your usual `~/.bashrc`. An inherited `BASH_ENV` is still read first, so zot's file can override its definitions. Each call starts a fresh shell, so shell state does not persist between calls. Startup output is included in tool output. A missing file is ignored, while an unreadable or invalid file, or a nonzero return from sourcing it, prevents the requested command from running.
+
+This also applies to interactive `!` commands, .zot agent pre-hooks, and workers using the Bash tool. With `shell` configured, zot loads this file only for a direct `["bash", "-c"]` invocation (including a path to Bash). Wrappers, container shells, other argument combinations, POSIX `sh`, Windows `cmd`, and the optional PowerShell tool do not load it. zot never injects the host startup path into a wrapper or automatically sources a project-local startup file.
+
+Treat this file as trusted executable configuration. Anyone who can modify it can run code as your user. Aliases and functions can change the behavior of permission-checked commands, and jail mode remains a best-effort guardrail, not a security boundary.
 
 ### Codemode
 
@@ -453,14 +624,14 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | Command | Description |
 |---|---|
 | `/help` | Show key bindings and commands. |
-| `/login` | Log in via API key or subscription (opens a dialog). |
+| `/login` | Log in via API key or subscription without clearing the current conversation. |
 | `/logout [provider]` | Clear credentials for any logged-in provider, or all when omitted. `/logout openai-codex` clears ChatGPT/Codex subscription auth while preserving a public OpenAI API key; `/logout kimi` also disables fallback to the official Kimi Code CLI token until you log in to Kimi through zot again. |
 | `/model` | Pick a model from a list (or `/model <id>` to set directly). |
 | `/reasoning` | Set the reasoning level for subsequent model calls. |
 | `/llama` | Connect to the configured llama.cpp router, load, unload, or remove cached models, and search/download GGUF models from Hugging Face with live progress. Shown after llama.cpp login is configured. |
 | `/sessions` | Resume a previous session for this directory. |
 | `/new` | Persist the current conversation and start a fresh session in the same directory. Unavailable with `--no-session`. |
-| `/session` | Five ops on the current session: inspect its `timeline`, `export` to a portable `.zotsession` file, `import` one back in, `fork` from a past user message, or view its branch `tree`. Opens a picker without an argument; direct forms include `/session timeline`, `/session export [path]`, `/session import <path>`, `/session fork`, and `/session tree`. Default export destination is `~/Downloads`. |
+| `/session` | Show the current session UUID and alias, inspect its `timeline`, `export` to a portable `.zotsession` file, `import` one back in, `fork` from a past user message, view its branch `tree`, or `copy-id` to the clipboard. Opens a picker without an argument. Default export destination is `~/Downloads`. |
 | `/jump` | Scroll the chat to a previous turn (or `/jump <text>` to filter). |
 | `/btw` | Side chat with full context that doesn't add to the main thread. |
 | `/swarm` | Spawn, monitor, and chat with background subagents. Each runs in parallel with your main session and shares its working directory. |
@@ -480,7 +651,7 @@ Extension-registered commands appear under a divider at the bottom of the popup,
 
 ### Shell escape (`!command`)
 
-Type `!` followed by a command to run it directly without going through the model. Everything after the `!` is passed to the same shell the `bash` tool uses (`/bin/bash -c` when available on Unix, then `bash -c` from `PATH`, with POSIX `/bin/sh -c` as a fallback; `cmd /C` on Windows), runs in the session working directory, and honors the `/jail` sandbox. The command, merged output, and exit status are appended to the transcript as user context, so the model can use them on the next turn. Running the command does not itself start a model turn. A running `!command` shares the busy state with the agent: `esc` cancels it, and you cannot start one while a turn (or another shell escape) is in flight.
+Type `!` followed by a command to run it directly without going through the model. Everything after the `!` is passed to the same shell the `bash` tool uses (the configured `shell` argv prefix when set, otherwise `/bin/bash -c` when available on Unix, then `bash -c` from `PATH`, with POSIX `/bin/sh -c` as a fallback; `cmd /C` on Windows), runs in the session working directory, and honors the `/jail` sandbox. The command, merged output, and exit status are appended to the transcript as user context, so the model can use them on the next turn. Running the command does not itself start a model turn. A running `!command` shares the busy state with the agent: `esc` cancels it, and you cannot start one while a turn (or another shell escape) is in flight.
 
 When the input starts with `!` (except the `!@` file picker), Ctrl+V text paste and terminal paste insert text without automatic path quoting or file placeholders. For example, pasting `~/.cache/huggingface/hub` after `!ls ` preserves shell tilde expansion. Quote or escape paths with spaces yourself. Pasting does not execute the command, press Enter to run it.
 
@@ -494,9 +665,10 @@ Shows previous sessions for the current working directory, newest first, with ti
 
 ### `/session`
 
-Five ops on the current session. `/session` alone opens a picker; each is also runnable directly.
+`/session` alone opens an action picker showing the current persisted session UUID and its alias, when available. The timeline shows the same identity. UUIDs wrap rather than truncate on narrow terminals. Both views show "no active session" with `--no-session`. Each action is also runnable directly.
 
 - **`/session timeline`**. Replaces the chat area with a read-only timeline of the current system prompt, user and assistant messages, and tool calls. The header shows provider-reported context usage and an estimated split between system prompt, tool definitions, and messages. The split uses a simple byte estimate, so it is directional rather than tokenizer-exact. Use `up` / `down` or `pgup` / `pgdn` to select an event, `tab` / `shift+tab` to inspect its summary, payload, result, schema, and transcript-derived timing, `left` / `right` to scroll detail one line, `home` / `end` to jump within detail, and `/` to search. Available reasoning summaries appear as separate events with Markdown rendering, but the timeline shows saved context only, not a live reasoning stream. Providers may not expose readable reasoning. `ctrl+e` writes a JSON export to `~/Downloads` (falling back to the home directory) with `0600` permissions on platforms that support Unix file modes. Images are represented by MIME type and byte size instead of embedding their data. Press `esc` to return to chat.
+- **`/session copy-id`**. Copies the full current session UUID, not its alias, using the local clipboard. The picker also offers "copy session ID". Copying requires an active persisted session and a working clipboard client (macOS `pbcopy`, Linux `wl-copy`/`xclip`/`xsel`, or Windows PowerShell). Clipboard errors are reported, and copying over SSH is not supported. No terminal clipboard fallback is sent.
 - **`/session export [path]`**. Writes the running transcript to a portable `.zotsession` file. Default destination is `~/Downloads/<timestamp>-<session-id>-<prompt-slug>.zotsession`. Pass a path to override; a directory is fine (a dated name is built inside), a bare name gets `.zotsession` appended. The meta's cwd is stripped on the way out so the recipient doesn't see your filesystem layout.
 
   **What's included.** Only the main chat thread of the running session — messages, tool calls, tool results, compactions, and usage. **`/swarm` subagents are NOT included.** Their transcripts, unix-socket inboxes, and per-agent session files are all machine-local; a `.zotsession` is just a chat transcript and has no way to revive a unix socket on another box. If you want the conversation, copy it out of the dashboard manually.
@@ -640,7 +812,11 @@ Sends the current transcript through the model with a structured summarization p
 
 In interactive mode, zot also auto-compacts during long-running tasks. After a tool batch finishes and its results are appended, the agent checks the latest context usage before the next model request. If usage reaches the configured threshold, it condenses history and continues the same task with the summary and recent messages. It also checks before a new user request and after a successful run finishes.
 
-For locally executed interactive sessions, the status bar shows `compactions: N` after a successful compaction. This counts manual and automatic compactions since the latest user request began, including pre-request compaction and context-overflow recovery. The count remains visible after the response finishes and resets when the next request starts. Queued input resets it only when it enters the conversation. Failed or cancelled compactions do not increment it. Zero is hidden. The count is display-only, is not restored from saved sessions, and is not currently synchronized to attached continuous-host views.
+For locally executed interactive sessions, the status bar shows `compactions: N` for successful compactions, with nonzero recovery and failure counts appended, for example `compactions: 4, 1 side fallback, 1 failed`. A side fallback counts an in-place compaction that switched to a side request, whether that request succeeded or failed. Explicit side mode and successful in-place retries do not increment the fallback count. Terminal failures do not increment the successful count. Timeouts count as failures, but cancellation does not.
+
+These counts include manual and automatic compactions since the latest user request began, including pre-request compaction and context-overflow recovery. They remain visible after the response finishes and reset together when the next request starts. Queued input resets them only when it enters the conversation. The whole label is hidden when all counts are zero. Counts are display-only, are not restored from saved sessions, and are not currently synchronized to attached continuous-host views.
+
+Direct core users can call `Agent.CompactWithStats` to inspect `CompactionStats.SideFallback` without changing the existing `Agent.Compact` API.
 
 Choose `off`, `70%`, `80%`, `85%` (default), or `90%` under `/settings` → **auto-compact threshold**. You'll see `condensing history, esc to cancel` above the status bar and an `(auto)` tag next to the context percentage. Prompts entered during compaction are queued for the next response. `esc` cancels compaction and the active run without replacing the transcript. A failed compaction also stops the run and surfaces an error. Checks use the latest provider-reported input usage, so newly added tool output may not be reflected until the next response. Turning the percentage trigger off does not disable automatic compaction and retry after a context-window or payload-too-large response.
 
@@ -693,7 +869,7 @@ Use `/login` to store API keys or subscription credentials. `/model` only shows 
 
 ## Models
 
-`--list-models` or the `/model` picker shows the full catalog across all built-in providers. Three sources:
+`--list-models` shows the catalog across providers. The `/model` picker and `--list-models-json` only list models from currently available providers. The filtering settings below apply to both listings and the pickers. Three sources:
 
 - **Catalog**: models baked into zot, covering Claude, GPT/Codex, Gemini/Gemma, Kimi/Moonshot, DeepSeek, Groq-hosted Llama/Gemma/Compound, OpenRouter-routed models, Bedrock model ids, Vertex model ids, Azure OpenAI deployments, Copilot models, and other provider-specific catalog entries.
 - **Live**: IDs discovered from the provider using your stored credentials — usually `GET /v1/models`, or provider-specific listing APIs for Amazon Bedrock (see [Amazon Bedrock](#amazon-bedrock)). Cached for 6h in `$ZOT_HOME/models-cache.json` and refreshed in the background on startup.
@@ -701,15 +877,35 @@ Use `/login` to store API keys or subscription credentials. `/model` only shows 
 
 The context meter in the status line uses the model's advertised context window to show how much of it your last turn consumed.
 
+### Model visibility and disabled providers
+
+To reduce the model lists, add these optional settings to `$ZOT_HOME/config.json`:
+
+```json
+{
+  "disabled_providers": ["google-vertex"],
+  "hide_speculative_models": true
+}
+```
+
+Both default to off (an empty provider list and `false`). They apply to `/model`, the rescue picker, shortcut assignment, continuous-agent model discovery, `--list-models`, and `--list-models-json`.
+
+- `disabled_providers` blocks the named providers, including custom and local providers. zot skips their credential resolution and model discovery, even when credentials come from environment variables or external files such as gcloud ADC. Supported provider aliases are accepted. Explicit `--provider`, saved selections, and existing shortcuts cannot bypass the setting and return a clear error. Saved selections and credentials are not deleted. To use a disabled saved provider again, remove it from this list or select an enabled provider with `--provider`.
+- `hide_speculative_models` only hides entries still marked speculative after catalog merging. Explicit `--model`, saved selections, and existing shortcuts remain usable. A model confirmed by live discovery becomes visible again. The underlying catalog and model metadata are unchanged.
+
+These settings do not cancel an already running turn or revoke credentials held by an existing client. Restart zot after changing provider policy to ensure existing clients are replaced. There are no `/settings` controls or per-model hiding options yet.
+
 ### Model fallback (rescue)
 
 When a turn fails because of a recoverable provider error — expired token (`401`), permission denied (`403`), rate limit (`429`), provider outage (`502`/`503`/`504`), or a transient network failure — zot opens a **rescue** picker over the chat instead of just painting a red banner.
 
-The picker is the same vertical list / fuzzy filter UI as `/model`, but it only shows models from providers you're currently logged in to (env vars, `auth.json`, Kimi CLI fallback, ollama). The failed model is excluded. Press `↑`/`↓` to choose, `enter` to retry the **same prompt** on the new model, `esc` to dismiss.
+The first action, **Retry current model**, resumes the existing turn without writing another user message. It keeps the active model, credentials, custom endpoint, original image attachments, and completed tool results. It is available even when no alternative models are configured. Partial output stays in history, and zot does not automatically re-execute completed tools. If the request fails again, the picker reopens.
+
+Below that action, the picker has the same vertical list / fuzzy filter UI as `/model`, showing alternative models from providers you're currently logged in to (env vars, `auth.json`, Kimi CLI fallback, ollama). The failed model is excluded from this alternative list. Press `↑`/`↓` to choose, `enter` to retry or switch models, and `esc` to dismiss. Typing filters alternatives and selects the first match.
 
 Before the actual provider request fires, the OpenAI / Anthropic / Kimi / DeepSeek / Google / OpenAI-Codex clients also do up to two silent retries with short backoff (250ms, 750ms) on `502`/`503`/`504` and connection-reset / EOF-before-headers errors. Most edge-proxy blips disappear without you ever seeing the rescue picker.
 
-A rescue retry always **drops launch-time `--api-key` and `--base-url`** before rebuilding the agent. Those overrides are usually the reason the rescue triggered (bad key, typo'd base URL, corporate gateway only valid for the originally-picked provider), so the retry re-resolves credentials from env vars / `auth.json` / provider defaults instead. Use `/model` if you want overrides to stick.
+Choosing an **alternative model** retries the saved prompt and **drops launch-time `--api-key` and `--base-url`** before rebuilding the agent. Those overrides can be the reason rescue triggered (bad key, typo'd base URL, corporate gateway only valid for the originally picked provider), so switching models re-resolves credentials from env vars / `auth.json` / provider defaults instead. **Retry current model** does not rebuild the client and preserves those overrides. Use `/model` if you want overrides to stick when switching models.
 
 No configuration is required — the candidate list is built dynamically from your active credentials. Bad-request / context-length / serialization errors are NOT routed to the rescue picker, because switching models won't fix them; those still surface as a normal error.
 
@@ -746,7 +942,7 @@ User-defined models show `source: user` in `--list-models` and take precedence o
 
 #### Custom providers
 
-A top-level provider key that is not a built-in id defines a custom provider. Give it a provider-level `baseUrl` and an `api` wire format (`openai` for OpenAI-compatible Chat Completions, the default, `openai-responses` for the OpenAI Responses API, or `anthropic` for the Anthropic Messages API). A model-level `baseUrl` overrides the provider-level one for that model; an unknown `api` value falls back to `openai` with a warning.
+A top-level provider key that is not a built-in id defines a custom provider. Give it a provider-level `baseUrl` and an `api` wire format (`openai` for OpenAI-compatible Chat Completions, the default, `openai-responses` for the OpenAI Responses API, `anthropic` for the Anthropic Messages API, or `google` for the native Gemini API). A model-level `baseUrl` overrides the provider-level one for that model. An unknown `api` value falls back to `openai` with a warning.
 
 ```json
 {
@@ -786,9 +982,25 @@ The provider IDs in `models.json` and `auth.json` must match. Then select the cu
 zot --provider my-company --model company-llm-v2
 ```
 
+For a native Gemini-compatible endpoint, use `"api": "google"`. Set `baseUrl` to the API root, without `/v1beta` or `/models`. zot appends `/v1beta/models/<id>:streamGenerateContent` and sends the custom provider's key in `x-goog-api-key`. Thought text and Gemini thinking settings use the native protocol. Credentials and model metadata remain separate from the built-in `google` provider.
+
+```json
+{
+  "providers": {
+    "my-gemini": {
+      "baseUrl": "https://gemini.example.com",
+      "api": "google",
+      "discover": true
+    }
+  }
+}
+```
+
+Use `MY_GEMINI_API_KEY`, `/login my-gemini`, or a matching `additional_api_key_creds` entry to configure its key. Static models can also be listed in `models`, with `"reasoning": true` for thinking-capable models.
+
 ##### Live model discovery for custom providers
 
-Set `"discover": true` on a custom provider to list its models from the OpenAI-compatible `/models` endpoint instead of, or in addition to, a static `models` array. Discovery is off by default and requires a provider-level `baseUrl`.
+Set `"discover": true` on a custom provider to list its models instead of, or in addition to, a static `models` array. Discovery is off by default and requires a provider-level `baseUrl`.
 
 ```json
 {
@@ -801,7 +1013,9 @@ Set `"discover": true` on a custom provider to list its models from the OpenAI-c
 }
 ```
 
-zot queries `<baseUrl>/models` (or `<baseUrl>/v1/models` when the base has no version segment) with a 3 second timeout: in the background at startup, when `/model` opens, and when launching with a discovered model that is not yet in the catalog. The stored or environment API key is sent as a bearer token when present, unless the provider sets `"auth": "none"`; a missing key is not an error. Discovered IDs get a conservative 32K context and 4K output default, and IDs containing `embed` are skipped. Entries in the provider's `models` array override discovered metadata for the same ID. The list stays in memory only, failed refreshes keep the previous snapshot, and `/model` reports the error. Background refresh never executes `api_key_command`.
+For non-Google wire formats, zot queries `<baseUrl>/models` (or `<baseUrl>/v1/models` when the base has no version segment) with a 3 second timeout: in the background at startup, when `/model` opens, and when launching with a discovered model that is not yet in the catalog. The stored or environment API key is sent as a bearer token when present, unless the provider sets `"auth": "none"`; a missing key is not an error. Discovered IDs get a conservative 32K context and 4K output default, and IDs containing `embed` are skipped. Entries in the provider's `models` array override discovered metadata for the same ID. The list stays in memory only, failed refreshes keep the previous snapshot, and `/model` reports the error. Background refresh never executes `api_key_command`.
+
+For `"api": "google"`, discovery queries `<baseUrl>/v1beta/models` with the same refresh timing and credential rules, using `x-goog-api-key` rather than bearer authentication. It follows pagination, reads the reported input and output token limits, and includes models advertising `generateContent` or `streamGenerateContent`, including custom model names. Gemini 2.5 and 3 family IDs enable reasoning automatically. Use static model metadata to enable reasoning for other thinking-capable IDs.
 
 ### Kimi Code
 
@@ -917,9 +1131,9 @@ On Amazon Bedrock, Claude Sonnet 5.5 (`anthropic.claude-sonnet-5-5`) has `us.`, 
 
 GPT-6 Sol and GPT-6 Luna are available through OpenAI API keys, OpenAI Codex subscriptions, and GitHub Copilot. Select `gpt-6-sol` or `gpt-6-luna` with `--provider openai`, `openai-responses`, `openai-codex`, or `github-copilot`. Both use the Responses API, support up to 128,000 output tokens, and expose `low` through `max` reasoning. OpenAI and Codex entries use a 272,000-token context window, while Copilot entries use 1,000,000 tokens. Access through subscription providers depends on account availability and organization policy.
 
-GPT-6.1 Sol (`gpt-6.1-sol`) is available with `--provider openai`, `openai-responses`, or `openai-codex`, subject to account access. It uses the Responses API and supports `low` through `max` reasoning. The context window is 272,000 tokens for API-key providers and 500,000 tokens for Codex, with a 128,000-token output limit. It is not included in the GitHub Copilot catalog.
+GPT-6.1 Sol (`gpt-6.1-sol`) is available with `--provider openai`, `openai-responses`, `openai-codex`, or `github-copilot`, subject to account access and Copilot model policy. It uses the Responses API and supports `low` through `max` reasoning. The context window is 272,000 tokens for API-key providers, 500,000 tokens for Codex, and 1,050,000 tokens for Copilot, with a 128,000-token output limit. Copilot's `/model` picker shows it only when the account's model listing enables it.
 
-GPT-6.1 Terra (`gpt-6.1-terra`) is available with `--provider openai`, `openai-responses`, `openai-codex`, or `azure-openai-responses`, subject to account and deployment access. It uses the Responses API with the same context and output limits as GPT-6.1 Sol. It supports `off` (sent as reasoning effort `none`) and `low` through `max`. Catalog prices per million tokens are $1 input, $5 output, $0.05 cache reads, and $1.25 cache writes. Above 272,000 input tokens, these rates become $2, $7.50, $0.10, and $2.50 respectively.
+GPT-6.1 Terra (`gpt-6.1-terra`) is available with `--provider openai`, `openai-responses`, `openai-codex`, `azure-openai-responses`, or `github-copilot`, subject to account, deployment, and Copilot model policy access. It uses the Responses API with a 272,000-token context window for API-key providers, 500,000 for Codex, and 1,050,000 for Copilot, and a 128,000-token output limit. Copilot's `/model` picker shows it only when enabled in the account's model listing. It supports `off` (sent as reasoning effort `none`) and `low` through `max`. Catalog prices per million tokens are $1 input, $5 output, $0.05 cache reads, and $1.25 cache writes. Above 272,000 input tokens, these rates become $2, $7.50, $0.10, and $2.50 respectively.
 
 GPT-5.6 catalog prices for OpenAI, Codex, and Azure are $0.20 input / $1.20 output for Luna, $4 / $20 for Sol, and $2 / $12 for Terra per million tokens. Cache-read and cache-write rates are respectively $0.02 / $0.25, $0.40 / $5, and $0.20 / $2.50. Above 272,000 input tokens, input and cache rates double and output rates increase by 50%. Subscription-provider costs are API-equivalent estimates, not invoices. Previously recorded session costs are not recalculated.
 
@@ -1440,7 +1654,11 @@ For development, point `zot --ext <path>` at a working directory and skip the in
 
 ### Updating extensions
 
-`zot update` refreshes the zot binary **and** every installed extension that lives in a git checkout. Per-extension behaviour:
+`zot ext update` refreshes global extensions under `$ZOT_HOME/extensions/` that live in git checkouts, without updating the zot binary. It also works with development builds. Project-local extensions are not updated.
+
+`zot update` also refreshes these extensions after installing the binary or when zot is already up to date. `zot update --check` installs nothing and does not update extensions. If the binary update fails, extensions are not updated.
+
+Both commands use the same per-extension behaviour:
 
 - Disabled extensions are skipped.
 - Extensions without a `.git/` directory (installed by `zot ext install ./local-path`) are skipped — there is no remote to pull from.

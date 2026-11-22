@@ -40,7 +40,7 @@ func TestBuildSystemPromptPlatform(t *testing.T) {
 		{"linux", false, "Platform: linux/amd64"},
 		{"darwin", false, "Platform: darwin/amd64"},
 	} {
-		got := BuildSystemPrompt(SystemPromptOpts{CWD: "/w", GOOS: tc.goos, GOARCH: "amd64"})
+		got := BuildSystemPrompt(SystemPromptOpts{CWD: "/w", Tools: []ToolSummary{{Name: "bash"}}, GOOS: tc.goos, GOARCH: "amd64"})
 		if !strings.Contains(got, tc.wantLabel) {
 			t.Errorf("%s: missing %q:\n%s", tc.goos, tc.wantLabel, got)
 		}
@@ -52,12 +52,15 @@ func TestBuildSystemPromptPlatform(t *testing.T) {
 
 func TestBuildSystemPromptDefaultIncludesBuiltInDocs(t *testing.T) {
 	got := BuildSystemPrompt(SystemPromptOpts{
+		Tools:      []ToolSummary{{Name: "read"}},
 		CWD:        "/workspace",
 		Now:        time.Date(2026, time.August, 6, 0, 0, 0, 0, time.UTC),
 		ZotDocsDir: "/zot/docs",
 	})
 
-	if !strings.Contains(got, "Zot's own docs are installed under /zot/docs") {
-		t.Fatalf("default prompt missing built-in docs guidance:\n%s", got)
+	for _, want := range []string{"Zot's own docs are installed under /zot/docs", "Start with index.md", "Repository reference docs take precedence"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("default prompt missing %q:\n%s", want, got)
+		}
 	}
 }

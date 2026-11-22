@@ -172,14 +172,35 @@ func TestNestedActivationsSurviveScriptFailure(t *testing.T) {
 }
 
 func TestLargeArgumentsAndImageLists(t *testing.T) {
-	ag := newAgent(testTool{name: "echo", run: func(context.Context, json.RawMessage) (core.ToolResult, error) {
+	ag := newAgent(testTool{name: "echo", run: func(_ context.Context, raw json.RawMessage) (core.ToolResult, error) {
+		var args struct {
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal(raw, &args); err != nil {
+			t.Error(err)
+		}
+		if args.Value != strings.Repeat("x", 262144) {
+			t.Errorf("large argument was corrupted or truncated: length = %d", len(args.Value))
+		}
 		return textResult("ok"), nil
 	}})
-	res := runScript(t, ag, `await tools.echo({value: "x".repeat(262144)})`, 2000)
+	// This tests payload handling, not execution speed. Race-instrumented
+	// Windows runners can take more than two seconds to cross the VM bridge.
+	run := func(code string) core.ToolResult {
+		t.Helper()
+		args, err := json.Marshal(map[string]string{"code": code})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return ag.CallTool(ctx, "script", "codemode", args, nil)
+	}
+	res := run(`await tools.echo({value: "x".repeat(262144)})`)
 	if res.IsError {
 		t.Fatalf("large argument failed: %+v", res)
 	}
-	res = runScript(t, ag, `for (let i = 0; i < 17; i++) image({type: "image", mimeType: "image/png", data: "iVBORw0KGgo="})`, 2000)
+	res = run(`for (let i = 0; i < 17; i++) image({type: "image", mimeType: "image/png", data: "iVBORw0KGgo="})`)
 	if res.IsError || len(res.Content) != 18 {
 		t.Fatalf("image list failed: %+v", res)
 	}

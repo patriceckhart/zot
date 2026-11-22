@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/patriceckhart/zot/internal/ignore"
 	"github.com/patriceckhart/zot/packages/core"
-	"github.com/patriceckhart/zot/packages/ignore"
 	"github.com/patriceckhart/zot/packages/provider"
 )
 

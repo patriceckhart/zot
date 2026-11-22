@@ -109,7 +109,7 @@ func TestAnthropicOAuthUsesCurrentClaudeCodeVersion(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected test server error")
 	}
-	if want := "claude-cli/2.1.280"; userAgent != want {
+	if want := "claude-cli/2.1.290"; userAgent != want {
 		t.Fatalf("user-agent = %q, want %q", userAgent, want)
 	}
 }

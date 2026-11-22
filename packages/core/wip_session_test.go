@@ -62,6 +62,8 @@ func TestWIPPortableSessions(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			activeState := a.WIPState()
+			a.SetWIP(false)
 			state := a.WIPState()
 			if err := s.Close(); err != nil {
 				t.Fatal(err)
@@ -77,6 +79,19 @@ func TestWIPPortableSessions(t *testing.T) {
 			branch, err := BranchSession(s.Path, root, cwd, "test", len(a.Messages()))
 			if err != nil {
 				t.Fatal(err)
+			}
+			if !compact {
+				historical, err := BranchSession(s.Path, root, cwd, "test", 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				meta, _, err := ReadSession(historical)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if meta.WIP == nil || *meta.WIP != activeState {
+					t.Fatalf("historical fork lost active WIP state: %+v", meta.WIP)
+				}
 			}
 			for _, path := range []string{exported, imported, branch} {
 				meta, messages, err := ReadSession(path)

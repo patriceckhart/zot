@@ -92,6 +92,11 @@ func ValidateAndRepairConfig() {
 		fmt.Fprintf(os.Stderr, "zot: config.json: %v (using defaults)\n", err)
 		return
 	}
+	// Preserve a disabled saved selection so resolution can explain the policy
+	// error instead of silently repairing it to another model or provider.
+	if cfg.providerDisabled(cfg.Provider) {
+		return
+	}
 	changed := false
 
 	if cfg.Provider != "" && !isKnownProvider(cfg.Provider) {
@@ -106,13 +111,13 @@ func ValidateAndRepairConfig() {
 			// Gateway providers can serve routed model ids like
 			// "deepseek/deepseek-v4-flash" even when the local catalog does not
 			// know them. Preserve only routed ids; plain typos are still repaired.
-			if cfg.Provider == "cheaperinference" || cfg.Provider == "opper" || cfg.Provider == "cloudgpu" || cfg.Provider == provider.LMStudioProviderID || isDiscoverableCustomProvider(cfg.Provider) || ((isGatewayProvider(cfg.Provider) || cfg.Provider == "runcrate") && isGatewayRoutedModelID(cfg.Model)) {
+			if cfg.Provider == "xai" || cfg.Provider == "cheaperinference" || cfg.Provider == "opper" || cfg.Provider == "cloudgpu" || cfg.Provider == provider.LMStudioProviderID || isDiscoverableCustomProvider(cfg.Provider) || ((isGatewayProvider(cfg.Provider) || cfg.Provider == "runcrate" || cfg.Provider == "uberllm") && isGatewayRoutedModelID(cfg.Model)) {
 				// Local discovery is transient. Preserve the selected LM Studio
 				// or discovery-enabled custom provider ID even if another
-				// provider has an identically named model. Routed gateway and
-				// Runcrate IDs are also valid without a catalog entry. Cheaper
-				// Inference, Opper, and CloudGPU use plain IDs, which must
-				// survive until discovery finishes.
+				// provider has an identically named model. Routed gateway,
+				// Runcrate, and UberLLM IDs are also valid without a catalog
+				// entry. Cheaper Inference, Opper, and CloudGPU use plain IDs,
+				// which must survive until discovery finishes.
 			} else if m, err := provider.FindModel("", cfg.Model); err == nil {
 				fix := defaultModelForProvider(cfg.Provider)
 				fmt.Fprintf(os.Stderr,
@@ -236,6 +241,15 @@ func refreshModels() {
 	}
 	opperCancel()
 
+	// xAI's list is credential-scoped. Refresh independently of the shared
+	// cache, and do not execute credential commands in the background.
+	xaiCtx, xaiCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	var xaiModels []provider.Model
+	if cred, _, err := resolveCredentialForBackground(xaiCtx, "xai"); err == nil {
+		xaiModels, _ = provider.DiscoverXAI(xaiCtx, cred, "")
+	}
+	xaiCancel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var all []provider.Model
@@ -279,8 +293,10 @@ func refreshModels() {
 		// Bedrock resolves SigV4 credentials independently of inference auth.
 		// A default AWS CLI profile can be usable even when zot has no
 		// Bedrock credential registered with its general resolver.
-		if live, err := provider.DiscoverBedrock(ctx, ""); err == nil {
-			all = append(all, live...)
+		if CheckProviderEnabled("amazon-bedrock") == nil {
+			if live, err := provider.DiscoverBedrock(ctx, ""); err == nil {
+				all = append(all, live...)
+			}
 		}
 		if haveOpenRouter {
 			// /models is public; gate on a credential so the picker only
@@ -318,6 +334,16 @@ func refreshModels() {
 		}
 	}
 
+	// A fresh shared cache may predate UberLLM login. Discover its public
+	// catalog when missing, without refreshing unrelated providers or their TTL.
+	if !cacheFresh || !slices.ContainsFunc(cached.Models, func(m provider.Model) bool { return m.Provider == "uberllm" }) {
+		if _, _, err := resolveCredentialForBackground(ctx, "uberllm"); err == nil {
+			if live, err := provider.DiscoverUberLLM(ctx, ""); err == nil {
+				all = append(all, live...)
+			}
+		}
+	}
+
 	// Presets are per-account and require auth. Fetch them even when the
 	// public /models cache is still fresh so @preset/{slug} shows up in
 	// the picker without waiting out CacheTTL.
@@ -331,6 +357,7 @@ func refreshModels() {
 	all = mergeYoloAutoModels(all, yoloModels)
 	all = mergeCheaperInferenceModels(all, cheaperModels)
 	all = mergeOpperModels(all, opperModels)
+	all = mergeXAIModels(all, xaiModels)
 	provider.SetLiveModels(all)
 	// Keep explicit metadata overrides above refreshed server catalogs.
 	LoadUserModels()
@@ -375,6 +402,18 @@ func mergeOpperModels(existing, live []provider.Model) []provider.Model {
 	out := make([]provider.Model, 0, len(existing)+len(live))
 	for _, model := range existing {
 		if model.Provider != "opper" {
+			out = append(out, model)
+		}
+	}
+	return append(out, live...)
+}
+
+// mergeXAIModels removes old credential-scoped metadata on failure or logout.
+// Built-in entries remain the offline fallback through SetLiveModels.
+func mergeXAIModels(existing, live []provider.Model) []provider.Model {
+	out := make([]provider.Model, 0, len(existing)+len(live))
+	for _, model := range existing {
+		if model.Provider != "xai" {
 			out = append(out, model)
 		}
 	}

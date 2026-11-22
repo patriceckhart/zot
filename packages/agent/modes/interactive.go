@@ -29,17 +29,19 @@ import (
 
 // InteractiveConfig configures the interactive loop.
 type InteractiveConfig struct {
-	Terminal     tui.Terminal
-	Theme        tui.Theme
-	Model        string
-	Provider     string
-	AuthMethod   string // "apikey" | "oauth" — used to tag cost as (sub) in status bar
-	BaseURL      string
-	Reasoning    string
-	SystemPrompt string
-	Tools        core.Registry
-	MaxSteps     int
-	CWD          string
+	Terminal            tui.Terminal
+	Theme               tui.Theme
+	Model               string
+	Provider            string
+	AuthMethod          string // "apikey" | "oauth" — used to tag cost as (sub) in status bar
+	BaseURL             string
+	Reasoning           string
+	SystemPrompt        string
+	Tools               core.Registry
+	MaxSteps            int
+	CWD                 string
+	Shell               []string // optional argv prefix for shell escapes
+	ShellTimeoutSeconds int
 
 	// Startup resource fields are loaded inputs available to list before the
 	// transcript. They are never sent to the provider or persisted by the view.
@@ -241,6 +243,11 @@ type InteractiveConfig struct {
 	// picker to only show reachable models.
 	LoggedInProviders func() []string
 
+	// ModelCatalog supplies models visible in pickers. Nil uses the full catalog.
+	ModelCatalog func() []provider.Model
+	// CheckProviderEnabled rejects disabled providers before model switching.
+	CheckProviderEnabled func(string) error
+
 	// ZotHome is zot's global state directory, used by authentication,
 	// themes, extensions, and other shared configuration.
 	ZotHome string
@@ -290,6 +297,11 @@ type InteractiveConfig struct {
 	// disk. Returns an empty string when --no-session is set or
 	// no session is open.
 	CurrentSessionPath func() string
+
+	// CurrentSessionIdentity returns the persisted session ID and optional alias.
+	// It must reflect session switches and return empty values with --no-session.
+	// Like CurrentSessionPath, it must not call back into Interactive.
+	CurrentSessionIdentity func() (id, alias string)
 
 	// FlushSession writes any in-memory agent messages to the
 	// session file that haven't been persisted yet. Called by
@@ -565,8 +577,10 @@ type Interactive struct {
 
 	// Display-only count for the current input. The initial user_message
 	// must preserve compactions performed before sending that input.
-	compactionsSinceInput      int
-	awaitingInitialUserMessage bool
+	compactionsSinceInput         int
+	compactionFallbacksSinceInput int
+	failedCompactionsSinceInput   int
+	awaitingInitialUserMessage    bool
 
 	// updateInfo is the result of the async update check. Zero value
 	// while the check hasn't completed or nothing is available.
@@ -787,6 +801,8 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		inputHistoryIndex: -1,
 		reloadErrors:      append([]string(nil), cfg.StartupExtensionErrors...),
 	}
+	i.modelDialog.catalog = cfg.ModelCatalog
+	i.rescueDialog.catalog = cfg.ModelCatalog
 	i.SetPinnedSkillsPending(cfg.PreloadPinnedSkills)
 	var keymapIssues []string
 	bindings := keymapcfg.Commands(cfg.Keymap)
@@ -1328,7 +1344,7 @@ func (i *Interactive) timelineData() timelineData {
 // timelineDataLocked snapshots the current provider-neutral context for the
 // read-only timeline. The caller must hold i.mu.
 func (i *Interactive) timelineDataLocked() timelineData {
-	data := timelineData{ContextUsed: i.lastCtxInput}
+	data := timelineData{ContextUsed: i.lastCtxInput, Session: i.currentSessionIdentity()}
 	if model, err := provider.FindModel(i.cfg.Provider, i.cfg.Model); err == nil {
 		data.ContextMax = model.ContextWindow
 	}
@@ -1434,6 +1450,7 @@ func (i *Interactive) redraw() {
 
 	// Dialogs (login or model picker) render between chat and the editor.
 	var dialog []string
+	mcpVisible := false
 	btwVisible := false
 	var sideChat []string
 	btwCursorRow, btwCursorCol := -1, -1
@@ -1445,6 +1462,7 @@ func (i *Interactive) redraw() {
 	case i.llamaDialog.Active():
 		dialog = i.llamaDialog.Render(i.cfg.Theme, cols)
 	case i.mcpDialog.Active():
+		mcpVisible = true
 		dialog = i.mcpDialog.Render(i.cfg.Theme, cols)
 	case i.rescueDialog.Active():
 		dialog = i.rescueDialog.Render(i.cfg.Theme, cols)
@@ -1500,7 +1518,7 @@ func (i *Interactive) redraw() {
 		i.settingsDialog.MaxRows = avail
 		dialog = i.settingsDialog.Render(i.cfg.Theme, cols)
 	case i.sessionOpsDialog.Active():
-		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, cols)
+		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, cols, i.currentSessionIdentity())
 	case i.sessionTreeDialog.Active():
 		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, cols)
 	}
@@ -1624,25 +1642,27 @@ func (i *Interactive) redraw() {
 		statusBusyPrefix = busyPrefix
 	}
 	statusLines := tui.StatusBar(tui.StatusBarParams{
-		Theme:          i.cfg.Theme,
-		Provider:       i.cfg.Provider,
-		Model:          i.cfg.Model,
-		Reasoning:      i.cfg.Reasoning,
-		Busy:           i.busy,
-		BusyPrefix:     statusBusyPrefix,
-		CWD:            i.cfg.CWD,
-		Locked:         i.cfg.Sandbox.Locked(),
-		NoYolo:         i.cfg.NoYolo,
-		WIP:            i.agent != nil && i.agent.WIPState().Active,
-		Usage:          i.cumUsage,
-		Subscription:   i.cfg.AuthMethod == "oauth",
-		ContextUsed:    i.lastCtxInput,
-		ContextMax:     ctxMax,
-		AutoCompacting: i.autoCompacting,
-		Compactions:    i.compactionsSinceInput,
-		Telegram:       i.telegramBridge != nil && i.telegramBridge.Active(),
-		Execution:      i.executionTag(),
-		Cols:           cols,
+		WIP:                 i.agent != nil && i.agent.WIPState().Active,
+		Theme:               i.cfg.Theme,
+		Provider:            i.cfg.Provider,
+		Model:               i.cfg.Model,
+		Reasoning:           i.cfg.Reasoning,
+		Busy:                i.busy,
+		BusyPrefix:          statusBusyPrefix,
+		CWD:                 i.cfg.CWD,
+		Locked:              i.cfg.Sandbox.Locked(),
+		NoYolo:              i.cfg.NoYolo,
+		Usage:               i.cumUsage,
+		Subscription:        i.cfg.AuthMethod == "oauth",
+		ContextUsed:         i.lastCtxInput,
+		ContextMax:          ctxMax,
+		AutoCompacting:      i.autoCompacting,
+		Compactions:         i.compactionsSinceInput,
+		CompactionFallbacks: i.compactionFallbacksSinceInput,
+		FailedCompactions:   i.failedCompactionsSinceInput,
+		Telegram:            i.telegramBridge != nil && i.telegramBridge.Active(),
+		Execution:           i.executionTag(),
+		Cols:                cols,
 	})
 	inputStyle := tui.NormalizeInputStyle(i.cfg.TUIInputStyle)
 	if inputStyle == tui.InputStyleLines || inputStyle == tui.InputStyleBlock {
@@ -1756,6 +1776,15 @@ func (i *Interactive) redraw() {
 	}
 
 	_, rows := i.cfg.Terminal.Size()
+	if mcpVisible {
+		// Leave a row for the renderer's bottom margin. Measure the actual
+		// editor, status, and queue rather than assuming a fixed height.
+		budget := rows - (len(bottom) - len(dialog)) - 1
+		fitted := i.mcpDialog.fitAuthRows(i.cfg.Theme, cols, budget, dialog)
+		reflowed := append([]string(nil), bottom[:1]...)
+		reflowed = append(reflowed, fitted...)
+		bottom = append(reflowed, bottom[1+len(dialog):]...)
+	}
 	if i.skillsDialog.Active() && i.skillsDialog.viewing != nil {
 		// Reflow after the editor, status, and queue are known so the
 		// scrollable skill content fits above them even on short terminals.
@@ -2439,6 +2468,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		if act.StartAPIKey {
 			i.startAPIKeyFlow(act.Provider)
 		}
+		if act.APIKey != "" {
+			i.submitAPIKey(act.Provider, act.APIKey)
+		}
 		if act.StartOAuth {
 			i.startOAuthFlow(act.Provider)
 		}
@@ -2496,7 +2528,9 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return false
 		}
 		act := i.rescueDialog.HandleKey(k)
-		if act.Select {
+		if act.Retry {
+			i.retryRescueTurn()
+		} else if act.Select {
 			i.applyRescueSelection(act.Provider, act.Model, act.Prompt)
 		}
 		i.invalidate()
@@ -2593,7 +2627,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 		act := i.sessionOpsDialog.HandleKey(k)
 		if act.Select {
-			i.doSessionOp(act.Action, "")
+			i.doSessionOp(ctx, act.Action, "")
 		}
 		i.invalidate()
 		return false
@@ -4942,7 +4976,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.pendingRescueImages = nil
 		i.statusErr = ""
 		i.statusOK = "started new session"
-		i.compactionsSinceInput = 0
+		i.resetCompactionCountsLocked()
 		i.awaitingInitialUserMessage = false
 		i.helpBlock = nil
 		i.parkedTurn = 0
@@ -4983,7 +5017,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.scrollOffset = 0
 		i.extNotes = nil
 		i.startupNotes = nil
-		i.compactionsSinceInput = 0
+		i.resetCompactionCountsLocked()
 		i.awaitingInitialUserMessage = false
 		i.reloadErrors = nil
 		i.view.InvalidateRenderCache()
@@ -5186,7 +5220,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 			if len(parts) >= 3 {
 				arg = strings.Join(parts[2:], " ")
 			}
-			i.doSessionOp(action, arg)
+			i.doSessionOp(ctx, action, arg)
 			break
 		}
 		i.openSessionOpsDialog()
@@ -5516,12 +5550,7 @@ func (i *Interactive) startAPIKeyFlow(provider string) {
 	if provider == "kimi" && i.cfg.SetKimiCLIFallbackDisabled != nil {
 		_ = i.cfg.SetKimiCLIFallbackDisabled(false)
 	}
-	url, err := i.cfg.AuthManager.StartAPIKey(provider)
-	if err != nil {
-		i.dialog.ShowResult(false, err.Error())
-		return
-	}
-	i.dialog.ShowWaiting(url)
+	i.dialog.ShowAPIKeyEntry()
 }
 
 func (i *Interactive) startOAuthFlow(provider string) {
@@ -5803,7 +5832,7 @@ func (i *Interactive) applySessionSelection(path string) {
 			i.invalidate()
 			return
 		}
-		i.compactionsSinceInput = 0
+		i.resetCompactionCountsLocked()
 		i.awaitingInitialUserMessage = false
 		i.view.ForgetShellCWD()
 		i.statusOK = "resumed session: " + path
@@ -5944,6 +5973,14 @@ func (i *Interactive) swapModel(prov, model string, builder func(string, string)
 		i.mu.Unlock()
 		return
 	}
+	if i.cfg.CheckProviderEnabled != nil {
+		if err := i.cfg.CheckProviderEnabled(m.Provider); err != nil {
+			i.mu.Lock()
+			i.statusErr = err.Error()
+			i.mu.Unlock()
+			return
+		}
+	}
 	// Same provider AND not a rescue retry: just swap the model on
 	// the existing agent. Mixed-API providers dispatch from model metadata,
 	// so the client remains reusable. Rescue retries always rebuild so a stale
@@ -6035,13 +6072,30 @@ func (i *Interactive) handleAuthEvent(ev auth.Event) {
 	case "error":
 		i.dialog.ShowResult(false, ev.Message)
 	case "success":
-		// Rebuild the agent with the fresh credential.
-		ag, prov, model, err := i.cfg.BuildAgent()
+		// Refresh credentials without implicitly routing an active session
+		// to a different provider or model.
+		i.mu.Lock()
+		current, currentProvider, currentModel := i.agent, i.cfg.Provider, i.cfg.Model
+		i.mu.Unlock()
+		build := i.cfg.BuildAgent
+		if current != nil && i.cfg.BuildAgentFor != nil {
+			build = func() (*core.Agent, string, string, error) {
+				return i.cfg.BuildAgentFor(currentProvider, currentModel)
+			}
+		}
+		ag, prov, model, err := build()
 		if err != nil {
 			i.dialog.ShowResult(false, err.Error())
 			return
 		}
 		i.mu.Lock()
+		if current != nil && ag != nil {
+			// Hydrate in memory rather than appending to the session file.
+			ag.SetMessages(current.Messages())
+			ag.SeedCost(current.Cost())
+			ag.SeedLastTurnUsage(current.LastTurnUsage())
+			ag.SessionID = current.SessionID
+		}
 		i.agent = ag
 		i.cfg.Provider = prov
 		i.cfg.Model = model
@@ -6286,13 +6340,19 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 	i.helpBlock = nil
 	sandbox := i.cfg.Sandbox
 	cwd := i.cfg.CWD
+	shell := append([]string(nil), i.cfg.Shell...)
+	timeoutSeconds := i.cfg.ShellTimeoutSeconds
+	startupFile := ""
+	if i.cfg.ZotHome != "" {
+		startupFile = filepath.Join(i.cfg.ZotHome, ".bashrc")
+	}
 	i.mu.Unlock()
 	i.invalidate()
 
 	go func() {
 		defer cancel()
 		raw, _ := json.Marshal(map[string]any{"command": cmd})
-		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox}
+		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox, StartupFile: startupFile, Shell: shell, TimeoutSeconds: timeoutSeconds}
 		progress := func(chunk string) {
 			i.mu.Lock()
 			i.shellLive += chunk
@@ -6376,6 +6436,13 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 }
 
 func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt string, images []provider.ImageBlock, overflowRecoveryAttempted bool, tool *toolPromptRequest, newInput bool) {
+	i.startTurnRun(parent, prompt, images, overflowRecoveryAttempted, tool, newInput, overflowRecoveryAttempted)
+}
+
+// continueExisting resumes history without appending another user message.
+// It is independent of overflowRecoveryAttempted so manual retries can still
+// recover a subsequent context overflow through compaction.
+func (i *Interactive) startTurnRun(parent context.Context, prompt string, images []provider.ImageBlock, overflowRecoveryAttempted bool, tool *toolPromptRequest, newInput, continueExisting bool) {
 	i.finishStartup()
 	if i.rejectAttachedImagePrompt(images) {
 		return
@@ -6383,7 +6450,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 	if tool != nil && i.rejectAttachedAction("extension tool_prompt", "submit a plain prompt for the host to execute") {
 		return
 	}
-	if overflowRecoveryAttempted && i.rejectAttachedAction("local continuation", "context recovery is managed by the host") {
+	if continueExisting && i.rejectAttachedAction("local continuation", "continuation is managed by the host") {
 		return
 	}
 	if i.agent == nil {
@@ -6406,16 +6473,20 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 	// Reset before pre-turn compaction, but not when resuming its pending
 	// request or recovering the same input after context overflow.
 	if newInput {
-		i.compactionsSinceInput = 0
+		i.resetCompactionCountsLocked()
 		i.awaitingInitialUserMessage = true
 	}
 	i.agent.SetStreamReasoning(i.cfg.ShowReasoning)
 	needsPreCompact := !overflowRecoveryAttempted && !i.autoCompacting && i.shouldAutoCompactLocked()
 	if needsPreCompact {
-		i.pendingCompactPrompt = prompt
-		i.pendingCompactImages = append([]provider.ImageBlock(nil), images...)
-		i.pendingCompactTool = tool
-		i.hasPendingCompactPrompt = true
+		if continueExisting {
+			i.continueAfterCompact = true
+		} else {
+			i.pendingCompactPrompt = prompt
+			i.pendingCompactImages = append([]provider.ImageBlock(nil), images...)
+			i.pendingCompactTool = tool
+			i.hasPendingCompactPrompt = true
+		}
 		i.statusErr = ""
 		i.extNotes = append(i.extNotes, autoCompactNoteLine(i.cfg.Theme, "context near limit — condensing history before sending..."))
 		i.pendingPostCompactNote = "context auto-compacted; sending your last message"
@@ -6428,7 +6499,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 
 	ctx, cancel := context.WithCancel(parent)
 	i.mu.Lock()
-	if !overflowRecoveryAttempted && !i.awaitingStartupPre {
+	if !continueExisting && !i.awaitingStartupPre {
 		prompt = i.preloadPinnedPromptLocked(prompt)
 	}
 	i.busy = true
@@ -6498,7 +6569,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 			err = i.cfg.PromptDriverWithImages(ctx, i.agent, prompt, images, sink)
 		} else if i.cfg.PromptDriver != nil {
 			err = i.cfg.PromptDriver(ctx, i.agent, prompt, sink)
-		} else if overflowRecoveryAttempted {
+		} else if continueExisting {
 			err = i.agent.Continue(ctx, sink)
 		} else if tool != nil {
 			stopTracking := i.cfg.Extensions.TrackToolCall(tool.call.ID, tool.origin)
@@ -6640,11 +6711,16 @@ func (i *Interactive) openRescueDialog(activeProvider, failedProvider, failedMod
 	if fprov == "" {
 		fprov = activeProvider
 	}
+	// Catalog callbacks may take their own locks. Build outside i.mu, then
+	// publish the dialog with the pending input as one state update.
+	dialog := newRescueDialog()
+	dialog.catalog = i.rescueDialog.catalog
+	dialog.Open(failedModel, loggedIn, fprov, failedModel, reason, prompt)
 	i.mu.Lock()
 	i.pendingRescuePrompt = prompt
 	i.pendingRescueImages = images
+	*i.rescueDialog = *dialog
 	i.mu.Unlock()
-	i.rescueDialog.Open(failedModel, loggedIn, fprov, failedModel, reason, prompt)
 	i.invalidate()
 }
 
@@ -6698,20 +6774,7 @@ func autoCompactNoteLine(th tui.Theme, msg string) string {
 // large. Providers surface this as either HTTP 413 or semantic context
 // errors with differing codes and messages.
 func isContextOverflowError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "http 413") ||
-		strings.Contains(msg, " 413") ||
-		strings.HasPrefix(msg, "413 ") ||
-		strings.Contains(msg, "payload too large") ||
-		strings.Contains(msg, "request entity too large") ||
-		strings.Contains(msg, "input exceeds the context window") ||
-		strings.Contains(msg, "context window exceeded") ||
-		strings.Contains(msg, "maximum context length") ||
-		strings.Contains(msg, "context_length_exceeded") ||
-		(strings.Contains(msg, "input") && strings.Contains(msg, "exceeds the maximum number of tokens"))
+	return provider.IsContextOverflowError(err)
 }
 
 const defaultAutoCompactThreshold = 85
@@ -6761,7 +6824,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	switch e := ev.(type) {
 	case core.EvUserMessage:
 		if !i.awaitingInitialUserMessage {
-			i.compactionsSinceInput = 0
+			i.resetCompactionCountsLocked()
 		}
 		i.awaitingInitialUserMessage = false
 	case core.EvAssistantStart:
@@ -7542,7 +7605,7 @@ func (h *telegramHost) Notify(level, message string) {
 }
 
 // openSessionOpsDialog shows the picker for `/session` with no arg.
-// Always offers timeline, export, import, fork, and tree. The handlers bail
+// Always offers timeline, export, import, fork, tree, and copy-id. The handlers bail
 // with a clear status message when a precondition is not met (empty transcript
 // on fork; no parent/siblings on tree).
 func (i *Interactive) openSessionOpsDialog() {
@@ -7552,18 +7615,21 @@ func (i *Interactive) openSessionOpsDialog() {
 		{label: "import", action: "import", hint: "load a .zotsession file into this directory"},
 		{label: "fork", action: "fork", hint: "branch from a past user message into a new session"},
 		{label: "tree", action: "tree", hint: "switch between branches in this directory"},
+		{label: "copy session ID", action: "copy-id", hint: "copy the full current session UUID to the clipboard"},
 	}
 	i.sessionOpsDialog.Open(items)
 	i.invalidate()
 }
 
-// doSessionOp dispatches timeline, export, import, fork, or tree. arg is the
+// doSessionOp dispatches timeline, export, import, fork, tree, or copy-id. arg is the
 // optional positional argument from e.g. /session export <path>
 // or /session import <path>; timeline, fork, and tree ignore it.
-func (i *Interactive) doSessionOp(action, arg string) {
+func (i *Interactive) doSessionOp(ctx context.Context, action, arg string) {
 	switch action {
 	case "timeline":
 		i.openTimeline()
+	case "copy-id":
+		i.copySessionID(ctx, tui.WriteClipboardText)
 	case "export":
 		i.doSessionExport(arg)
 	case "import":
@@ -7574,7 +7640,7 @@ func (i *Interactive) doSessionOp(action, arg string) {
 		i.doSessionTree()
 	default:
 		i.mu.Lock()
-		i.statusErr = "unknown /session action: " + action + " (use timeline, export, import, fork, or tree)"
+		i.statusErr = "unknown /session action: " + action + " (use timeline, export, import, fork, tree, or copy-id)"
 		i.mu.Unlock()
 		i.invalidate()
 	}
@@ -7687,7 +7753,7 @@ func (i *Interactive) doSessionImport(src string) {
 		return
 	}
 	i.mu.Lock()
-	i.compactionsSinceInput = 0
+	i.resetCompactionCountsLocked()
 	i.awaitingInitialUserMessage = false
 	i.view.ForgetShellCWD()
 	i.statusOK = "imported and switched to session " + friendlyPath(newPath)
@@ -7864,7 +7930,7 @@ func (i *Interactive) applySessionTreeMessageSelection(src string, msgIdx, turnN
 	}
 	i.scrollToBottom()
 	i.mu.Lock()
-	i.compactionsSinceInput = 0
+	i.resetCompactionCountsLocked()
 	i.awaitingInitialUserMessage = false
 	i.view.ForgetShellCWD()
 	if role == provider.RoleUser {
@@ -7929,7 +7995,7 @@ func (i *Interactive) applyForkSelection(msgIdx int) {
 		return
 	}
 	i.mu.Lock()
-	i.compactionsSinceInput = 0
+	i.resetCompactionCountsLocked()
 	i.awaitingInitialUserMessage = false
 	i.view.ForgetShellCWD()
 	i.statusOK = "forked and switched to new branch at " + friendlyPath(newPath)

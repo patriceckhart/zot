@@ -35,12 +35,12 @@ func (i *Interactive) startupBlockLocked(cols int) []string {
 	cl := i.startupChangelog
 	if cl.Body != "" {
 		title := fmt.Sprintf("zot %s release notes", cl.Version)
-		out = append(out, frameHeaderColor(i.cfg.Theme, title, cols, i.cfg.Theme.Accent))
+		out = append(out, frameHeaderColor(i.cfg.Theme, title, cols, i.cfg.Theme.Accent), "")
 		if cl.URL != "" {
 			out = append(out, wrapDialogTextRows(i.cfg.Theme.FG256(i.cfg.Theme.Muted, cl.URL), cols)...)
 		}
 		out = append(out, renderStartupChangelogBody(cl.Body, i.cfg.Theme, cols)...)
-		out = append(out, frameRuleColor(i.cfg.Theme, cols, i.cfg.Theme.Accent))
+		out = append(out, "", frameRuleColor(i.cfg.Theme, cols, i.cfg.Theme.Accent))
 		out = append(out, "")
 	}
 	out = append(out, i.startupNotes...)

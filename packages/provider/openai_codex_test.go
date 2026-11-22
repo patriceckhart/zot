@@ -69,6 +69,54 @@ func TestCodexImageToolResultMirror(t *testing.T) {
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
+func TestCopilotResponsesToolImagesReachModelOnce(t *testing.T) {
+	c := NewGithubCopilotClient("synthetic-token").(*copilotClient).router.byAPI[APIResponses].(*codexClient)
+	image := ImageBlock{MimeType: "image/png", Data: []byte("png-bytes")}
+	messages := []Message{
+		{Role: RoleUser, Content: []Content{TextBlock{Text: "look"}}},
+		{Role: RoleAssistant, Content: []Content{
+			ToolCallBlock{ID: "call_1", Name: "read", Arguments: []byte(`{"path":"x.png"}`)},
+			ToolCallBlock{ID: "call_2", Name: "read", Arguments: []byte(`{"path":"y.txt"}`)},
+		}},
+		{Role: RoleTool, Content: []Content{ToolResultBlock{CallID: "call_1", Content: []Content{image}}}},
+		{Role: RoleTool, Content: []Content{ToolResultBlock{CallID: "call_2", Content: []Content{TextBlock{Text: "text result"}}}}},
+	}
+	for _, tc := range []struct {
+		name     string
+		messages []Message
+	}{
+		{"synthesized", messages},
+		{"persisted mirror", append(append([]Message{}, messages...), Message{Role: RoleUser, Content: []Content{TextBlock{Text: "Tool output included the following image content:"}, image}})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wire, err := c.buildRequest(Request{Model: "gpt-5.5", Messages: tc.messages})
+			if err != nil {
+				t.Fatal(err)
+			}
+			images := 0
+			var outputs []string
+			for _, item := range wire.Input {
+				if output, ok := item.(codexFunctionCallOutput); ok {
+					outputs = append(outputs, output.CallID)
+				}
+				if message, ok := item.(codexInputMessage); ok {
+					for _, content := range message.Content {
+						if _, ok := content.(codexInputImage); ok {
+							images++
+							if len(outputs) != 2 || outputs[0] != "call_1" || outputs[1] != "call_2" {
+								t.Errorf("tool outputs before image = %v, want [call_1 call_2]", outputs)
+							}
+						}
+					}
+				}
+			}
+			if images != 1 {
+				t.Fatalf("input images=%d, want 1", images)
+			}
+		})
+	}
+}
+
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestCodexPreviewModelUsesCodexCLIShape(t *testing.T) {

@@ -23,7 +23,13 @@ You'll see one JSON object per line on stdout: a response acknowledging the prom
 
 ## Flags
 
-`zot rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--reasoning`, `--show-reasoning`, `--max-steps`, `--no-tools`, `--tools`, `--no-context-files`. Sessions are disabled by default in RPC mode. Pass `--session PATH` or `--continue` to opt into session persistence, including WIP state. The interactive `--resume` picker is not available over RPC. `--no-session` disables it. `--wip` enables draft guidance at startup, unless a resumed session restores its own state.
+`zot rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--append-compaction-prompt`, `--reasoning`, `--show-reasoning`, `--max-steps`, `--no-tools`, `--tools`, `--no-context-files`. Sessions are disabled by default in RPC mode. Pass `--session PATH` or `--continue` to opt into session persistence, including WIP state. The interactive `--resume` picker is not available over RPC. `--no-session` disables persistence. `--wip` enables draft guidance at startup, unless a resumed session restores its own state.
+
+A nonblank `$ZOT_HOME/COMPACT.md` replaces the built-in compaction template.
+Missing or blank files retain the default. Repeatable `--append-compaction-prompt`
+values add instructions after the selected template.
+See [Compaction instructions](../README.md#compaction-instructions). This does not
+change the RPC request schema.
 
 ## Extension system prompts
 
@@ -34,6 +40,13 @@ reused for ordinary follow-up prompts and tool-loop steps; `clear` and a model
 change invalidate it for the next prompt. Failures keep the current prompt and
 surface as `ext_notify` warnings. See [System prompt replacement](extensions.md#system-prompt-replacement)
 for chaining, deadlines, size limits, and privacy considerations.
+
+Request-transform extensions can also supply ephemeral user-role context using
+`prepend_user_context` on chat requests. This leaves the system prompt and
+`get_messages` history unchanged and must be supplied again for each request.
+It uses the extension subprocess protocol, not a new RPC client command.
+See [Ephemeral user context](extensions.md#ephemeral-user-context) for capability
+negotiation, limits, and failure handling.
 
 ## Auth
 

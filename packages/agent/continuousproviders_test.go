@@ -12,6 +12,25 @@ import (
 	"github.com/patriceckhart/zot/packages/provider/auth"
 )
 
+func TestContinuousModelPolicyBlocksHostAndKeylessProviders(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	loadTestModelsJSON(t, `{"providers":{"blocked-routing":{"baseUrl":"http://localhost:1/v1","auth":"none","models":[{"id":"pinned"}]},"ollama":{"models":[{"id":"local-model"}]}}}`)
+	disabled := append(append([]string(nil), knownProviders...), "blocked-routing")
+	if err := SaveConfig(Config{DisabledProviders: disabled, HideSpeculativeModels: true}); err != nil {
+		t.Fatal(err)
+	}
+	host := Resolved{Provider: "openai", Model: "gpt-4o-mini", Credential: "test-key"}
+	for _, config := range []continuous.AgentConfig{{}, {Provider: "blocked-routing", Model: "pinned"}} {
+		if _, err := continuousInference(context.Background(), host, config); err == nil {
+			t.Fatal("disabled host or keyless provider bypassed policy")
+		}
+	}
+	models, err := continuousAvailableModels(context.Background(), host)
+	if err != nil || len(models) != 0 {
+		t.Fatalf("available disabled models = %+v, error = %v", models, err)
+	}
+}
+
 func TestContinuousInferenceScopesCredentialsAndEndpoint(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	t.Setenv("ANTHROPIC_API_KEY", "synthetic-other")
@@ -90,16 +109,7 @@ func TestContinuousInferenceDoesNotDowngradeFailedCredentialCommand(t *testing.T
 	home := t.TempDir()
 	t.Setenv("ZOT_HOME", home)
 	const name = "routing-command"
-	configs := provider.CustomProviders()
-	previous, existed := configs[name]
-	configs[name] = provider.CustomProviderConfig{API: "openai", BaseURL: "http://127.0.0.1:1"}
-	t.Cleanup(func() {
-		if existed {
-			configs[name] = previous
-		} else {
-			delete(configs, name)
-		}
-	})
+	loadTestModelsJSON(t, `{"providers":{"routing-command":{"api":"openai","baseUrl":"http://127.0.0.1:1"}}}`)
 	creds := auth.Credentials{AdditionalAPIKeyCreds: map[string]auth.ProviderCreds{name: {
 		APIKeyCommand: &auth.APIKeyCommand{Program: filepath.Join(home, "missing-command")},
 	}}}

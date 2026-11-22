@@ -607,7 +607,7 @@ func (r *Runtime) ConversationSnapshot(ctx context.Context, id string, limit int
 // history yields storage.ErrCursor so the client resnapshots.
 func (r *Runtime) Watch(ctx context.Context, conversationID string, after uint64, visit func(storage.Commit) error) error {
 	cursor := after
-	prefixes := []string{"conversation/" + conversationID, "entry/" + conversationID + "/", "queue/" + conversationID + "/", runKey(conversationID), "usage/" + conversationID + "/", "task-conversation/" + conversationID + "/", "doc/conversation/" + conversationID + "/", approvalConversationKey(conversationID, ""), partialKey(conversationID), chainKey(conversationID)}
+	prefixes := conversationWatchPrefixes(conversationID)
 	for {
 		commits, err := r.Scan(ctx, cursor, 100)
 		if err != nil {
@@ -629,6 +629,10 @@ func (r *Runtime) Watch(ctx context.Context, conversationID string, after uint64
 			}
 		}
 	}
+}
+
+func conversationWatchPrefixes(id string) []string {
+	return []string{"conversation/" + id, "entry/" + id + "/", "queue/" + id + "/", runKey(id), "usage/" + id + "/", "task-conversation/" + id + "/", "doc/conversation/" + id + "/", approvalConversationKey(id, ""), partialKey(id), chainKey(id)}
 }
 
 func commitTouches(c storage.Commit, prefixes []string) bool {

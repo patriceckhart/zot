@@ -66,6 +66,9 @@ type mcpManagerDialog struct {
 	// open it by hand, for example when the browser runs elsewhere.
 	cancel  func()
 	authURL string
+	// Sign-in content scrolls independently when the terminal is short.
+	authScroll, authScrollMax int
+	authFollowPaste           bool
 	// paste completes a running sign-in with a redirect URL copied from a
 	// browser on another machine. pasteInput is the field's text and
 	// pasteErr the reason the last value was refused.
@@ -130,6 +133,7 @@ func (d *mcpManagerDialog) SetCancel(cancel func()) {
 func (d *mcpManagerDialog) SetAuthURL(u string, paste func(string) error) {
 	d.mu.Lock()
 	d.authURL, d.paste, d.pasteInput, d.pasteErr = u, paste, "", ""
+	d.authScroll, d.authScrollMax, d.authFollowPaste = 0, 0, false
 	d.mu.Unlock()
 }
 
@@ -304,7 +308,18 @@ func (d *mcpManagerDialog) HandleKey(k tui.Key) mcpAction {
 		return mcpAction{}
 	}
 	if d.busy != "" {
+		if d.authURL != "" && (k.Kind == tui.KeyUp || k.Kind == tui.KeyDown) {
+			if k.Kind == tui.KeyUp {
+				d.authScroll = max(0, d.authScroll-1)
+			} else {
+				d.authScroll = min(d.authScrollMax, d.authScroll+1)
+			}
+			d.authFollowPaste = false
+			d.mu.Unlock()
+			return mcpAction{}
+		}
 		if d.paste != nil && d.handlePasteKeyLocked(k) {
+			d.authFollowPaste = true
 			d.mu.Unlock()
 			return mcpAction{}
 		}
@@ -580,10 +595,17 @@ func (d *mcpManagerDialog) Render(th tui.Theme, width int) []string {
 		}
 		keys = []string{"ctrl+c close"}
 		if d.authURL != "" {
-			lines = append(lines, th.FG256(th.Muted, "  If the browser did not open, visit:"))
-			// The URL is printed unwrapped so a terminal can detect it as
-			// one link and it copies as a whole.
-			lines = append(lines, "  "+d.authURL)
+			for _, row := range tui.WrapANSILine("If the browser did not open, visit:", max(1, width-2)) {
+				lines = append(lines, th.FG256(th.Muted, "  "+row))
+			}
+			for _, row := range tui.WrapANSILine(d.authURL, max(1, width-2)) {
+				lines = append(lines, "  "+row)
+			}
+			// Wrap the label before adding OSC 8 so each row has a complete
+			// hyperlink and the target is never split across terminal rows.
+			for _, row := range tui.WrapANSILine("Click here to open", max(1, width-2)) {
+				lines = append(lines, "  "+tui.Hyperlink(d.authURL, row))
+			}
 		}
 		if d.paste != nil {
 			lines = append(lines, "")

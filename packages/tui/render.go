@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
 )
@@ -257,7 +258,7 @@ func paintBackgroundRow(line string, cols int, th Theme) string {
 }
 
 // truncateToWidth clips s so its on-screen width doesn't exceed cols
-// cells, preserving ANSI CSI escape sequences (which don't consume
+// cells, preserving ANSI CSI and OSC escape sequences (which don't consume
 // cells). Lines carrying an inline-image escape are returned as-is
 // since we can't measure their painted size.
 //
@@ -275,50 +276,29 @@ func truncateToWidth(s string, cols int) string {
 	var out strings.Builder
 	out.Grow(len(s))
 	seen := 0
-	runes := []rune(s)
-	for i := 0; i < len(runes); {
-		r := runes[i]
-		// CSI escape sequence (ESC [ ... final): zero-width.
-		if r == 0x1b && i+1 < len(runes) && runes[i+1] == '[' {
-			out.WriteRune(r)
-			out.WriteRune(runes[i+1])
-			i += 2
-			for i < len(runes) {
-				c := runes[i]
-				out.WriteRune(c)
-				i++
-				if c >= 0x40 && c <= 0x7e {
-					break
-				}
+	clipped := false
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b {
+			end := skipEscapeSequence(s, i)
+			seq := s[i:end]
+			// Keep resets and hyperlink closers even beyond the clipped text.
+			// Do not open a new hyperlink whose label has been discarded.
+			if !clipped || strings.HasPrefix(seq, "\x1b[") || seq == "\x1b]8;;\x1b\\" || seq == "\x1b]8;;\x07" {
+				out.WriteString(seq)
 			}
+			i = end
 			continue
 		}
+		r, size := utf8.DecodeRuneInString(s[i:])
 		rw := runewidthRune(r)
 		if seen+rw > cols {
-			// Flush any trailing ANSI escapes (resets, erase-to-EOL)
-			// so background colors and cleanup sequences survive.
-			for i < len(runes) {
-				if runes[i] == 0x1b && i+1 < len(runes) && runes[i+1] == '[' {
-					out.WriteRune(runes[i])
-					out.WriteRune(runes[i+1])
-					i += 2
-					for i < len(runes) {
-						c := runes[i]
-						out.WriteRune(c)
-						i++
-						if c >= 0x40 && c <= 0x7e {
-							break
-						}
-					}
-				} else {
-					break
-				}
-			}
-			break
+			clipped = true
 		}
-		out.WriteRune(r)
-		seen += rw
-		i++
+		if !clipped {
+			out.WriteString(s[i : i+size])
+			seen += rw
+		}
+		i += size
 	}
 	return out.String()
 }

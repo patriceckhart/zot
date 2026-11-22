@@ -30,7 +30,7 @@ func TestPowerShellSettingLiveToggle(t *testing.T) {
 	read := &tools.ReadTool{CWD: cwd}
 	original := core.Registry{"read": read, "custom": read}
 	i := &Interactive{
-		cfg:   InteractiveConfig{CWD: cwd, Sandbox: sb, SettingsStore: store},
+		cfg:   InteractiveConfig{CWD: cwd, Sandbox: sb, SettingsStore: store, ShellTimeoutSeconds: 30},
 		agent: core.NewAgent(nil, "", "", original),
 	}
 	for _, value := range []bool{true, false} {
@@ -46,7 +46,7 @@ func TestPowerShellSettingLiveToggle(t *testing.T) {
 		}
 		if value {
 			ps := i.agent.Tools["powershell"].(*tools.PowerShellTool)
-			if ps.CWD != cwd || ps.Sandbox != sb {
+			if ps.CWD != cwd || ps.Sandbox != sb || ps.TimeoutSeconds != 30 {
 				t.Fatal("tool lost session context")
 			}
 		}

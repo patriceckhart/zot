@@ -12,6 +12,7 @@ project_name: zot
 
 before:
   hooks:
+    - go run ./internal/cmd/fetchdocs
     - go mod tidy
 
 builds:

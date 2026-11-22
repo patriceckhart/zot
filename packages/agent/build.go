@@ -38,11 +38,14 @@ type Resolved struct {
 	Reasoning   string
 	Temperature *float32
 
-	ToolRegistry core.Registry
-	ToolSummary  []ToolSummary
-	SystemPrompt string
-	MaxSteps     int
-	Sandbox      *tools.Sandbox
+	ToolRegistry           core.Registry
+	ToolSummary            []ToolSummary
+	SystemPrompt           string
+	CompactionPrompt       string
+	CompactionInstructions string
+	CompactionMode         string
+	MaxSteps               int
+	Sandbox                *tools.Sandbox
 
 	// MaxOutput is the resolved model's maximum output-token budget
 	// (from the catalog). Passed to the agent so each turn requests
@@ -220,6 +223,8 @@ func defaultModelForProvider(prov string) string {
 		return "deepseek-ai/DeepSeek-V4.1-Flash"
 	case "cloudgpu":
 		return "deepseek-v4-flash"
+	case "uberllm":
+		return "deepseek/deepseek-v4-flash"
 	case "mistral":
 		return "mistral-large-latest"
 	case "zai":
@@ -261,7 +266,7 @@ func defaultModelForProvider(prov string) string {
 var knownProviders = []string{
 	"anthropic", "openai", "openai-codex", "openai-responses", "kimi", "deepseek", "google", "ollama", provider.LlamaCPPProviderID, provider.LMStudioProviderID,
 	"moonshotai", "moonshotai-cn",
-	"cerebras", "groq", "xai", "together", "huggingface", "openrouter", "gondola", "yolo-auto", "cheaperinference", "opper", "runcrate", "cloudgpu",
+	"cerebras", "groq", "xai", "together", "huggingface", "openrouter", "gondola", "yolo-auto", "cheaperinference", "opper", "runcrate", "cloudgpu", "uberllm",
 	"mistral", "zai",
 	"xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp",
 	"minimax", "minimax-cn",
@@ -355,7 +360,10 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 	if err := args.CodemodeSettings.Validate(); err != nil {
 		return Resolved{}, err
 	}
-	cfg, _ := LoadConfig()
+	cfg, err := LoadConfig()
+	if err != nil {
+		return Resolved{}, err
+	}
 	wipSettings, wipErr := loadWIPSettings(cfg.WIP)
 	if wipErr != nil {
 		return Resolved{}, wipErr
@@ -367,9 +375,6 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 	if err := cfg.WIP.Validate(); err != nil {
 		return Resolved{}, err
 	}
-	if err := cfg.Codemode.Validate(); err != nil {
-		return Resolved{}, err
-	}
 
 	// User-requested provider (explicit > config > default).
 	// Normalise common aliases (e.g. "bedrock" -> "amazon-bedrock")
@@ -377,6 +382,9 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 	// provider and silently downgraded to anthropic.
 	argProvider := canonicalProvider(args.Provider)
 	provName := firstNonEmpty(argProvider, canonicalProvider(cfg.Provider), "anthropic")
+	if err := CheckProviderEnabled(provName); err != nil {
+		return Resolved{}, err
+	}
 	if !isKnownProvider(provName) {
 		// Unknown provider (maybe removed or renamed). Fall back to
 		// the first provider that has credentials, or anthropic.
@@ -398,6 +406,9 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		}
 		if CredentialAvailable("anthropic") {
 			provName = "anthropic"
+		}
+		if err := CheckProviderEnabled(provName); err != nil {
+			return Resolved{}, err
 		}
 		// Reset the saved config so this doesn't keep happening.
 		cfg.Provider = provName
@@ -509,6 +520,12 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		}
 	}
 	resolvedModel, err := provider.FindModel(provName, model)
+	if err != nil && provName == "xai" {
+		// Discovery is asynchronous. Preserve explicit and saved IDs, leaving
+		// unpublished output limits unset and validation to the API.
+		resolvedModel = provider.UnlistedXAIModel(model)
+		err = nil
+	}
 	if err != nil && (provName == "ollama" || provName == provider.LlamaCPPProviderID || provName == provider.LMStudioProviderID) {
 		// Local providers are intentionally open-catalogue: any model id the
 		// configured server understands is valid, even if it is not cached.
@@ -551,6 +568,16 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 	// selections before asynchronous discovery completes; the API validates
 	// unknown IDs. Plain unknown values still fall back to the default.
 	if err != nil && provName == "runcrate" && isGatewayRoutedModelID(model) {
+		resolvedModel = provider.Model{
+			Provider: provName, ID: model, DisplayName: model,
+			ContextWindow: 32768, MaxOutput: 4096, Source: "gateway",
+		}
+		err = nil
+	}
+	// UberLLM model IDs are vendor/model. Preserve route-qualified explicit
+	// selections before asynchronous discovery completes; the API validates
+	// unknown IDs. Plain unknown values still fall back to the default.
+	if err != nil && provName == "uberllm" && isGatewayRoutedModelID(model) {
 		resolvedModel = provider.Model{
 			Provider: provName, ID: model, DisplayName: model,
 			ContextWindow: 32768, MaxOutput: 4096, Source: "gateway",
@@ -742,6 +769,14 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		}, nil
 	}
 
+	if cfg.CompactionMode != "" && cfg.CompactionMode != "side" && cfg.CompactionMode != "in_place" {
+		return Resolved{}, fmt.Errorf("invalid compaction_mode %q: expected side or in_place", cfg.CompactionMode)
+	}
+	compactionPrompt, compactionInstructions, err := resolveCompactionInstructions(ZotHome(), args.AppendCompactionPrompt)
+	if err != nil {
+		return Resolved{}, err
+	}
+
 	sandbox := tools.NewSandbox(args.CWD)
 	if cfg.JailByDefault != nil && *cfg.JailByDefault {
 		sandbox.Lock()
@@ -847,33 +882,36 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 	}
 
 	return Resolved{
-		WIP:                   cfg.WIP,
-		WIPOn:                 args.WIP,
-		Provider:              provName,
-		Model:                 model,
-		Credential:            cred,
-		AuthMethod:            method,
-		AccountID:             accountID,
-		BaseURL:               args.BaseURL,
-		InsecureTLS:           insecureTLS,
-		CWD:                   args.CWD,
-		Reasoning:             reasoning,
-		Temperature:           temperature,
-		ToolRegistry:          reg,
-		ToolSummary:           summaries,
-		SystemPrompt:          sys,
-		MaxSteps:              max,
-		MaxOutput:             resolvedModel.MaxOutput,
-		Sandbox:               sandbox,
-		SkillTool:             skillTool,
-		SkillDiagnostics:      skillDiagnostics,
-		ContextFiles:          contextFiles,
-		credentialOptional:    credentialOptional,
-		openRouterServerTools: !args.NoTools && OpenRouterServerToolsEnabled(),
-		systemAppend:          append_,
-		systemCustom:          custom,
-		systemCustomSet:       customSet,
-		toolDescriptions:      descMapFromSummaries(summaries),
+		WIP:                    cfg.WIP,
+		WIPOn:                  args.WIP,
+		Provider:               provName,
+		Model:                  model,
+		Credential:             cred,
+		AuthMethod:             method,
+		AccountID:              accountID,
+		BaseURL:                args.BaseURL,
+		InsecureTLS:            insecureTLS,
+		CWD:                    args.CWD,
+		Reasoning:              reasoning,
+		Temperature:            temperature,
+		ToolRegistry:           reg,
+		ToolSummary:            summaries,
+		SystemPrompt:           sys,
+		CompactionPrompt:       compactionPrompt,
+		CompactionInstructions: compactionInstructions,
+		CompactionMode:         cfg.CompactionMode,
+		MaxSteps:               max,
+		MaxOutput:              resolvedModel.MaxOutput,
+		Sandbox:                sandbox,
+		SkillTool:              skillTool,
+		SkillDiagnostics:       skillDiagnostics,
+		ContextFiles:           contextFiles,
+		credentialOptional:     credentialOptional,
+		openRouterServerTools:  !args.NoTools && OpenRouterServerToolsEnabled(),
+		systemAppend:           append_,
+		systemCustom:           custom,
+		systemCustomSet:        customSet,
+		toolDescriptions:       descMapFromSummaries(summaries),
 	}, nil
 }
 
@@ -1056,6 +1094,8 @@ func (r Resolved) NewClient() provider.Client {
 		return wrap(provider.NewRuncrate(r.Credential, r.BaseURL))
 	case "cloudgpu":
 		return wrap(provider.NewCloudGPU(r.Credential, r.BaseURL))
+	case "uberllm":
+		return wrap(provider.NewUberLLM(r.Credential, r.BaseURL))
 	case "zai":
 		return wrap(provider.NewZAI(r.Credential, r.BaseURL))
 	case "xiaomi":
@@ -1100,6 +1140,8 @@ func (r Resolved) NewClient() provider.Client {
 				return wrap(provider.NewOpenAIResponsesNamed(r.Credential, r.BaseURL, r.Provider))
 			case "anthropic":
 				return wrap(provider.NewAnthropicCompat(r.Provider, r.Credential, r.BaseURL))
+			case "google":
+				return wrap(provider.NewGeminiNamed(r.Provider, r.Credential, r.BaseURL))
 			default: // "openai"
 				return wrap(provider.NewOpenAICompat(r.Provider, r.Credential, r.BaseURL, ""))
 			}
@@ -1202,6 +1244,9 @@ func (r Resolved) NewAgent() *core.Agent {
 	a.MaxTokens = r.MaxOutput
 	a.Reasoning = r.Reasoning
 	a.Temperature = r.Temperature
+	a.CompactionPrompt = r.CompactionPrompt
+	a.CompactionInstructions = r.CompactionInstructions
+	a.CompactionMode = r.CompactionMode
 	if hasOpenRouterServerTools(r.ToolRegistry) {
 		a.MaxToolCalls = openRouterServerToolCallLimit()
 	}
@@ -1257,8 +1302,15 @@ func withOpenRouterServerTools(reg core.Registry) core.Registry {
 
 func buildConfiguredToolRegistry(args Args, cwd string, sandbox *tools.Sandbox, cfg Config, goos string) core.Registry {
 	reg := buildToolRegistry(args, cwd, sandbox)
+	if bash, ok := reg["bash"].(*tools.BashTool); ok {
+		bash.Shell = append([]string(nil), cfg.Shell...)
+		bash.TimeoutSeconds = cfg.ShellTimeoutSeconds
+	}
 	if goos == "windows" && !args.NoTools && len(args.Tools) == 0 && cfg.PowerShellEnabled != nil && *cfg.PowerShellEnabled {
 		reg["powershell"] = &tools.PowerShellTool{CWD: cwd, Sandbox: sandbox}
+	}
+	if powershell, ok := reg["powershell"].(*tools.PowerShellTool); ok {
+		powershell.TimeoutSeconds = cfg.ShellTimeoutSeconds
 	}
 	settings := cfg.Codemode
 	if args.CodemodeSettings != nil {
@@ -1286,7 +1338,7 @@ func buildToolRegistry(args Args, cwd string, sandbox *tools.Sandbox) core.Regis
 		"read":  &tools.ReadTool{CWD: cwd, Sandbox: sandbox},
 		"write": &tools.WriteTool{CWD: cwd, Sandbox: sandbox},
 		"edit":  &tools.EditTool{CWD: cwd, Sandbox: sandbox},
-		"bash":  &tools.BashTool{CWD: cwd, Sandbox: sandbox},
+		"bash":  &tools.BashTool{CWD: cwd, Sandbox: sandbox, StartupFile: filepath.Join(ZotHome(), ".bashrc")},
 		"glob":  &tools.GlobTool{CWD: cwd, Sandbox: sandbox},
 	}
 	reg := core.Registry{}
@@ -1318,7 +1370,11 @@ func toolSummaries(reg core.Registry, args Args) []ToolSummary {
 	var out []ToolSummary
 	for _, name := range order {
 		if t, ok := reg[name]; ok {
-			out = append(out, ToolSummary{Name: t.Name(), Description: t.Description()})
+			summary := ToolSummary{Name: t.Name(), Description: t.Description()}
+			if bash, ok := t.(*tools.BashTool); ok {
+				summary.ConfiguredShell = len(bash.Shell) > 0
+			}
+			out = append(out, summary)
 		}
 	}
 	return out
@@ -1398,6 +1454,8 @@ func envVarName(provider string) string {
 		return "RUNCRATE"
 	case "cloudgpu":
 		return "CLOUDGPU"
+	case "uberllm":
+		return "UBERLLM"
 	case "mistral":
 		return "MISTRAL"
 	case "zai":

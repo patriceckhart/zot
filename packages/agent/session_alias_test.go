@@ -44,7 +44,7 @@ func TestNamedSessionStartupAndAgentNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if !fresh || s.Meta.Alias != "investigation" || ag.SessionID != s.ID {
+	if !fresh || s.Meta.Alias != "investigation" || ag.SessionID != s.ID || ag.SessionAlias != s.Meta.Alias {
 		t.Fatal("startup did not bind named session")
 	}
 	s.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "saved question"}}})
@@ -59,7 +59,7 @@ func TestNamedSessionStartupAndAgentNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if fresh || s.ID != id || len(ag.Messages()) != 1 || !strings.Contains(core.MessageText(ag.Messages()[0]), "saved question") {
+	if fresh || s.ID != id || ag.SessionAlias != "investigation" || len(ag.Messages()) != 1 || !strings.Contains(core.MessageText(ag.Messages()[0]), "saved question") {
 		t.Fatal("named startup did not restore transcript")
 	}
 	args.AgentName = "other-agent"

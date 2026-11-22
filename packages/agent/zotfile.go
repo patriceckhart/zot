@@ -24,7 +24,6 @@ import (
 	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
-	"github.com/patriceckhart/zot/packages/provider/auth"
 	"github.com/patriceckhart/zot/packages/tui"
 	"golang.org/x/term"
 )
@@ -291,15 +290,7 @@ func prepareRuntimeCatalog() {
 func loadRuntimeCatalog() {
 	LoadCachedModels()
 	LoadUserModels()
-	if cps := provider.CustomProviders(); len(cps) > 0 {
-		var names []string
-		for name := range cps {
-			if !isBuiltinProvider(name) {
-				names = append(names, name)
-			}
-		}
-		auth.SetExtraAPIKeyProviders(names)
-	}
+	registerCustomAPIKeyProviders()
 	ValidateAndRepairConfig()
 }
 

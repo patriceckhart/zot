@@ -21,7 +21,7 @@ const anthropicAPIVersion = "2023-06-01"
 // accepts the request; diverging from them causes 429 rate_limit_error
 // or 403 on the very first request.
 const (
-	claudeCodeVersion  = "2.1.280"
+	claudeCodeVersion  = "2.1.290"
 	claudeCodeIdentity = "You are Claude Code, Anthropic's official CLI for Claude."
 )
 
@@ -144,8 +144,9 @@ type anthCacheCtrl struct {
 }
 
 type anthMessage struct {
-	Role    string        `json:"role"`
-	Content []interface{} `json:"content"`
+	Role         string            `json:"role"`
+	Content      []interface{}     `json:"content"`
+	OutputConfig *anthOutputConfig `json:"output_config,omitempty"`
 }
 
 type anthSystemBlock struct {
@@ -169,7 +170,12 @@ type anthThinking struct {
 	// reject it (400), so it is omitted for them.
 	BudgetTokens int `json:"budget_tokens,omitempty"`
 	// Display explicitly opts in to readable summaries on newer Claude models.
-	Display string `json:"display,omitempty"`
+	Display      string               `json:"display,omitempty"`
+	BlockBinding *anthThinkingBinding `json:"block_binding,omitempty"`
+}
+
+type anthThinkingBinding struct {
+	PrefixMismatchBehavior string `json:"prefix_mismatch_behavior"`
 }
 
 // anthOutputConfig carries the effort knob used by adaptive-thinking
@@ -387,6 +393,17 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 		}
 	}
 
+	if isClaudeFable52(m.ID) && out.Thinking != nil && out.Thinking.Type == "adaptive" {
+		// Effort changes belong at the end of history, not in the cached
+		// top-level configuration. Signed Claude thinking is not replayed.
+		out.Thinking.BlockBinding = &anthThinkingBinding{PrefixMismatchBehavior: "drop_block"}
+		out.Messages = append(out.Messages, anthMessage{
+			Role: "system", Content: []interface{}{},
+			OutputConfig: &anthOutputConfig{Effort: AnthropicAdaptiveEffort(reasoning)},
+		})
+		out.OutputConfig = &anthOutputConfig{Effort: "low"}
+	}
+
 	// Tag the LAST user message with cache_control. Spends the 4th
 	// breakpoint. For prefixes under ~1024 tokens (Anthropic's
 	// minimum cacheable block size for Opus), no cache is written.
@@ -589,6 +606,13 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) (<-chan Event
 			if c.apiKey != "" {
 				httpReq.Header.Set("x-api-key", c.apiKey)
 			}
+		}
+		if isClaudeFable52(req.Model) {
+			betas := "mid-conversation-output-config-2026-07-01,thinking-binding-controls-2026-08-01"
+			if existing := httpReq.Header.Get("anthropic-beta"); existing != "" {
+				betas = existing + "," + betas
+			}
+			httpReq.Header.Set("anthropic-beta", betas)
 		}
 		// Extra headers (set by anthropic-messages-compatible third parties
 		// — kimi-coding's X-Msh-*, copilot's Editor-Plugin-Version, etc.).

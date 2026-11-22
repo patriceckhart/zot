@@ -238,6 +238,9 @@ func Run(rawArgs []string, version string) error {
 
 	// Subcommand router: `zot bot ...` is handled separately so the
 	// generic flag parser doesn't reject "bot" as a positional arg.
+	if handled, err := runAuthCommand(rawArgs); handled {
+		return err
+	}
 	if handled, err := runBotCommand(rawArgs, version); handled {
 		return err
 	}
@@ -695,7 +698,11 @@ func runZotfileStartupPre(ctx context.Context, pre, cwd string, sandbox *tools.S
 				_ = f.Sync()
 			}
 		}
-		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox}
+		cfg, err := LoadConfig()
+		if err != nil {
+			return err
+		}
+		bash := &tools.BashTool{CWD: cwd, Sandbox: sandbox, StartupFile: filepath.Join(ZotHome(), ".bashrc"), Shell: cfg.Shell, TimeoutSeconds: cfg.ShellTimeoutSeconds}
 		res, err := bash.Execute(ctx, raw, progress)
 		if err != nil {
 			return fmt.Errorf(".zot agent entry.pre: %w", err)
@@ -1593,6 +1600,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		Tools:                         r.ToolRegistry,
 		MaxSteps:                      r.MaxSteps,
 		CWD:                           r.CWD,
+		Shell:                         initialCfg.Shell,
+		ShellTimeoutSeconds:           initialCfg.ShellTimeoutSeconds,
 		StartupAgentName:              args.AgentName,
 		StartupContextPaths:           instructionContextPaths(r.ContextFiles),
 		StartupExtensionNames:         startupExtensionNames(extMgr.All()),
@@ -1631,6 +1640,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		BuildAgentFor:               buildAgentFor,
 		BuildAgentForRescue:         buildAgentForRescue,
 		LoggedInProviders:           modelPickerProviders,
+		ModelCatalog:                visibleModelCatalog,
+		CheckProviderEnabled:        CheckProviderEnabled,
 		NewSession:                  newSession,
 		LoadSession:                 loadSession,
 		ChangeCWD:                   changeCWD,
@@ -1639,6 +1650,14 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 				return ""
 			}
 			return sess.Path
+		},
+		CurrentSessionIdentity: func() (string, string) {
+			persistMu.Lock()
+			defer persistMu.Unlock()
+			if sess == nil {
+				return "", ""
+			}
+			return sess.ID, sess.Meta.Alias
 		},
 		FlushSession: func() {
 			// Append any not-yet-persisted agent messages to the
@@ -1954,8 +1973,10 @@ func bindAgentSession(ag *core.Agent, sess *core.Session) {
 	if ag == nil {
 		return
 	}
+	ag.SessionAlias = ""
 	if sess != nil {
 		ag.SessionID = sess.ID
+		ag.SessionAlias = sess.Meta.Alias
 		if sess.Meta.WIP != nil {
 			ag.RestoreWIP(*sess.Meta.WIP)
 		} else {
@@ -1964,6 +1985,7 @@ func bindAgentSession(ag *core.Agent, sess *core.Session) {
 		if ag.OnWIPChanged == nil {
 			ag.OnWIPChanged = func(state core.WIPState) { _ = sess.AppendWIP(state) }
 		}
+
 	} else if ag.SessionID == "" {
 		ag.SessionID = uuid.NewString()
 	}
@@ -2028,7 +2050,7 @@ func readAllStdin() (string, error) {
 }
 
 func printModels() {
-	models := provider.Active()
+	models := visibleModelCatalog()
 
 	// Compute column widths from actual data so wide providers (e.g.
 	// xiaomi-token-plan-sgp) and long bedrock model ids don't force the

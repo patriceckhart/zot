@@ -207,16 +207,17 @@ Execution and recovery:
   withdraws queued prompts (state `withdrawn`, history kept) and writes
   queued writes; it never starts the next chain.
 - Partial stream persistence: streamed text and a bounded readable reasoning
-  suffix are committed as a `partial` record so attached clients render live
-  output. The flusher sleeps until text or reasoning arrives, waits
-  `PartialFlushInterval` (default 100 ms) to batch
-  deltas, and after each commit waits at least that interval and at least
-  the record's size at 512 KiB/s. Each commit rewrites the whole record,
-  so this bounds write volume for long answers (256 KiB of answer text plus
-  32 KiB of reasoning waits up to 0.5625 s) while combined output under
-  about 51 KiB keeps the 100 ms cadence. The final assistant commit removes
-  the record, and an attempt that fails or
-  is interrupted retains its text as a final partial for inspection.
+  suffix are held in RAM for attached clients, with live previews sampled
+  every 100 ms independently of storage. Checkpoints persist the accumulated
+  `partial` record once per second by default (`PartialPersistInterval`).
+  `ExecutionOptions.PartialFlushInterval` overrides the checkpoint interval,
+  not the preview cadence. The flusher sleeps until new output arrives and
+  also paces writes by record size at 512 KiB/s when a shorter interval is
+  configured. Each checkpoint rewrites at most 256 KiB of answer text plus
+  32 KiB of reasoning. Final responses commit immediately and remove the
+  checkpoint. Failed attempts retain their text for inspection. After a
+  process crash only the last checkpoint survives, so roughly the latest
+  second of previewed output can be lost (longer with delayed storage).
   Partial output is never model context.
 - Remote execution: `WorkerServer` runs tools in another process behind a
   token with an operation ledger; `RemoteTool` calls it with the stable
@@ -581,15 +582,18 @@ Tools without it default to `ReplayNever`. Extension tools default to
 
 ### Observation
 
-Nothing reaches an observer before its commit. The engine events of a model
+Engine event sinks and commit-only watches publish nothing before its commit.
+Attached views additionally receive disposable RAM previews, which can be lost
+on a host crash. These previews do not advance durable watch cursors or enter
+transcript history. The engine events of a model
 attempt or tool call are held by the invocation: streamed text, readable
 reasoning, and tool progress are released after the `partial` or progress
 commit that records them, everything else after the commit that settles the
 phase. An invocation
 that crashes, is fenced out, or is aborted before its commit publishes
 nothing, which matches what a client reads after a restart. With partials
-disabled (`PartialFlushInterval < 0`) streamed text and reasoning arrive
-with the response commit.
+disabled (`PartialFlushInterval < 0`), RAM previews are disabled too, and
+streamed text and reasoning arrive with the response commit.
 
 A conversation view is the live state of a conversation as typed documents:
 `execution` (chain and live tasks), `queue`, `usage`, `metadata` (`{title}`),
@@ -679,10 +683,12 @@ continues.
   keeping its own operation ledger; without a `Reconciler` every answer is
   unknown.
 - The attached TUI renders streamed text and optional live reasoning from
-  partial records at the flush cadence (slower for very long answers), not
-  per provider token. Enable the reasoning preview with `/settings` or
-  `--show-reasoning` on the attached client. Hosts commit a rolling readable
-  reasoning suffix of at most 32 KiB in `Partial.reasoning`, with
+  RAM previews at a 100 ms cadence, not per provider token. Persistence is
+  independent and defaults to one second. Older hosts ignore the preview
+  option and continue delivering their committed partials. Enable the
+  reasoning preview with `/settings` or `--show-reasoning` on the attached
+  client. Hosts commit a rolling readable reasoning suffix of at most 32 KiB
+  in `Partial.reasoning`, with
   `reasoning_bytes` tracking its total byte position. Hosts with partial
   streaming enabled also request readable summaries on Responses/Codex calls
   and summarized thinking on native Anthropic calls with thinking enabled,
@@ -730,9 +736,22 @@ additionally stream `{"type":"commit","id","commit"}` frames until
 (`{"type":"view","watch_id","change"}` frames with operation-level changes
 of the conversation view), or `events` (the response carries a fresh
 `snapshot`, followed by `{"type":"agent_event","watch_id","event"}` frames;
-a lagging subscriber ends with `event_lag`). The first frame
-must be `hello` with a token when `Tokens` is set. Without a `Tokens` map,
-every connection is admin, which is only acceptable on a private local socket.
+a lagging subscriber ends with `event_lag`). In `commits` mode, the optional
+`live_partials: true` also enables `{"type":"partial","watch_id","partial"}`
+frames carrying the current bounded `Partial` from RAM. Their `preview_after`
+field identifies the preceding storage revision barrier, not a new commit.
+It must not advance the resume cursor. Ignore previews older than the view's
+current snapshot or cursor. Apply only the unseen text and reasoning suffix
+for the same run, turn, and attempt. An older persisted
+checkpoint must not rewind a newer preview. Commits and previews are ordered
+so an attempt's preview cannot follow its final response on that watch. A new
+watch samples RAM again, including when no further provider delta arrives.
+Slow consumers still lose their watch and must resnapshot. Default watches,
+view mode, event mode, snapshots, and `partial.get` remain committed-only.
+Older hosts ignore `live_partials` and newer clients fall back to checkpoints.
+The first frame must be `hello` with a token when `Tokens` is set. Without a
+`Tokens` map, every connection is admin, which is only acceptable on a private
+local socket.
 
 | Role | Methods |
 |---|---|

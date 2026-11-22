@@ -2,22 +2,35 @@ package modes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/patriceckhart/zot/packages/tui"
 )
 
-// compactTranscript counts only successful transcript replacements. Both manual
-// and automatic compaction paths use it, without changing core event streams.
+// compactTranscript tracks completed compactions, side fallbacks, and failures.
+// Both manual and automatic paths use it, without changing core event streams.
 func (i *Interactive) compactTranscript(ctx context.Context, keepTail int, sink func(string)) (string, error) {
-	summary, err := i.agent.Compact(ctx, keepTail, sink)
+	summary, stats, err := i.agent.CompactWithStats(ctx, keepTail, sink)
+	i.mu.Lock()
 	if err == nil {
-		i.mu.Lock()
 		i.compactionsSinceInput++
-		i.mu.Unlock()
-		i.invalidate()
+	} else if !errors.Is(err, context.Canceled) {
+		i.failedCompactionsSinceInput++
 	}
+	if stats.SideFallback {
+		i.compactionFallbacksSinceInput++
+	}
+	i.mu.Unlock()
+	i.invalidate()
 	return summary, err
+}
+
+// resetCompactionCountsLocked starts a new display-only counting interval.
+func (i *Interactive) resetCompactionCountsLocked() {
+	i.compactionsSinceInput = 0
+	i.compactionFallbacksSinceInput = 0
+	i.failedCompactionsSinceInput = 0
 }
 
 // compactBetweenTurns runs synchronously at the agent loop's safe boundary.

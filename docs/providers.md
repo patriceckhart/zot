@@ -22,15 +22,75 @@ zot applies this setting at startup. Existing `HTTP_PROXY`, `HTTPS_PROXY`, `http
 
 Use `/login` in interactive mode. Type in either provider picker to filter the list by provider ID or display name.
 
-- `api key`: stores an API key in `$ZOT_HOME/auth.json` when the provider uses a normal key.
+- `api key`: accepts a key directly in a masked terminal input, validates it where supported, and saves it in `$ZOT_HOME/auth.json`. No browser or local web server is required.
 - `subscription`: stores OAuth credentials for subscription-backed providers.
 
 Use `/logout` to choose stored credentials to remove, or `/logout <provider>` to remove a specific provider's credentials. This also works for custom providers removed from `models.json`. Use `/logout all` to remove all stored provider credentials, including custom providers.
 
 Some providers need more than a single pasted key. For those providers,
-`/login` shows setup instructions instead of opening a localhost browser form.
-This avoids broken browser flows in SSH, containers, and `kubectl exec`
-sessions.
+`/login` shows setup instructions instead of accepting a generic API key.
+llama.cpp and LM Studio ask for a server URL and an optional masked key.
+
+### Headless and SSH authentication
+
+API-key login works directly over SSH: run `zot`, enter `/login`, choose
+`api key`, select a provider, and paste the key into the hidden input.
+Enter validates and saves the key. Esc or Ctrl+C cancels pending validation.
+The input is cleared after submission or cancellation. Existing credentials
+are retained if validation fails. Providers without a supported probe,
+including configured custom providers, save the key without remote validation.
+
+For a terminal-only setup without starting the TUI:
+
+```bash
+zot auth set anthropic
+```
+
+The command reads the key without echoing it. In scripts, use explicit stdin
+input instead of putting the secret in arguments or shell history:
+
+```bash
+zot auth set anthropic --stdin < /path/to/protected-api-key.txt
+op read op://Work/OpenAI/credential | zot auth set openai --stdin
+```
+
+`--stdin` requires redirected input and reads until EOF, with a 64 KiB limit.
+Whitespace around the key is removed. Empty keys, embedded newlines, and NUL
+bytes are rejected. Both forms use the same validation and credential store
+as `/login`. The command exits nonzero on failure and does not print the key.
+It replaces any stored command-backed key for that provider. Credential files
+use mode 0600 on platforms that support Unix permissions. Custom providers
+must be configured in `$ZOT_HOME/models.json` first. This command stores only
+the key, not AWS profiles, server URLs, project IDs, or account settings.
+Run `zot auth --help` for usage.
+
+Subscription flows depend on the provider:
+
+- **Anthropic:** choose `copy code (headless / SSH)` to use the hosted
+  copy-code page without a local callback server. Open the authorization link
+  on your own computer and paste the returned code into zot.
+- **OpenAI/Codex:** use the browser authorization link on your own computer.
+  If the final localhost page fails to load, copy the full redirect URL from
+  the address bar and paste it into the same zot login dialog. This completes
+  the original transaction, including its PKCE and state checks. The callback
+  port must still be available on the host running zot.
+- **Kimi, xAI, GitHub Copilot:** use their device-code flows. Complete approval
+  on another device while zot waits, with no loopback tunnel needed.
+
+Browser callback flows already have fixed ports: Anthropic uses `53692` and
+OpenAI/Codex uses `1455`. If you prefer callback forwarding, establish the
+appropriate tunnel from your own computer before starting login:
+
+```bash
+ssh -L 53692:localhost:53692 user@host
+ssh -L 1455:localhost:1455 user@host
+```
+
+Use only the tunnel for the provider you are signing into, then run zot on
+that host. No `--auth-port` flag is needed or provided. OAuth redirect ports
+are part of the provider's registered client configuration and cannot be
+changed arbitrarily. Authorization links, codes, and redirect URLs are
+sensitive. Do not share them or reuse them in a different login transaction.
 
 ### Command-backed API keys
 
@@ -114,11 +174,12 @@ use Chat Completions without `reasoning_effort`; their reasoning is managed by t
 endpoint. All three routes send user/agent initiator metadata and image-request
 headers where appropriate.
 
-As of September 22, 2026, the catalog includes 30 public chat models: Claude
+The catalog includes 33 public chat models: Claude
 Fable 5/5.1, Haiku 4.5, Opus 4.7/4.8/4.8 Fast/5/5.5, Sonnet 5, Gemini
-3.5/3.6/3.7/3.8 Flash, GPT-5 mini, GPT-5.3-Codex, GPT-5.4/5.4 mini/5.5,
-GPT-5.6 Luna/Sol/Terra, GPT-6 Astra/Luna/Sol, Grok 4.5/4.6, Kimi K2.7 Code/K3,
-and MAI-Code-1-Flash/1.1-Flash. MAI-Code-1-Flash uses the public picker ID
+3.5/3.6/3.7/3.8 Flash and Gemini 4 Argon, GPT-5 mini, GPT-5.3-Codex, GPT-5.4/5.4 mini/5.5,
+GPT-5.6 Luna/Sol/Terra, GPT-6 Astra/Luna/Sol, GPT-6.1 Sol/Terra, Grok 4.5/4.6, Kimi K2.7 Code/K3,
+and MAI-Code-1-Flash/1.1-Flash.
+MAI-Code-1-Flash uses the public picker ID
 `mai-code-1-flash-picker` and is scheduled to retire on September 10, 2026.
 
 Internal search, execution, and compaction models are not chat choices.
@@ -126,6 +187,22 @@ GPT-5.4 nano is excluded because GitHub offers it in the Codex VS Code
 extension, not Copilot Chat. New entries use Copilot-specific limits and token
 prices from [models.dev](https://models.dev); these are not a quote for your
 subscription bill. Existing zero-priced entries do not imply unlimited free use.
+
+The new choices use IDs `gemini-4-argon`, `gpt-6.1-sol`, and
+`gpt-6.1-terra`, for example:
+
+```bash
+zot --provider github-copilot --model gemini-4-argon
+```
+
+Gemini 4 Argon uses Chat Completions with endpoint-managed reasoning.
+Its bundled API context/output limits are 1,048,576/65,536 tokens,
+from models.dev. Copilot CLI may display a smaller usable context budget.
+All choices remain subject to account availability and policy.
+
+MAI-Code-2 previews are not bundled because their Copilot limits and pricing
+have not been verified. Add an entry through `$ZOT_HOME/models.json` only
+with metadata verified for your account rather than predecessor defaults.
 
 Claude Fable models have different data-retention terms: Anthropic retains
 prompts and outputs by default for safety classifiers. Eligible enterprises
@@ -138,6 +215,27 @@ Sonnet 4.6 is also excluded from the general catalog: GitHub retired it on
 September 1, 2026, except for individual annual Copilot Pro and Pro+ subscribers.
 Eligible subscribers can add it through `$ZOT_HOME/models.json`.
 See [GitHub's model retirement history and plan exceptions](https://docs.github.com/en/copilot/reference/ai-models/supported-models#model-retirement-history).
+
+## Claude Fable 5.2
+
+Select the bundled Anthropic model with:
+
+```bash
+zot --provider anthropic --model claude-fable-5-2
+```
+
+Claude Fable 5.2 accepts text and images, has a 1,000,000-token context
+window, and supports up to 128,000 output tokens. Prices per million tokens
+are $8 input, $40 output, $0.20 cache reads, and $10 cache writes.
+
+Thinking is always adaptive. Available effort levels are `low`, `medium`,
+`high`, `xhigh`, and `max`. Off and minimum settings resolve to low.
+Anthropic Messages requests send effort in a trailing system message with
+the required output-config and thinking-binding beta headers. Top-level
+effort stays fixed at low. Signed Claude thinking blocks are not replayed,
+and historical effort settings are not persisted. API-key and subscription
+OAuth requests use the same model configuration, subject to account access.
+Server-side fallback to a different model is not requested.
 
 ## GPT-6 models
 
@@ -159,12 +257,58 @@ Subscription access depends on your plan, rollout, and organization policy.
 Catalog availability does not grant access.
 
 GPT-6.1 Sol (`gpt-6.1-sol`) is available in zot with `openai`,
-`openai-responses`, and `openai-codex`, subject to account access. It uses the
-Responses API, supports `low` through `max` reasoning and up to 128,000 output
-tokens. Zot currently uses a 272,000-token context window for these entries.
+`openai-responses`, `openai-codex`, and `github-copilot`, subject to account access
+and Copilot model policy. It uses the Responses API, supports `low` through
+`max` reasoning and up to 128,000 output tokens. The context window is 272,000
+tokens for API-key providers, 500,000 for Codex, and 1,050,000 for Copilot.
 Standard per-million-token prices are $2 input, $10 output, $0.10 cache reads,
 and $2.50 cache writes. Prompts above 272,000 input tokens use the long-context
-price tier. GPT-6.1 Sol is not listed for GitHub Copilot in zot.
+price tier. Copilot's `/model` picker only shows models enabled in the account's
+model listing.
+
+GPT-6.1 Terra (`gpt-6.1-terra`) is available with `openai`, `openai-responses`,
+`openai-codex`, `azure-openai-responses`, and `github-copilot`, subject to account,
+deployment, and Copilot model policy access. It uses Responses with a
+272,000-token context window for API-key providers, 500,000 for Codex, and
+1,050,000 for Copilot, and up to 128,000 output tokens. Reasoning supports
+`off` (sent as `none`) and `low` through `max`. Standard per-million-token prices
+are $1 input, $5 output, $0.05 cache reads, and $1.25 cache writes; above
+272,000 input tokens these become $2, $7.50, $0.10, and $2.50. These are
+API-equivalent estimates, not Copilot subscription invoices. Copilot's `/model`
+picker only shows it when enabled in the account's model listing.
+
+```bash
+zot --provider github-copilot --model gpt-6.1-terra
+```
+
+## GPT-6.2 models
+
+Select `gpt-6.2-sol` or `gpt-6.2-astra` with `openai`, `openai-responses`,
+`openai-codex`, or `azure-openai-responses`, subject to account or deployment
+access:
+
+```bash
+zot --provider openai-codex --model gpt-6.2-sol
+zot --provider openai --model gpt-6.2-astra
+```
+
+Both use the Responses API, accept text and images, and allow up to 128,000
+output tokens. Reasoning supports `low`, `medium`, `high`, `xhigh`, and `max`.
+Reasoning cannot be disabled, so `off` and `minimum` are clamped to `low`.
+Existing provider defaults are unchanged.
+
+OpenAI API-key entries use a 272,000-token context window. Codex uses 500,000
+for Sol and 272,000 for Astra. Azure entries use 1,050,000 tokens.
+Standard prices in USD per million tokens are:
+
+| Model | Input | Output | Cache read | Cache write |
+|---|---|---|---|---|
+| GPT-6.2 Sol | $2 | $10 | $0.10 | $2.50 |
+| GPT-6.2 Astra | $8 | $40 | $0.40 | $10 |
+
+Above 272,000 input tokens, input and cache prices double and output prices
+increase by 50 percent. Subscription prices are API-equivalent estimates,
+not subscription invoices. Catalog availability does not grant model access.
 
 ## API-key providers
 
@@ -194,6 +338,7 @@ show instructions and should be configured with environment variables.
 | Opper | `OPPER_API_KEY` | `opper` |
 | Runcrate | `RUNCRATE_API_KEY` | `runcrate` |
 | CloudGPU | `CLOUDGPU_API_KEY` | `cloudgpu` |
+| UberLLM | `UBERLLM_API_KEY` | `uberllm` |
 | Mistral | `MISTRAL_API_KEY` | `mistral` |
 | ZAI | `ZAI_API_KEY` | `zai` |
 | Xiaomi MiMo | `XIAOMI_API_KEY` | `xiaomi` |
@@ -210,6 +355,46 @@ show instructions and should be configured with environment variables.
 | Cloudflare Workers AI | `CLOUDFLARE_API_KEY` | `cloudflare-workers-ai` |
 | Cloudflare AI Gateway | `CLOUDFLARE_API_KEY` | `cloudflare-ai-gateway` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
+
+xAI supports `grok-4.6` and `grok-4.7` through the Responses API:
+
+```sh
+zot --provider xai --model grok-4.7 -p "hello"
+```
+
+Both have a 500,000-token context window, text and image input, and reasoning
+levels `low`, `medium`, `high`, and `xhigh`. An unset or off reasoning setting
+omits the effort parameter and leaves xAI's default (`high`) in effect.
+Cost estimates use direct xAI pricing: $2 input, $6 output, and $0.50 cached
+input per million tokens below 200,000 prompt tokens. At or above 200,000
+prompt tokens, all three rates double. No maximum output limit is recorded
+because xAI's model pages do not publish one, so output length is left to the
+API. Gateway limits and pricing are separate.
+
+The xAI default remains `grok-4.5`, and older catalog IDs remain available.
+With an API key or OAuth credential, background catalog refresh queries
+`https://api.x.ai/v1/models` and adds chat model IDs and aliases to `/model`.
+Image generation, video, audio, and embedding models are excluded. Discovery
+reads published context lengths, token prices, long-context tiers, and reasoning
+capabilities. Known catalog metadata fills fields omitted by the endpoint.
+For new models without context metadata, zot uses a conservative 32,768-token
+estimate. Unpublished output limits stay unset. Unknown prices and capabilities
+are not inferred from other providers. Explicit
+[custom model configuration](#custom-providers-and-models) overrides discovery.
+
+xAI discovery runs even when the six-hour shared catalog cache is fresh. The
+last discovered metadata is cached for startup resolution, but failed refreshes
+or logout remove credential-scoped discovered entries, leaving built-in models
+as the offline fallback. Providers disabled in configuration are not queried,
+and background discovery never executes `api_key_command` credentials. OAuth
+accounts whose tokens cannot list models still work with the offline catalog.
+
+Explicit and saved xAI model IDs are preserved before discovery completes,
+including unlisted IDs. Unlisted models use Responses with the conservative
+context estimate, no invented output limit, and the API's default reasoning.
+The API validates these IDs, so typos produce an API error rather than silently
+switching to a different model. Cloud discovery is asynchronous, so one-shot
+model-list exports may not include newly discovered models yet.
 
 MiniMax defaults to `MiniMax-M3.1-Flash` in both direct regions, with
 `MiniMax-M3` as the other ordinary text choice. Saved legacy model IDs and
@@ -375,6 +560,33 @@ validated by the API. Without catalog metadata, requests use a conservative
 ```bash
 export CLOUDGPU_API_KEY=...
 zot --provider cloudgpu --model glm-5.2
+```
+
+## UberLLM
+
+Use `UBERLLM_API_KEY` or `/login` with provider `uberllm`. UberLLM is an
+OpenAI-compatible gateway at `https://api.uberllm.dev/v1` with models from
+OpenAI, Anthropic, Google, DeepSeek, Qwen, GLM, Kimi and others. Model IDs are
+`vendor/model`, and the offline default is `deepseek/deepseek-v4-flash`.
+
+UberLLM's model list is public. When an UberLLM key is configured, catalog
+discovery adds its tool-capable chat models to `/model`, including published
+context/output limits, vision, reasoning, and token prices (including published
+cache-read and cache-write rates). If the shared catalog cache has no UberLLM
+models, discovery runs even while that cache is fresh. Models marked
+unavailable are excluded. The key probe uses the same
+list, so a mistyped key is reported by the first request rather than by
+`/login`.
+
+Explicit and saved `vendor/model` IDs are preserved before discovery finishes
+and are validated by the API. Without catalog metadata, requests use a
+conservative 4,096-token output limit. Keys come from
+https://uberllm.dev/signup, and per-model prices are listed at
+https://uberllm.dev/models.
+
+```bash
+export UBERLLM_API_KEY=...
+zot --provider uberllm --model anthropic/claude-sonnet-4.6
 ```
 
 ## Local LM Studio server

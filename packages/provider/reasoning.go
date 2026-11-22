@@ -49,7 +49,7 @@ func defaultReasoningLevels(model Model) []string {
 	if alwaysOnAdaptiveThinking(id) || miniMaxFlash(model) {
 		return []string{"low", "medium", "high", "xhigh", "max"}
 	}
-	if (model.Provider == "google" || model.Provider == "google-vertex") && strings.Contains(id, "gemini-3") {
+	if (model.API == "google" || model.Provider == "google" || model.Provider == "google-vertex") && strings.Contains(id, "gemini-3") {
 		if strings.Contains(id, "-pro") {
 			return []string{"", "low", "high"}
 		}
@@ -67,12 +67,16 @@ func defaultReasoningLevels(model Model) []string {
 	}
 	if model.API == APIResponses || model.Provider == "openai-codex" || model.Provider == "openai-responses" || model.Provider == "azure-openai-responses" {
 		levels := []string{"", "low", "medium", "high", "xhigh"}
+		// GPT-6.2 requires reasoning. Off and minimum clamp to low.
+		if id == "gpt-6.2-sol" || id == "gpt-6.2-astra" {
+			levels = levels[1:]
+		}
 		if supportsResponsesMaxEffort(id) {
 			levels = append(levels, "max")
 		}
 		return levels
 	}
-	if model.Provider == "google" || model.Provider == "google-vertex" {
+	if model.API == "google" || model.Provider == "google" || model.Provider == "google-vertex" {
 		if strings.Contains(id, "gemini-2.5") {
 			return []string{"", "minimum", "low", "medium", "high", "xhigh"}
 		}
@@ -92,12 +96,33 @@ func defaultReasoningLevels(model Model) []string {
 // ID are recognised, as are Bedrock IDs ("anthropic." plus an optional
 // inference-profile prefix such as "us." or "global.").
 func alwaysOnAdaptiveThinking(id string) bool {
+	if isClaudeFable52(id) {
+		return true
+	}
 	if i := strings.Index(id, "anthropic."); i >= 0 && !strings.Contains(id[:i], "/") {
 		id = id[i+len("anthropic."):]
 	}
 	switch id {
 	case "claude-opus-5-5", "claude-opus-5.5", "claude-sonnet-5-5", "claude-sonnet-5.5":
 		return true
+	}
+	return false
+}
+
+// isClaudeFable52 accepts direct and provider-prefixed model IDs, including
+// dated releases. Keep this narrow so older Fable requests remain unchanged.
+func isClaudeFable52(id string) bool {
+	id = strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(id), "~"), "anthropic/")
+	if i := strings.Index(id, "anthropic."); i >= 0 && !strings.Contains(id[:i], "/") {
+		id = id[i+len("anthropic."):]
+	}
+	for _, base := range []string{"claude-fable-5-2", "claude-fable-5.2"} {
+		if id == base {
+			return true
+		}
+		if suffix, ok := strings.CutPrefix(id, base+"-"); ok && len(suffix) == 8 && strings.Trim(suffix, "0123456789") == "" {
+			return true
+		}
 	}
 	return false
 }
@@ -285,7 +310,7 @@ func OpenAICompatAnthropicEffort(level string) string {
 }
 
 // OpenAICodexReasoningEffort maps zot levels onto the Responses API effort
-// enum. GPT-5.6, GPT-6 and GPT-6.1 support native max. Other models clamp max to xhigh.
+// enum. GPT-5.6 and GPT-6 families support native max. Other models clamp max to xhigh.
 func OpenAICodexReasoningEffort(level, model string) string {
 	switch NormalizeReasoning(level) {
 	case "minimum", "low":
@@ -311,5 +336,5 @@ func OpenAICodexReasoningEffort(level, model string) string {
 
 func supportsResponsesMaxEffort(model string) bool {
 	id := strings.ToLower(model)
-	return strings.HasPrefix(id, "gpt-5.6-") || id == "gpt-6-astra" || id == "gpt-6-sol" || id == "gpt-6-luna" || id == "gpt-6.1-sol" || id == "gpt-6.1-terra"
+	return strings.HasPrefix(id, "gpt-5.6-") || id == "gpt-6-astra" || id == "gpt-6-sol" || id == "gpt-6-luna" || id == "gpt-6.1-sol" || id == "gpt-6.1-terra" || id == "gpt-6.2-sol" || id == "gpt-6.2-astra"
 }

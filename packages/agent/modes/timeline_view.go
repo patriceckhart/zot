@@ -33,6 +33,7 @@ type timelineEntry struct {
 }
 
 type timelineData struct {
+	Session     sessionIdentity
 	System      string
 	Tools       []provider.Tool
 	Messages    []provider.Message
@@ -186,6 +187,7 @@ func (v *timelineView) Render(th tui.Theme, width, height int, data timelineData
 	clampTimelineCursor(v, len(entries))
 
 	lines := []string{frameHeader(th, "timeline", width)}
+	lines = append(lines, renderSessionIdentity(th, width, data.Session)...)
 	lines = append(lines, renderTimelineContext(th, width, data)...)
 
 	hint := "↑/↓ select  tab details  ←/→ scroll detail  home/end  / search  ctrl+e export  esc chat"

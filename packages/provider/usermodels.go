@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"strings"
+	"sync"
 )
 
 // UserModelsFile is the JSON format for user-defined models.
@@ -37,10 +38,10 @@ type UserModelsFile struct {
 // UserProvider groups models under a provider key.
 type UserProvider struct {
 	BaseURL string `json:"baseUrl,omitempty"`
-	API     string `json:"api,omitempty"`  // "openai" (default), "openai-responses", or "anthropic"
+	API     string `json:"api,omitempty"`  // "openai" (default), "openai-responses", "anthropic", or "google"
 	Auth    string `json:"auth,omitempty"` // "none" disables credentials, including stored keys
 	// Discover enables live model listing from the provider-level
-	// baseUrl's /models endpoint. Off by default so existing custom
+	// model-list endpoint. Off by default so existing custom
 	// providers never gain unexpected network traffic.
 	Discover bool        `json:"discover,omitempty"`
 	Models   []UserModel `json:"models"`
@@ -50,19 +51,26 @@ type UserProvider struct {
 // that isn't part of the built-in catalog.
 type CustomProviderConfig struct {
 	BaseURL string
-	API     string // "openai", "openai-responses", or "anthropic"
+	API     string // "openai", "openai-responses", "anthropic", or "google"
 	NoAuth  bool   // explicitly configured for keyless access
 	// Discover reports whether live model discovery is enabled. It is
 	// only true when a provider-level BaseURL is present.
 	Discover bool
 }
 
-var customProviders = map[string]CustomProviderConfig{}
+var (
+	customProvidersMu sync.RWMutex
+	customProviders   = map[string]CustomProviderConfig{}
+)
 
-// CustomProviders returns the set of user-defined providers loaded from
-// models.json. Keys are provider names; values carry the base URL and
-// wire-format hint.
-func CustomProviders() map[string]CustomProviderConfig { return customProviders }
+// CustomProviders returns an independent snapshot of the user-defined providers
+// loaded from models.json. Keys are provider names and values carry the base URL
+// and wire-format hint. Mutating the snapshot does not change the registry.
+func CustomProviders() map[string]CustomProviderConfig {
+	customProvidersMu.RLock()
+	defer customProvidersMu.RUnlock()
+	return maps.Clone(customProviders)
+}
 
 // UserModel is a single model entry in the user's models.json.
 type UserModel struct {
@@ -143,8 +151,8 @@ func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
 
 	var out []Model
 	var nonChat []NonChatModel
-	// Reset custom providers on each load so removed entries don't linger.
-	customProviders = map[string]CustomProviderConfig{}
+	// Build privately so concurrent readers never observe a partial reload.
+	providers := map[string]CustomProviderConfig{}
 	for providerName, prov := range file.Providers {
 		if providerName == "" {
 			warnings = append(warnings, "models.json: empty provider key skipped")
@@ -204,11 +212,13 @@ func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
 				api = APIResponses
 			case "anthropic-messages", "messages", "anthropic":
 				api = "anthropic"
+			case "google":
+				api = "google"
 			default:
 				warnings = append(warnings, fmt.Sprintf("models.json: provider %q has unknown api %q; defaulting to openai", providerName, prov.API))
 				api = "openai"
 			}
-			customProviders[normalized] = CustomProviderConfig{
+			providers[normalized] = CustomProviderConfig{
 				BaseURL:  prov.BaseURL,
 				API:      api,
 				NoAuth:   auth == "none",
@@ -243,7 +253,7 @@ func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
 				modelBaseURL = prov.BaseURL
 			}
 			modelAPI := ""
-			if cfg, ok := customProviders[normalized]; ok {
+			if cfg, ok := providers[normalized]; ok {
 				modelAPI = cfg.API
 			}
 			m := Model{
@@ -294,6 +304,9 @@ func LoadUserModelsWithWarnings(path string) ([]Model, []string) {
 			out = append(out, m)
 		}
 	}
+	customProvidersMu.Lock()
+	customProviders = providers
+	customProvidersMu.Unlock()
 	setNonChatModels(nonChat)
 	return out, warnings
 }

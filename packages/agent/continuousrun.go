@@ -117,7 +117,7 @@ func parseContinuousRunArgs(args []string) (continuousRunOptions, error) {
 // continuous run forwards. Boolean host flags are forwarded alone.
 func hostFlagTakesValue(flag string) bool {
 	switch flag {
-	case "--provider", "--model", "--api-key", "--base-url", "--system-prompt", "--append-system-prompt", "--reasoning", "--temperature", "--cwd", "--tools", "--ext", "-e", "--with-skills", "--with-skill":
+	case "--provider", "--model", "--api-key", "--base-url", "--system-prompt", "--append-system-prompt", "--append-compaction-prompt", "--reasoning", "--temperature", "--cwd", "--tools", "--ext", "-e", "--with-skills", "--with-skill":
 		return true
 	}
 	return false

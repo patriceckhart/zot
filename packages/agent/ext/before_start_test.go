@@ -13,7 +13,7 @@ func TestBeforeAgentStartSDK(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			h := newHarness("start-ext")
 			h.ext.InterceptBeforeAgentStart(func(ev BeforeAgentStartEvent) *string {
-				if ev.SystemPrompt != "base" || ev.CWD != "/work" || ev.Provider != "p" || ev.Model != "m" || ev.SessionID != "s" || ev.AgentRunID != "r" {
+				if ev.SystemPrompt != "base" || ev.CWD != "/work" || ev.Provider != "p" || ev.Model != "m" || ev.SessionID != "s" || ev.SessionAlias != "tidy-birch" || ev.AgentRunID != "r" {
 					t.Error("wrong event metadata")
 				}
 				if mode == "omit" {
@@ -40,7 +40,7 @@ func TestBeforeAgentStartSDK(t *testing.T) {
 			}
 			h.drainUntil(t, "ready")
 			base := "base"
-			h.sendToExt(t, extproto.EventInterceptFromHost{Type: "event_intercept", Event: "before_agent_start", ID: "1", SystemPrompt: &base, CWD: "/work", Provider: "p", Model: "m", SessionID: "s", AgentRunID: "r"})
+			h.sendToExt(t, extproto.EventInterceptFromHost{Type: "event_intercept", Event: "before_agent_start", ID: "1", SystemPrompt: &base, CWD: "/work", Provider: "p", Model: "m", SessionID: "s", SessionAlias: "tidy-birch", AgentRunID: "r"})
 			frame := h.drainUntil(t, "event_intercept_response")
 			var result extproto.EventInterceptResponseFromExt
 			if err := json.Unmarshal(frame.raw, &result); err != nil {

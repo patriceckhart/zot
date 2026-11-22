@@ -52,6 +52,7 @@ go.work.sum
 
 bin/
 dist/
+/docs/website/
 
 node_modules/
 npm-debug.log*

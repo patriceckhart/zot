@@ -27,10 +27,11 @@ type Frame struct {
 }
 
 type HelloFromExt struct {
-	Type         string   `json:"type"`
-	Name         string   `json:"name"`
-	Version      string   `json:"version"`
-	Capabilities []string `json:"capabilities,omitempty"`
+	RequestTransform *RequestTransformOptions `json:"request_transform,omitempty"`
+	Type             string                   `json:"type"`
+	Name             string                   `json:"name"`
+	Version          string                   `json:"version"`
+	Capabilities     []string                 `json:"capabilities,omitempty"`
 }
 
 type RegisterCommandFromExt struct {
@@ -255,6 +256,7 @@ type EventFromHost struct {
 	Active          bool            `json:"active"`
 	Since           string          `json:"since,omitempty"`
 	BaselineCommit  string          `json:"baseline_commit,omitempty"`
+	SessionAlias    string          `json:"session_alias,omitempty"`
 	SessionID       string          `json:"session_id,omitempty"`
 	AgentRunID      string          `json:"agent_run_id,omitempty"`
 	Queued          bool            `json:"queued,omitempty"`
@@ -289,6 +291,7 @@ type EventFromHost struct {
 
 type EventInterceptFromHost struct {
 	WIP             bool            `json:"wip"`
+	SessionAlias    string          `json:"session_alias,omitempty"`
 	SystemPrompt    *string         `json:"system_prompt,omitempty"`
 	OriginExtension string          `json:"origin_extension,omitempty"`
 	SessionID       string          `json:"session_id,omitempty"`

@@ -49,7 +49,7 @@ func NewAttachedSession(ctx context.Context, driver *AttachedDriver, agent *core
 	var err error
 	s.snapshot, err = driver.Load(ctx, agent)
 	if err == nil {
-		s.watch, err = driver.Client.Watch(ctx, driver.ConversationID, s.snapshot.Revision)
+		s.watch, err = driver.Client.watch(ctx, driver.ConversationID, s.snapshot.Revision, true)
 	}
 	if err != nil {
 		cancel()
@@ -119,7 +119,7 @@ func (s *AttachedSession) Observe(ctx context.Context, sink func(core.AgentEvent
 				}
 				entries, last = append([]Entry(nil), snap.Entries...), snap.Revision
 				restore(snap)
-				s.watch, err = s.driver.Client.Watch(s.ctx, s.driver.ConversationID, last)
+				s.watch, err = s.driver.Client.watch(s.ctx, s.driver.ConversationID, last, true)
 				if err != nil {
 					s.mu.Unlock()
 					return fmt.Errorf("resume attached conversation watch: %w", err)
@@ -151,6 +151,12 @@ func (s *AttachedSession) Observe(ctx context.Context, sink func(core.AgentEvent
 					}
 				}
 				s.mu.Unlock()
+				continue
+			}
+			if cm.Revision == 0 {
+				if p, ok := PartialFromCommit(cm, s.driver.ConversationID); ok && p.PreviewAfter >= last {
+					streamed.apply(p, sink)
+				}
 				continue
 			}
 			if cm.Revision <= last {

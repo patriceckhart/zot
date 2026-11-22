@@ -117,9 +117,13 @@ func isExtraAPIKeyProvider(p string) bool {
 	return false
 }
 
-// isKnownAPIKeyProvider reports whether the given provider supports
-// API-key login through the loopback flow. OAuth-only paths are handled
-// elsewhere (manager.StartOAuth).
+// SupportsAPIKeyLogin reports whether a provider accepts API-key login,
+// including custom providers registered by the host.
+func SupportsAPIKeyLogin(provider string) bool {
+	return isKnownAPIKeyProvider(provider)
+}
+
+// isKnownAPIKeyProvider checks built-in and registered API-key providers.
 func isKnownAPIKeyProvider(p string) bool {
 	for _, provider := range APIKeyProviders() {
 		if p == provider {
@@ -138,7 +142,7 @@ func APIKeyProviders() []string {
 	return []string{
 		"anthropic", "openai", "kimi", "deepseek", "google", "llama.cpp", "lmstudio",
 		"moonshotai", "moonshotai-cn", "groq", "cerebras", "xai", "together",
-		"huggingface", "openrouter", "gondola", "yolo-auto", "cheaperinference", "opper", "runcrate", "cloudgpu", "mistral", "zai",
+		"huggingface", "openrouter", "gondola", "yolo-auto", "cheaperinference", "opper", "runcrate", "cloudgpu", "uberllm", "mistral", "zai",
 		"xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp",
 		"minimax", "minimax-cn", "fireworks", "vercel-ai-gateway",
 		"opencode", "opencode-go", "amazon-bedrock", "google-vertex", "azure-openai-responses",

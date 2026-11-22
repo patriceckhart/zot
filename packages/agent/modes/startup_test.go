@@ -119,6 +119,33 @@ func TestStartupChangelogHasBottomRule(t *testing.T) {
 	}
 }
 
+func TestStartupChangelogFrameSpacing(t *testing.T) {
+	for _, width := range []int{24, 80, 160} {
+		for _, url := range []string{"", "https://example.com/release"} {
+			i := NewInteractive(InteractiveConfig{})
+			i.showStartupChangelog(ChangelogPayload{Version: "1.2.3", URL: url, Body: "Release details"})
+			rows := i.startupBlockLocked(width)
+			header := -1
+			for n, row := range rows {
+				if strings.Contains(stripANSIBytes(row), "release notes") {
+					header = n
+					break
+				}
+			}
+			if header < 0 || header+2 >= len(rows) {
+				t.Fatalf("width %d, URL %q: missing release notes header", width, url)
+			}
+			if rows[header+1] != "" || rows[header+2] == "" {
+				t.Fatalf("width %d, URL %q: want one blank row after header: %q", width, url, rows)
+			}
+			footer := len(rows) - 2
+			if rows[footer-1] != "" || rows[footer-2] == "" {
+				t.Fatalf("width %d, URL %q: want one blank row before footer: %q", width, url, rows)
+			}
+		}
+	}
+}
+
 func TestStartupChangelogBodyWraps(t *testing.T) {
 	const width = 24
 	rows := renderStartupChangelogBody("\x00H:long release heading with Unicode ä\n\n**Details** with a very long description.", tui.Theme{}, width)

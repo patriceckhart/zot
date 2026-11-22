@@ -1914,7 +1914,11 @@ func (x *NativeExecutor) subagentResult(ctx context.Context, tc TaskContext) (Ne
 // is refused by the fence, so it cannot overwrite a newer attempt or a
 // terminal result.
 type taskPartial struct {
-	tc             TaskContext
+	tc TaskContext
+	// Immutable identity lets previews validate the fence without taking
+	// the invocation mutex, which checkpoint writes hold during storage I/O.
+	taskID         string
+	invocation     string
 	base           Partial
 	gate           *eventGate
 	interval       time.Duration
@@ -1948,9 +1952,13 @@ func partialDelay(interval time.Duration, n int) time.Duration {
 
 func newTaskPartial(tc TaskContext, interval time.Duration, base Partial, gate *eventGate) *taskPartial {
 	if interval <= 0 {
-		interval = PartialFlushInterval
+		interval = PartialPersistInterval
 	}
 	p := &taskPartial{tc: tc, base: base, gate: gate, interval: interval, wake: make(chan struct{}, 1), quit: make(chan struct{}), done: make(chan struct{})}
+	tc.inv.mu.Lock()
+	p.taskID, p.invocation = tc.inv.task.ID, tc.inv.task.Invocation
+	tc.inv.mu.Unlock()
+	tc.inv.s.r.livePartials.Store(base.ConversationID, p)
 	go p.loop()
 	return p
 }
@@ -2072,6 +2080,9 @@ func (p *taskPartial) flush() int {
 }
 
 func (p *taskPartial) stop() {
+	if p.tc.inv != nil {
+		p.tc.inv.s.r.livePartials.CompareAndDelete(p.base.ConversationID, p)
+	}
 	close(p.quit)
 	<-p.done
 }

@@ -334,7 +334,7 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		return "", fmt.Errorf("branch: rewind parent: %w", err)
 	}
 	var effective []provider.Message
-	branchWIP := parentMeta.WIP
+	branchWIP, latestWIP := parentMeta.WIP, parentMeta.WIP
 	var nonCompactedRows [][]byte
 	effectiveCount := 0
 	sawCompaction := false
@@ -345,12 +345,13 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		}
 		switch h.Type {
 		case "wip":
-			if effectiveCount < upToMessageIdx {
-				var row struct {
-					WIP WIPState `json:"wip"`
-				}
-				if json.Unmarshal(line, &row) == nil {
-					branchWIP = &row.WIP
+			var row struct {
+				WIP *WIPState `json:"wip"`
+			}
+			if json.Unmarshal(line, &row) == nil && row.WIP != nil {
+				latestWIP = row.WIP
+				if effectiveCount < upToMessageIdx {
+					branchWIP = row.WIP
 				}
 			}
 		case "message":
@@ -377,6 +378,10 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		return nil
 	}); err != nil && err != io.EOF {
 		return "", fmt.Errorf("branch: read parent: %w", err)
+	}
+	// A fork of the entire transcript also inherits toggles made after its last message.
+	if upToMessageIdx >= len(effective) {
+		branchWIP = latestWIP
 	}
 	limit := upToMessageIdx
 	if limit > len(effective) {

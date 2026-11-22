@@ -858,6 +858,26 @@ func assertDefaultTransportStillSecure(t *testing.T) {
 	}
 }
 
+func TestBashStartupUsesZotHome(t *testing.T) {
+	for _, name := range []string{"xdg", "override"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("ZOT_HOME", "")
+			t.Setenv("XDG_STATE_HOME", root)
+			want := filepath.Join(root, "zot", ".bashrc")
+			if name == "override" {
+				t.Setenv("ZOT_HOME", filepath.Join(root, "custom"))
+				want = filepath.Join(root, "custom", ".bashrc")
+			}
+			tool := buildToolRegistry(Args{}, root, nil)["bash"].(*tools.BashTool)
+			worker := (&repoWorkerTool{name: "bash"}).tool(root).(*tools.BashTool)
+			if tool.StartupFile != want || worker.StartupFile != want {
+				t.Fatalf("startup paths = %q, %q, want %q", tool.StartupFile, worker.StartupFile, want)
+			}
+		})
+	}
+}
+
 func TestBuildToolRegistryIncludesGlob(t *testing.T) {
 	cwd := t.TempDir()
 	reg := buildToolRegistry(Args{}, cwd, nil)

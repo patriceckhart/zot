@@ -24,6 +24,18 @@ type Agent struct {
 	Reasoning   string
 	Temperature *float32
 
+	// CompactionPrompt replaces the built-in summary template when nonblank.
+	// Configure before use. It applies to both Compact and Summarize.
+	CompactionPrompt string
+
+	// CompactionInstructions are appended to the selected summary template.
+	// Configure before use. They apply to both Compact and Summarize.
+	CompactionInstructions string
+
+	// CompactionMode selects "side" (the default) or "in_place".
+	// Configure before use. In-place summaries preserve the request prefix.
+	CompactionMode string
+
 	// MaxTokens caps the model's output tokens per turn. Zero leaves
 	// the field unset on the provider request, letting each provider
 	// apply its own default (which can be conservative, e.g. Bedrock
@@ -35,6 +47,10 @@ type Agent struct {
 	// SessionID is the zot conversation id, forwarded to providers that
 	// support sticky routing. Empty means omitted.
 	SessionID string
+
+	// SessionAlias is the persisted conversation's readable lookup name, if any.
+	// It is host metadata and is not forwarded to providers.
+	SessionAlias string
 
 	// MaxToolCalls caps provider-executed server-tool calls per turn.
 	// Zero leaves the field unset.
@@ -62,6 +78,12 @@ type Agent struct {
 	// or explicit prompt/model reset, before any turn starts. It is not called
 	// for ordinary follow-up messages or tool-loop steps.
 	BeforeStart func(context.Context, string) string
+
+	// BeforeRequest transforms the outgoing logical request immediately
+	// before Stream. Purpose is chat, compaction_side or compaction_in_place.
+	// Use ReplaceRequestSegments to preserve shared transcript storage.
+	// Errors abort the call without provider retries or compaction fallback.
+	BeforeRequest func(context.Context, string, provider.Request) (provider.Request, error)
 
 	// BeforeTurn, if set, is called before each turn's model call.
 	// Returning (allowed=false, reason) aborts the turn; reason is
@@ -676,6 +698,10 @@ func RetryableProviderError(err error) bool {
 	if err == nil {
 		return false
 	}
+	var transformErr *RequestTransformError
+	if errors.As(err, &transformErr) {
+		return false
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
@@ -794,6 +820,10 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 		}
 		a.mu.Unlock()
 		break
+	}
+	req, err := a.transformRequest(ctx, "chat", req)
+	if err != nil {
+		return provider.StopError, provider.Message{}, err
 	}
 	stream, err := a.Client.Stream(ctx, req)
 	if err != nil {

@@ -10,7 +10,7 @@ import (
 
 	"github.com/sahilm/fuzzy"
 
-	"github.com/patriceckhart/zot/packages/ignore"
+	"github.com/patriceckhart/zot/internal/ignore"
 	"github.com/patriceckhart/zot/packages/tui"
 )
 

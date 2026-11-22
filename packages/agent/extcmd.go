@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patriceckhart/zot/internal/ignore"
 	"github.com/patriceckhart/zot/packages/agent/extensions"
 	"github.com/patriceckhart/zot/packages/agent/extproto"
-	"github.com/patriceckhart/zot/packages/ignore"
 )
 
 // runExtCommand dispatches `zot ext ...` subcommands. Returns
@@ -44,6 +44,8 @@ func runExtCommand(rawArgs []string, version string) (handled bool, err error) {
 		return true, extRemove(rawArgs[2:])
 	case "install":
 		return true, extInstall(rawArgs[2:])
+	case "update":
+		return true, extUpdate(rawArgs[2:])
 	case "help", "-h", "--help":
 		printExtHelp()
 		return true, nil
@@ -59,6 +61,7 @@ func printExtHelp() {
 usage:
   zot ext list                    list installed extensions and their state
   zot ext doctor                  diagnose installed extensions
+  zot ext update                  update global git-installed extensions
   zot ext logs <name> [-f]        cat / tail an extension's stderr log
   zot ext enable <name>           re-enable a disabled extension
   zot ext disable <name>          disable without removing
@@ -68,6 +71,21 @@ usage:
 extensions live under:
   $ZOT_HOME/extensions/<name>/extension.json   (global)
   ./.zot/extensions/<name>/extension.json      (project-local)`)
+}
+
+func extUpdate(args []string) error {
+	if len(args) == 1 {
+		switch args[0] {
+		case "help", "-h", "--help":
+			printExtHelp()
+			return nil
+		}
+	}
+	if len(args) != 0 {
+		return fmt.Errorf("usage: zot ext update (no arguments)")
+	}
+	updateAllExtensions(ZotHome())
+	return nil
 }
 
 // extList walks both the global and project-local extension dirs and
@@ -651,7 +669,7 @@ func copyDir(src, dst string) error {
 	})
 }
 
-// gitignore matching lives in packages/ignore so the @-file picker in
+// gitignore matching lives in internal/ignore so the @-file picker in
 // packages/agent/modes can share it without an import cycle. These
 // thin aliases keep the existing call sites (and tests) terse.
 type gitignore = ignore.Gitignore

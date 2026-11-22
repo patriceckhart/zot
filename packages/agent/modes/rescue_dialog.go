@@ -1,6 +1,7 @@
 package modes
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,18 +9,16 @@ import (
 	"github.com/patriceckhart/zot/packages/tui"
 )
 
-// rescueDialog offers a quick model swap when the active turn fails
-// with a recoverable provider error (auth/rate/temporary). It looks
-// and behaves like modelDialog: vertical list of available models,
-// up/down to select, enter to retry, esc to cancel. The candidate
-// list is built dynamically from the providers the user is currently
-// logged in to — no static fallback config.
+// rescueDialog offers a retry or model swap after a recoverable provider
+// failure. Cursor zero retries the existing client. Remaining rows select
+// models from providers with usable credentials.
 type rescueDialog struct {
+	catalog  func() []provider.Model
 	active   bool
 	all      []provider.Model // candidates, sorted
 	view     []provider.Model // filtered view (typed query)
-	cursor   int
-	current  string // currently active model id (excluded from view)
+	cursor   int              // zero is retry, model rows are indexed from one
+	current  string           // currently active model id (excluded from view)
 	query    string
 	failedAt string // failed provider/model pair, e.g. "kimi/kimi-for-coding"
 	reason   string // short human-readable reason ("token expired", "rate limited", ...)
@@ -27,6 +26,7 @@ type rescueDialog struct {
 }
 
 type rescueDialogAction struct {
+	Retry    bool
 	Select   bool
 	Provider string
 	Model    string
@@ -48,6 +48,9 @@ func (d *rescueDialog) Open(current string, loggedInProviders []string, failedPr
 	d.failedAt = strings.TrimSpace(failedProvider + "/" + failedModel)
 
 	all := provider.Active()
+	if d.catalog != nil {
+		all = d.catalog()
+	}
 	provSet := map[string]bool{}
 	for _, p := range loggedInProviders {
 		provSet[p] = true
@@ -57,8 +60,7 @@ func (d *rescueDialog) Open(current string, loggedInProviders []string, failedPr
 		if !provSet[m.Provider] {
 			continue
 		}
-		// Drop the exact failed pair so users can't retry on the
-		// model that just failed.
+		// The failed pair has its own retry action, not a model-swap row.
 		if m.Provider == failedProvider && m.ID == failedModel {
 			continue
 		}
@@ -91,6 +93,9 @@ func (d *rescueDialog) refilter() {
 		d.view = out
 	}
 	d.cursor = 0
+	if needle != "" && len(d.view) > 0 {
+		d.cursor = 1
+	}
 }
 
 // Render mirrors modelDialog so a rescue prompt feels identical to
@@ -110,7 +115,7 @@ func (d *rescueDialog) Render(th tui.Theme, width int) []string {
 		lines = append(lines, th.FG256(th.Warning, "  "+d.reason))
 	}
 
-	hint := "retry this turn with another model (↑/↓, enter, esc to cancel)"
+	hint := "retry or choose another model (↑/↓, enter, esc to cancel)"
 	if d.query != "" {
 		hint = fmt.Sprintf("filter: %s (%d match)", d.query, len(d.view))
 		if len(d.view) != 1 {
@@ -120,6 +125,13 @@ func (d *rescueDialog) Render(th tui.Theme, width int) []string {
 		hint += " - type to filter"
 	}
 	lines = append(lines, th.FG256(th.Muted, hint))
+
+	retry := "   Retry current model (keep credentials and endpoint)"
+	if d.cursor == 0 {
+		lines = append(lines, th.PadHighlight(retry, width))
+	} else {
+		lines = append(lines, th.FG256(th.Muted, retry))
+	}
 
 	if len(d.view) == 0 {
 		if len(d.all) == 0 {
@@ -135,7 +147,7 @@ func (d *rescueDialog) Render(th tui.Theme, width int) []string {
 	start := 0
 	end := len(d.view)
 	if end > visible {
-		start = d.cursor - visible/2
+		start = d.cursor - 1 - visible/2
 		if start < 0 {
 			start = 0
 		}
@@ -158,7 +170,7 @@ func (d *rescueDialog) Render(th tui.Theme, width int) []string {
 			tag = "[live] "
 		}
 		plain := fmt.Sprintf("   %-10s %-28s %s  %s%s", m.Provider, m.ID, reason, tag, m.DisplayName)
-		if i == d.cursor {
+		if i+1 == d.cursor {
 			lines = append(lines, th.PadHighlight(plain, width))
 		} else {
 			lines = append(lines, th.FG256(th.Muted, plain))
@@ -182,7 +194,7 @@ func (d *rescueDialog) HandleKey(k tui.Key) rescueDialogAction {
 			d.cursor--
 		}
 	case tui.KeyDown:
-		if d.cursor < len(d.view)-1 {
+		if d.cursor < len(d.view) {
 			d.cursor++
 		}
 	case tui.KeyBackspace:
@@ -206,16 +218,35 @@ func (d *rescueDialog) HandleKey(k tui.Key) rescueDialogAction {
 		d.Close()
 		return rescueDialogAction{Close: true}
 	case tui.KeyEnter:
-		if len(d.view) == 0 {
+		if d.cursor == 0 {
+			d.Close()
+			return rescueDialogAction{Retry: true}
+		}
+		if d.cursor > len(d.view) {
 			d.Close()
 			return rescueDialogAction{Close: true}
 		}
-		m := d.view[d.cursor]
+		m := d.view[d.cursor-1]
 		prompt := d.prompt
 		d.Close()
 		return rescueDialogAction{Select: true, Provider: m.Provider, Model: m.ID, Prompt: prompt}
 	}
 	return rescueDialogAction{}
+}
+
+// retryRescueTurn retains the active client, including launch-time auth and
+// endpoint overrides. The original input and completed tool results are already
+// in the transcript, so continuing must not resubmit the saved prompt or images.
+func (i *Interactive) retryRescueTurn() {
+	i.mu.Lock()
+	i.pendingRescuePrompt = ""
+	i.pendingRescueImages = nil
+	i.mu.Unlock()
+	parent := i.runCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	i.startTurnRun(parent, "", nil, false, nil, false, true)
 }
 
 // classifyRescueError inspects an agent error and decides whether

@@ -154,6 +154,12 @@ func NewCloudGPU(apiKey, baseURL string) Client {
 	return NewOpenAICompat("cloudgpu", apiKey, baseURL, cloudgpuDefaultBaseURL)
 }
 
+// NewUberLLM: UberLLM, an OpenAI Chat Completions-compatible gateway for
+// models from many vendors addressed as vendor/model IDs.
+func NewUberLLM(apiKey, baseURL string) Client {
+	return NewOpenAICompat("uberllm", apiKey, baseURL, uberllmDefaultBaseURL)
+}
+
 // NewOpenCode routes Zen models through Chat Completions or Responses.
 func NewOpenCode(apiKey, baseURL string) Client {
 	const defaultBaseURL = "https://opencode.ai/zen/v1"

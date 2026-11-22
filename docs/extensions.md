@@ -400,6 +400,9 @@ Interceptable events:
 
 - `before_agent_start`: inspect and replace the complete system prompt before
   the first model call. See [System prompt replacement](#system-prompt-replacement).
+- `before_request`: transform selected logical request segments using a dedicated
+  frame pair. Requires `request_transform`, and fails closed by default. See
+  [Logical request transforms](#logical-request-transforms-before_request).
 - `tool_call`: block the call (model sees `reason` as the tool
   error) or rewrite args via `modified_args`.
 - `turn_start`: block the turn before the model is called. Useful
@@ -417,7 +420,7 @@ After prompt assembly (including context files, skills, and extension tools),
 zot sends a request before the first agent model call:
 
 ```json
-{"type":"event_intercept","id":"start-1","event":"before_agent_start","session_id":"session-123","agent_run_id":"run-456","cwd":"/work/repo","provider":"anthropic","model":"claude-opus-4-7","system_prompt":"The complete current system prompt"}
+{"type":"event_intercept","id":"start-1","event":"before_agent_start","session_id":"session-123","session_alias":"tidy-birch","agent_run_id":"run-456","cwd":"/work/repo","provider":"anthropic","model":"claude-opus-4-7","system_prompt":"The complete current system prompt"}
 ```
 
 Reply with an exact replacement:
@@ -442,14 +445,18 @@ Cancellation stops preparation without committing a pending replacement.
 `session_start` remains a separate one-way setup notification.
 
 `session_id` is the persisted conversation ID when available, otherwise a
-runtime-local ID. `agent_run_id` identifies one preparation pass and changes
-on each rebuild. It is shared by all extensions in that pass.
+runtime-local ID. Optional `session_alias` is the persisted conversation's
+readable lookup name, such as `tidy-birch`, not its editable display title.
+The Go SDK exposes it as `BeforeAgentStartEvent.SessionAlias`. `agent_run_id`
+identifies one preparation pass and changes on each rebuild. It is shared by
+all extensions in that pass.
 
 Each extension has a five-second deadline including the request pipe write.
 Invalid/non-string values, malformed responses, crashes, and timeouts preserve
 the current prompt and produce an extension log diagnostic and host warning.
 An omitted value is a normal no-op. The encoded `system_prompt` response value
-is limited to 1 MiB; complete transport frames are limited to 4 MiB. Exceeding
+is limited to 1 MiB. Complete transport frames are limited to 4 MiB unless
+`request_transform` is negotiated as described below. Exceeding
 the frame limit disconnects the extension's read loop. A blocked request write
 closes its input pipe to release the writer. Other subscribed extensions still
 run unless the user cancels startup.
@@ -458,6 +465,187 @@ Supported in interactive, print, JSON, and RPC modes. RPC warnings use
 `ext_notify`. Subscribed extensions see the entire prompt, including private
 context-file instructions. This feature is not a security boundary and does
 not change tool permissions or validate the safety of replacement instructions.
+
+#### Logical request transforms (`before_request`)
+
+A `request_transform` capability enables a separate, correlated request/response
+pair for inspecting and rewriting logical model request content. It is not an
+HTTP-body hook and does not expose the exact provider payload. Provider clients
+still perform their own wire conversion, signature handling and transport retries.
+
+Advertise the capability in `hello`, optionally with options:
+
+```json
+{"type":"hello","name":"redactor","version":"1","capabilities":["request_transform"],"request_transform":{"timeout_ms":30000,"on_timeout":"fail"}}
+```
+
+The host advertises `request_transform` in `hello_ack.capabilities`. Extensions
+may also subscribe to `before_request`, but the capability itself declares the
+transform requirement. A missing subscription cannot disable it. Older hosts
+ignore unknown capabilities. The Go SDK refuses to run a registered transform
+without host support, but an old host may still continue without the extension.
+Security-sensitive deployments must require a host version supporting this hook.
+
+Declare the same options in `extension.json` to require the transform even when
+its executable fails before sending `hello`. Manifest options override `hello`:
+
+```json
+{"name":"redactor","exec":"./redactor","request_transform":{"timeout_ms":30000,"on_timeout":"fail"}}
+```
+
+The host sends:
+
+```json
+{"type":"request_transform","id":"rt-1","session_id":"session-123","provider":"anthropic","model":"claude-opus-4-7","purpose":"chat","request_hash":"sha256:...","segments":[{"id":"system","kind":"text","text":"You are an assistant."},{"id":"m0.c0","kind":"text","text":"Use token SECRET."},{"id":"m1.c0","kind":"json","value":{"path":"/private/report.csv"}},{"id":"m2.c0","kind":"text","skipped":"signed"}]}
+```
+
+Return replacements by segment ID, or `error` to reject the request:
+
+```json
+{"type":"request_transform_response","id":"rt-1","replacements":{"m0.c0":"Use token <REDACTED>.","m1.c0":{"path":"/<REDACTED>/report.csv"}}}
+```
+
+- `system` is the complete outgoing system prompt. Chat and in-place compaction
+  use the active prompt after `before_agent_start`. Side compaction uses its
+  separate summarization prompt.
+- `mN.cN` identifies message content using zero-based indexes. Nested tool-result
+  content adds `.r.cN`, recursively. Plain text, replayed assistant text and
+  unsigned tool-call arguments are included.
+- `tN.description`, `tN.namespace_description`, `tN.namespace_instructions` and
+  `tN.schema` identify tool descriptions, namespace text and input schemas.
+- `kind` is `text`, `json` or `opaque`. Empty text may omit `text`. JSON is a
+  parsed JSON value, not a JSON string containing encoded JSON.
+- Signed text and tool calls, images, reasoning, constrained-sampling grammars,
+  and unknown block types have a `skipped` reason and no content. They remain
+  byte-for-byte unchanged. A transform can reject requests with skipped content
+  when complete inspection is required.
+- Missing IDs mean unchanged. Unknown IDs and replacements for skipped IDs are
+  ignored. Empty string is a valid text replacement. `null` is not.
+- JSON replacements must preserve object keys, array lengths and scalar types
+  recursively. They may replace values, not message roles, tool names, call IDs,
+  signatures, metadata, or message/block/tool structure. Tool schemas are not
+  semantically revalidated after value replacement, so extensions must preserve
+  schema meaning. JSON keys themselves cannot be redacted.
+- Transforms chain in successful extension load order. Each extension sees the
+  previous extension's successful replacements. A whole
+  response is validated before applying it, using copy-on-write. A failed
+  response never partially applies. Local transcripts, persisted sessions and
+  the live tool registry are not rewritten.
+
+#### Ephemeral user context
+
+Hosts advertising `prepend_user_context` in `hello_ack.capabilities` also accept
+an optional `prepend_user_context` JSON string in a transform response:
+
+```json
+{"type":"request_transform_response","id":"rt-1","prepend_user_context":"Session workflow instructions"}
+```
+
+For `purpose: "chat"`, a nonempty value prepends one user-role text message to
+the outgoing request. The system prompt and existing messages, including tool
+call/result pairs, remain unchanged. The added message is not persisted in the
+session or transcript. It is not present in later requests unless the extension
+returns it again, so bootstrap extensions must supply it on every chat request,
+including after compaction. An empty string is a no-op. Non-string values,
+`null`, values whose encoded JSON string exceeds 1 MiB, and this field on
+non-chat requests are rejected under the normal transform failure policy.
+
+Context is applied after segment replacements and validated atomically with
+them. Later extensions see the prepended message as ordinary request segments.
+If multiple extensions prepend context, each prepends before the previous
+extension's output. Deduplication is the extension's responsibility. This field
+cannot insert tool calls or results and does not change tool permissions.
+The existing Go SDK `InterceptBeforeRequest` handler remains replacements-only.
+The context field is available through the subprocess wire protocol.
+
+Older hosts ignore unknown response fields. Extensions using this feature must
+check both `request_transform` and `prepend_user_context` in the host's
+capabilities before declaring readiness. Declare `request_transform` with
+`on_timeout: "fail"` in the manifest as well to prevent a failed subprocess
+from silently dropping the bootstrap on hosts supporting required transforms.
+Hosts predating required transforms may still fail open and are not supported.
+
+Transforms run once per core `Client.Stream` invocation, including each core
+retry, every tool-loop turn, side compaction, in-place compaction and its
+context-overflow fallback. `purpose` is `chat`, `compaction_side` or
+`compaction_in_place`. Provider-internal HTTP retries reuse the transformed
+payload without invoking the hook again. Transform failures do not trigger
+provider retries or compaction fallback.
+
+Shared wiring covers interactive, print, JSON, RPC, bot/Telegram and continuous
+agents, including continuous compaction and subagents using that engine. This
+is not a process-wide egress firewall. Non-chat classifier/image-generation
+APIs, extension/tool-owned network traffic, opaque data, credentials and
+provider-generated wire fields are outside the hook. Every extension receives
+potentially sensitive request content. Do not install untrusted transforms or
+log segments by default. The host records only content-free failure diagnostics
+and does not expose extension-supplied error text.
+
+**Failure policy and bounds:** `timeout_ms` defaults to 30000, with an allowed
+range of 1 to 300000. Frames include `deadline_ms` (Unix milliseconds) so the SDK
+uses the host's effective deadline, including manifest overrides and any earlier
+parent deadline. This volatile field is excluded from the hash.
+The deadline includes extraction, serialization, queueing,
+pipe writes, the response and replacement validation. CPU-bound work observes
+expiration at phase boundaries. `on_timeout` defaults to `fail` and applies to
+all failures: timeouts, crashes, disconnects, invalid responses, unsupported
+capabilities and size limits. `pass` explicitly allows the unchanged input to
+that extension to continue. With multiple transforms, the strictest policy
+wins: any `fail` policy makes any transform failure terminal. Parent cancellation
+always aborts regardless of policy. A blocked write closes the extension pipe.
+
+Requirements remain registered after crashes and failed reloads. Reloading may
+restore a failed transform but cannot remove or weaken a required transform
+until zot restarts. To enforce startup failures as well, use the manifest
+field above. Explicitly disabling/removing an extension before startup disables
+its requirement. This guardrail is not protection against a user or extension
+that controls zot's configuration or process.
+
+Each stage permits at most 10,000 segments and 16 MiB of text UTF-8 bytes plus
+canonical JSON value bytes, both before and after replacements. Nesting is
+limited to 64 levels. These are rejection limits, never truncation. Negotiating
+`request_transform` raises the host and SDK frame limit to 128 MiB to accommodate
+JSON escaping, and the host's outbound byte queue to 128 MiB. Other extensions
+retain the 4 MiB frame limit and 16 MiB queue. The queue still holds at most
+256 frames plus one in flight. Transform writes use their dedicated deadline,
+not the legacy five-second interception timeout.
+
+`request_hash` is `sha256:` followed by lowercase hexadecimal SHA-256 of compact
+Go `encoding/json` output for an object with fields in this order: `provider`,
+`model`, `purpose`, `segments`. Segment fields are ordered `id`, `kind`, `text`,
+`value`, `skipped`, with empty optional fields omitted. JSON values are
+canonicalized with sorted object keys and preserved JSON numbers. Volatile
+request fields and session identity are excluded. Extensions can cache
+replacements by `(session_id, request_hash)` but must return the replacements
+on every request. There is no host cache or special `cached: true` behavior.
+The hash covers the exposed segments only, not skipped bytes or the HTTP body.
+
+Go SDK registration (before `Run`):
+
+```go
+e.InterceptBeforeRequest(ext.RequestTransformOptions{},
+    func(ctx context.Context, ev ext.RequestTransformEvent) (map[string]json.RawMessage, error) {
+        replacements := make(map[string]json.RawMessage)
+        for _, segment := range ev.Segments {
+            if segment.Skipped != "" {
+                return nil, fmt.Errorf("complete inspection required")
+            }
+            if segment.Kind == "text" {
+                text := strings.ReplaceAll(segment.Text, "SECRET", "<REDACTED>")
+                value, err := json.Marshal(text)
+                if err != nil {
+                    return nil, err
+                }
+                replacements[segment.ID] = value
+            }
+        }
+        return replacements, nil
+    })
+```
+
+Handlers should honor context cancellation. Panics and handler errors become
+content-free rejection responses. The SDK supports negotiated large frames and
+continues reading protocol traffic while handlers run.
 
 #### `event_intercept_response`
 
@@ -823,6 +1011,25 @@ themselves indicate lost delivery. They reset when zot restarts. Correlate tool
 outcomes with `(session_id, tool_id)`, compaction with `compaction_id`, and swarm
 runs with `agent_run_id`. These are payload identifiers, not request/reply IDs.
 
+Notifications and intercept requests also include optional `session_alias` when
+the session's readable alias is available. The Go SDK exposes it as
+`Event.SessionAlias` and `BeforeAgentStartEvent.SessionAlias`. Subscribe to
+`session_start` to learn the alias without reading transcript files:
+
+```json
+{"type":"event","event":"session_start","session_id":"session-123","session_alias":"tidy-birch","cwd":"/work/repo","sequence":1}
+```
+
+Aliases are lookup names scoped to a working directory and named-agent namespace,
+not globally unique IDs or editable display titles. Continue using `session_id`
+for correlation. Resumed sessions retain their aliases, while forks and imports
+receive new ones. `session_end` describes the closing session, including its alias,
+before `session_start` describes the next one. Legacy transcripts, explicit-path
+sessions without an alias, and non-persisted conversations omit `session_alias`.
+Older hosts may also omit it, so extensions must tolerate its absence. These
+fields do not require a protocol-version change. Environment variables are not a
+session-change notification mechanism for already-running extension subprocesses.
+
 | Event | Additional payload | Meaning |
 |---|---|---|
 | `session_start` | No additional fields | An active conversation opens |
@@ -918,7 +1125,9 @@ tokens. The events do not let extensions modify the summary.
 
 Swarm events are emitted by the parent supervisor, including resumed tasks.
 `session_id` identifies the task's parent conversation, even if the active
-conversation later changes. `agent_id` survives resume; `agent_run_id` is fresh
+conversation later changes. A delayed event for a different conversation does
+not inherit the active conversation's alias. Its `session_alias` may be absent.
+`agent_id` survives resume; `agent_run_id` is fresh
 for each local runner invocation and pairs start with stop. `name` currently
 uses the agent ID. Stop statuses are `completed`, `failed`, `cancelled`, and
 `timed_out`. Merely loading detached agents from disk does not replay lifecycle
@@ -953,15 +1162,18 @@ Frames are serialized per extension, including notifications and interception
 requests. Notification enqueue does not wait for the subprocess. Each
 extension has a bounded outbound queue (256 frames or 16 MiB of queued bytes,
 plus one in-flight frame); overflow disconnects it rather than silently dropping
-an event and continuing. Synchronous writes are bounded to five seconds.
+an event and continuing. Synchronous writes are bounded to five seconds, except
+negotiated request transforms, which use their dedicated deadline and larger
+byte queue.
 Graceful shutdown attempts to drain queued frames, including `session_end`,
 before sending `shutdown`, within the shutdown grace period.
 
 Delivery is best-effort, not a durable or exactly-once audit log. There is no
 acknowledgement, replay, or crash recovery for notifications. A crash, forced
 termination, slow consumer, or broken pipe can prevent delivery. The protocol's
-4 MiB frame limit still applies. Slow event handlers can delay later
-interception requests, so extension handlers should hand lengthy work to their
+4 MiB frame limit applies unless `request_transform` is negotiated. Slow event
+handlers can delay later interception requests, so extension handlers should
+hand lengthy work to their
 own bounded queue. Existing interception response and failure policies remain
 unchanged.
 
@@ -1028,6 +1240,7 @@ Reply with `shutdown_ack` and then exit.
 ```
 zot ext list                    list installed extensions and their state
 zot ext doctor                  diagnose load, registration, and conflict issues
+zot ext update                  update global git-installed extensions
 zot ext install <path|git-url>  copy / clone into $ZOT_HOME/extensions/
 zot ext remove <name>           delete an extension directory
 zot ext enable <name>           re-enable a disabled extension
@@ -1063,6 +1276,25 @@ warnings, and each extension's stderr log path.
 `zot ext install <path>` does a recursive copy; `<git-url>` does a
 shallow clone. Both validate that the destination contains an
 `extension.json` and roll back if not.
+
+### Updating extensions
+
+`zot ext update` updates git-installed extensions under `$ZOT_HOME/extensions/`
+without replacing the zot binary. It works with development builds too.
+Project-local extensions are not updated. The command takes no names or flags
+other than `--help` or `-h`.
+
+Disabled extensions and installations without a git checkout are skipped.
+For each eligible extension, zot stashes dirty worktree state (including
+untracked files), runs `git pull --ff-only`, and restores the stash. Conflicts
+when restoring are reported and must be resolved manually. Failures are reported
+per extension and do not stop the remaining updates or cause a nonzero exit
+status. No build or dependency-install step is run. Rebuild manually if needed
+and use `/reload-ext` in a running session to load the updated extension.
+
+`zot update` runs the same extension update after installing the binary or
+finding zot already up to date. A failed binary update does not update
+extensions. `zot update --check` remains read-only.
 
 ## Loading an extension for one run
 
@@ -1187,6 +1419,12 @@ Type `/reload-ext` in the TUI to tear down every running extension
 subprocess, re-read the manifests from disk, and respawn the set.
 The agent's tool registry is rebuilt automatically, so freshly-
 registered extension tools become callable without restarting zot.
+After waiting for registration/readiness, zot replays `session_start` to subscribed
+extensions when a conversation is active. The replay includes the current
+`session_id`, optional `session_alias`, and `cwd`, with a fresh `sequence`.
+It restores extension setup context without creating a new conversation or
+emitting `session_end`. No replay is sent for a closed or missing conversation.
+Extensions should subscribe before sending `ready` to receive this replay.
 Useful while developing an extension: edit, save, `/reload-ext`,
 done. Explicit `--ext` paths are remembered and reloaded alongside
 discovered extensions. The temporary reload status reports each load

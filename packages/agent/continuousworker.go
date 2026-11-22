@@ -99,9 +99,13 @@ func runContinuousWorker(ctx context.Context, args []string, in io.ReadCloser, o
 	if err != nil {
 		return err
 	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
 	reg := core.Registry{}
 	for _, name := range []string{"read", "write", "edit", "glob", "bash"} {
-		reg[name] = &repoWorkerTool{name: name, roots: opts.roots}
+		reg[name] = &repoWorkerTool{name: name, roots: opts.roots, shell: cfg.Shell, timeoutSeconds: cfg.ShellTimeoutSeconds}
 	}
 	w := &continuous.WorkerServer{Environment: opts.environment, Tools: reg, Token: opts.token, LedgerPath: opts.ledger}
 	if err := w.Open(); err != nil {
@@ -131,8 +135,10 @@ func (c *stdioConn) Close() error {
 // repoWorkerTool resolves the call's repository and runs the standard
 // tool jailed to it.
 type repoWorkerTool struct {
-	name  string
-	roots map[string]string
+	name           string
+	roots          map[string]string
+	shell          []string
+	timeoutSeconds int
 }
 
 func (t *repoWorkerTool) Name() string { return t.name }
@@ -156,7 +162,7 @@ func (t *repoWorkerTool) tool(dir string) core.Tool {
 	case "glob":
 		return &tools.GlobTool{CWD: dir, Sandbox: sb}
 	default:
-		return &tools.BashTool{CWD: dir, Sandbox: sb}
+		return &tools.BashTool{CWD: dir, Sandbox: sb, StartupFile: filepath.Join(ZotHome(), ".bashrc"), Shell: t.shell, TimeoutSeconds: t.timeoutSeconds}
 	}
 }
 

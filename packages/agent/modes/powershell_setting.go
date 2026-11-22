@@ -82,7 +82,7 @@ func (i *Interactive) applyPowerShellSetting(value bool, goos string) {
 		i.agent.UpdateTools(func(next core.Registry) core.Registry {
 			delete(next, "powershell")
 			if value {
-				next["powershell"] = &tools.PowerShellTool{CWD: i.cfg.CWD, Sandbox: i.cfg.Sandbox}
+				next["powershell"] = &tools.PowerShellTool{CWD: i.cfg.CWD, Sandbox: i.cfg.Sandbox, TimeoutSeconds: i.cfg.ShellTimeoutSeconds}
 			}
 			return next
 		})

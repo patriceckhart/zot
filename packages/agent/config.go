@@ -14,6 +14,7 @@ import (
 
 	"github.com/patriceckhart/zot/packages/agent/codemode"
 	"github.com/patriceckhart/zot/packages/agent/keymap"
+	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/core"
 	providerpkg "github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/provider/auth"
@@ -34,6 +35,19 @@ type Config struct {
 	Temperature *float32           `json:"temperature,omitempty"`
 	Theme       string             `json:"theme"`
 	Codemode    *codemode.Settings `json:"codemode,omitempty"`
+
+	// Shell is an argv prefix for the bash tool and shell escapes.
+	// Empty preserves platform-specific shell auto-detection.
+	Shell []string `json:"shell,omitempty"`
+
+	// ShellTimeoutSeconds caps shell execution time. Zero means unlimited.
+	ShellTimeoutSeconds int `json:"shell_timeout_seconds,omitempty"`
+
+	// DisabledProviders blocks inference, credential resolution, and discovery.
+	DisabledProviders []string `json:"disabled_providers,omitempty"`
+
+	// HideSpeculativeModels hides unconfirmed catalog IDs from selection lists.
+	HideSpeculativeModels bool `json:"hide_speculative_models,omitempty"`
 
 	// SkillExclude omits filesystem paths and their descendants from skill
 	// discovery. Relative paths use the session starting directory.
@@ -74,6 +88,9 @@ type Config struct {
 	// that triggers automatic transcript compaction in interactive mode.
 	// nil/missing means 85; zero disables percentage-based triggers.
 	AutoCompactThreshold *int `json:"auto_compact_threshold,omitempty"`
+
+	// CompactionMode selects side (default) or in_place summarization.
+	CompactionMode string `json:"compaction_mode,omitempty"`
 
 	// JailByDefault confines tools to the session working directory when
 	// a new agent starts. Off by default; nil/missing means disabled.
@@ -267,12 +284,24 @@ func LoadConfig() (Config, error) {
 	if err := c.Codemode.Validate(); err != nil {
 		return c, err
 	}
+	if err := tools.ValidateShell(c.Shell); err != nil {
+		return c, err
+	}
+	if err := tools.ValidateShellTimeout(c.ShellTimeoutSeconds); err != nil {
+		return c, err
+	}
 	return c, nil
 }
 
 // SaveConfig writes the config file, creating parent dirs.
 func SaveConfig(c Config) error {
 	if err := c.WIP.Validate(); err != nil {
+		return err
+	}
+	if err := tools.ValidateShellTimeout(c.ShellTimeoutSeconds); err != nil {
+		return err
+	}
+	if err := tools.ValidateShell(c.Shell); err != nil {
 		return err
 	}
 	if err := c.Codemode.Validate(); err != nil {
@@ -327,6 +356,9 @@ func ResolveLlamaCPPConfig() (baseURL, apiKey string, err error) {
 }
 
 func resolveLlamaCPPConfig(ctx context.Context, commandMode apiKeyCommandMode) (baseURL, apiKey string, err error) {
+	if err := CheckProviderEnabled(providerpkg.LlamaCPPProviderID); err != nil {
+		return "", "", err
+	}
 	baseURL = strings.TrimSpace(os.Getenv("LLAMA_BASE_URL"))
 	apiKey = strings.TrimSpace(os.Getenv("LLAMA_API_KEY"))
 	if baseURL == "" {
@@ -397,6 +429,9 @@ const (
 )
 
 func resolveCredentialFull(ctx context.Context, provider, explicit string, commandMode apiKeyCommandMode) (cred, method, accountID string, err error) {
+	if err := CheckProviderEnabled(provider); err != nil {
+		return "", "", "", err
+	}
 	if explicit != "" {
 		return explicit, "apikey", "", nil
 	}
@@ -518,6 +553,10 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 		}
 	case "cloudgpu":
 		if v := os.Getenv("CLOUDGPU_API_KEY"); v != "" {
+			return v, "apikey", "", nil
+		}
+	case "uberllm":
+		if v := os.Getenv("UBERLLM_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "mistral":

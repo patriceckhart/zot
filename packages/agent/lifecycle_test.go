@@ -118,7 +118,7 @@ func TestExtensionLifecycleEndToEnd(t *testing.T) {
 			mgr.WaitForReady(time.Second)
 			tool := &lifecycleTool{}
 			ag := core.NewAgent(&lifecycleClient{}, "test", "", core.NewRegistry(tool))
-			ag.SessionID = "session-one"
+			bindAgentSession(ag, &core.Session{ID: "session-one", Meta: core.SessionMeta{Alias: "tidy-birch"}})
 			wireNonInteractiveAgentExtHooks(ctx, ag, mgr)
 			if err := ag.Prompt(ctx, "review", nil, func(e core.AgentEvent) {
 				if _, ok := e.(core.EvPromptSubmit); ok {
@@ -128,7 +128,7 @@ func TestExtensionLifecycleEndToEnd(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Exercise the same explicit boundary helper used by the session picker.
-			ag.SessionID = "session-two"
+			bindAgentSession(ag, &core.Session{ID: "session-two", Meta: core.SessionMeta{Alias: "chatty-lake"}})
 			startExtensionSession(mgr, ag, dir, "session_switch")
 			mgr.Stop(time.Second)
 			data, err := os.ReadFile(output)
@@ -157,6 +157,13 @@ func TestExtensionLifecycleEndToEnd(t *testing.T) {
 				}
 				if e.SessionID == "" || e.CWD == "" {
 					t.Fatalf("missing correlation: %+v", e)
+				}
+				wantAlias := "tidy-birch"
+				if e.SessionID == "session-two" {
+					wantAlias = "chatty-lake"
+				}
+				if e.SessionAlias != wantAlias {
+					t.Fatalf("session alias = %q, want %q: %+v", e.SessionAlias, wantAlias, e)
 				}
 			}
 			names := []string{"session_start", "user_prompt_submit", "turn_start", "tool_call", "turn_end", "permission_decision", "tool_result", "session_end"}
