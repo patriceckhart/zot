@@ -83,6 +83,18 @@ func TestWIPDoneQueuesConfiguredCleanupOnce(t *testing.T) {
 	}
 }
 
+func TestWIPDoneWithoutActivePhase(t *testing.T) {
+	for _, busy := range []bool{true, false} {
+		a := core.NewAgent(nil, "model", "system", nil)
+		i := NewInteractive(InteractiveConfig{Agent: a})
+		i.busy = busy
+		i.runSlash(context.Background(), "/wip done")
+		if i.statusErr != "No active WIP phase to finish." || i.busy != busy || len(a.PendingQueuedMessages()) != 0 || len(a.Messages()) != 0 {
+			t.Fatal("inactive cleanup was not rejected")
+		}
+	}
+}
+
 func TestWIPJSONUserMessageIsClean(t *testing.T) {
 	msg := provider.Message{Role: provider.RoleUser, WIP: true, Content: []provider.Content{provider.TextBlock{Text: "hello"}}}
 	event := EventToJSON(core.EvUserMessage{Message: msg})

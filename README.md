@@ -46,6 +46,7 @@ While active, zot asks the model to replace abandoned attempts cleanly, remove
 unused draft code, and avoid change-history comments or compatibility shims for
 drafts. Existing code still requires normal care. `/wip done` disables the mode
 and submits one visible cleanup request, without intentionally changing behavior.
+If no phase is active, `/wip done` does not submit or queue anything.
 The cleanup request includes the phase start time, baseline turn, and Git HEAD when available.
 Queued prompts retain the draft instructions in effect when submitted.
 Tests remain encouraged throughout the WIP phase.
@@ -79,9 +80,9 @@ supply a session-specific `wip` object. WIP also works with `-p`, `--json`, and
 RPC (`set_wip`). Continuous-host attachment does not support WIP mode.
 
 WIP is model guidance, not enforcement. It does not commit code, track file
-ownership, change permissions, or alter confirmations. The HEAD baseline also
-includes any pre-existing uncommitted changes as draft, so review the boundary
-before enabling WIP in a dirty repository.
+ownership, change permissions, or alter confirmations. The recorded Git HEAD is
+for reference only. The model is asked to leave pre-existing work untouched,
+including staged, unstaged, and untracked changes. Review the diff before accepting cleanup.
 
 ## Install
 

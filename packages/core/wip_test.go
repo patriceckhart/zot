@@ -47,6 +47,10 @@ func TestWIPRequestsStayEphemeral(t *testing.T) {
 		want := 0
 		if active {
 			want = 1
+			wire := serializeTranscript(req.Messages)
+			if !strings.Contains(wire, wipScope) || strings.Contains(wire, "Anything not in that commit is draft") {
+				t.Fatal("Git HEAD must not define draft ownership")
+			}
 		}
 		if count != want {
 			t.Fatalf("blocks = %d, want %d", count, want)
@@ -210,11 +214,15 @@ func TestWIPResetAndValidation(t *testing.T) {
 	}
 	a.WIPSettings.DefaultOn = false
 	a.ResetWIP()
-	if a.WIPDonePrompt() != DefaultWIPDonePrompt {
+	if a.WIPDonePrompt() != "" {
+		t.Fatal("inactive phase generated cleanup")
+	}
+	a.SetWIP(true)
+	if !strings.HasPrefix(a.WIPDonePrompt(), DefaultWIPDonePrompt) {
 		t.Fatal("missing default cleanup")
 	}
 	a.WIPSettings.DonePrompt = "custom cleanup"
-	if a.WIPDonePrompt() != "custom cleanup" {
+	if !strings.HasPrefix(a.FinishWIP(), "custom cleanup\n") || a.FinishWIP() != "" {
 		t.Fatal("ignored custom cleanup")
 	}
 }

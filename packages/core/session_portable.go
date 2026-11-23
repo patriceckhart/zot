@@ -314,6 +314,7 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		Parent:           parentMeta.ID,
 		ForkPoint:        upToMessageIdx,
 		HideFromSessions: hideFromSessions,
+		WIP:              parentMeta.WIP,
 	}
 	metaLine, err := json.Marshal(sessionLine{Type: "meta", Meta: &branchMeta})
 	if err != nil {
@@ -334,7 +335,8 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		return "", fmt.Errorf("branch: rewind parent: %w", err)
 	}
 	var effective []provider.Message
-	branchWIP, latestWIP := parentMeta.WIP, parentMeta.WIP
+	latestWIP := parentMeta.WIP
+	var phases []*WIPState // session state at each effective message
 	var nonCompactedRows [][]byte
 	effectiveCount := 0
 	sawCompaction := false
@@ -350,13 +352,14 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 			}
 			if json.Unmarshal(line, &row) == nil && row.WIP != nil {
 				latestWIP = row.WIP
-				if effectiveCount < upToMessageIdx {
-					branchWIP = row.WIP
+				if !sawCompaction && effectiveCount < upToMessageIdx {
+					nonCompactedRows = append(nonCompactedRows, append([]byte(nil), line...))
 				}
 			}
 		case "message":
 			if msg, err := hydrateMessage(line); err == nil && len(msg.Content) > 0 {
 				effective = append(effective, msg)
+				phases = append(phases, latestWIP)
 				if !sawCompaction && effectiveCount < upToMessageIdx {
 					raw := append([]byte(nil), line...)
 					nonCompactedRows = append(nonCompactedRows, raw)
@@ -365,6 +368,7 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 			}
 		case "compaction":
 			if compacted, err := hydrateCompaction(line); err == nil {
+				phases = compactedForkPhases(effective, phases, compacted, latestWIP)
 				effective = compacted
 				effectiveCount = len(effective)
 				sawCompaction = true
@@ -379,17 +383,21 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 	}); err != nil && err != io.EOF {
 		return "", fmt.Errorf("branch: read parent: %w", err)
 	}
-	// A fork of the entire transcript also inherits toggles made after its last message.
-	if upToMessageIdx >= len(effective) {
-		branchWIP = latestWIP
-	}
 	limit := upToMessageIdx
 	if limit > len(effective) {
 		limit = len(effective)
 	}
 	branchTitle := lastUserText(effective[:limit])
+	enc := json.NewEncoder(bw)
 	if sawCompaction {
+		previous := parentMeta.WIP
 		for i := 0; i < limit; i++ {
+			if state := phases[i]; state != previous && state != nil {
+				if err := enc.Encode(sessionLine{Type: "wip", WIP: state}); err != nil {
+					return "", err
+				}
+			}
+			previous = phases[i]
 			msg := effective[i]
 			line, err := json.Marshal(sessionLine{Type: "message", Message: &msg})
 			if err != nil {
@@ -412,15 +420,9 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 			}
 		}
 	}
-	if branchWIP != nil {
-		line, err := json.Marshal(sessionLine{Type: "wip", WIP: branchWIP})
-		if err != nil {
-			return "", err
-		}
-		if _, err := bw.Write(line); err != nil {
-			return "", err
-		}
-		if err := bw.WriteByte('\n'); err != nil {
+	// Include toggles after the last message only for a full fork.
+	if limit == len(effective) && latestWIP != nil && (limit == 0 || phases[limit-1] != latestWIP) {
+		if err := enc.Encode(sessionLine{Type: "wip", WIP: latestWIP}); err != nil {
 			return "", err
 		}
 	}
@@ -437,6 +439,30 @@ func branchSession(parentPath, root, cwd, version string, upToMessageIdx int, hi
 		return "", err
 	}
 	return outPath, nil
+}
+
+// Checkpoints replace a prefix with a summary and may discard orphan tool
+// results. Walk backwards to align retained rows with their original phases.
+func compactedForkPhases(old []provider.Message, phases []*WIPState, checkpoint []provider.Message, current *WIPState) []*WIPState {
+	out := make([]*WIPState, len(checkpoint))
+	j := len(old) - 1
+	for i := len(out) - 1; i >= 0; i-- {
+		out[i] = current
+		if i == 0 && checkpoint[i].Meta["compaction"] == "true" {
+			if j >= 0 && len(out) > 1 {
+				out[i] = phases[j]
+			}
+			break
+		}
+		for j >= 0 && old[j].Role == provider.RoleTool && (checkpoint[i].Role != provider.RoleTool || !old[j].Time.Equal(checkpoint[i].Time)) {
+			j--
+		}
+		if j >= 0 && old[j].Role == checkpoint[i].Role && old[j].Time.Equal(checkpoint[i].Time) {
+			out[i] = phases[j]
+			j--
+		}
+	}
+	return out
 }
 
 func lastUserText(msgs []provider.Message) string {

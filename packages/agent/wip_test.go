@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,6 +18,89 @@ import (
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 )
+
+func TestPickedLegacySessionWIP(t *testing.T) {
+	for _, defaultOn := range []bool{false, true} {
+		t.Run(fmt.Sprint(defaultOn), func(t *testing.T) {
+			s, err := core.NewSession(t.TempDir(), t.TempDir(), "test", "model", "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			a := core.NewAgent(nil, "model", "", nil)
+			a.WIPSettings.DefaultOn = defaultOn
+			a.WIPBaseline = func() string { return "old" }
+			a.SetWIP(true)
+			a.WIPBaseline = func() string { return "new" }
+			var msgs []provider.Message
+			for range 75 {
+				msgs = append(msgs,
+					provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "question"}}},
+					provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "answer"}}})
+			}
+			window := trimMessagesForResume(msgs, 100)
+			bindPickedSession(a, s, window)
+			state := a.WIPState()
+			if state.Active != defaultOn || s.Meta.WIP == nil || *s.Meta.WIP != state {
+				t.Fatalf("unexpected picked state: %+v", state)
+			}
+			a.SetWIP(true)
+			if got := a.WIPState(); got.BaselineTurn != 75 || got.BaselineCommit != "new" {
+				t.Fatalf("incorrect phase boundary: %+v", got)
+			}
+		})
+	}
+}
+
+func TestStartupLegacySessionWIP(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	for _, key := range []string{"ZOT_SESSION_ID", "ZOT_SESSION_FILE", "ZOT_PROVIDER", "ZOT_MODEL", "ZOT_REASONING_LEVEL"} {
+		t.Setenv(key, "")
+	}
+	for _, flag := range []bool{true, false} {
+		cwd := t.TempDir()
+		s, err := core.NewSession(t.TempDir(), cwd, "test", "model", "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "before"}}}); err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+		a := core.NewAgent(nil, "model", "", nil)
+		r := Resolved{CWD: cwd, WIPOn: flag, WIP: core.WIPSettings{DefaultOn: !flag}}
+		configureWIP(a, r)
+		resumed, err := openOrCreateSession(Args{CWD: cwd, Session: s.Path, WIP: flag}, r, a, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resumed.Close()
+		state := a.WIPState()
+		if !state.Active || state.BaselineTurn != 1 || resumed.Meta.WIP == nil || *resumed.Meta.WIP != state {
+			t.Fatalf("flag=%v: incorrect resumed phase %+v", flag, state)
+		}
+	}
+}
+
+func TestWIPResumeToolOnlyTail(t *testing.T) {
+	var msgs []provider.Message
+	for range 150 {
+		msgs = append(msgs, provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "question"}}})
+	}
+	for range 100 {
+		msgs = append(msgs, provider.Message{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{CallID: "call"}}})
+	}
+	window := trimMessagesForResume(msgs, 100)
+	if len(window) > 100 {
+		t.Fatalf("resume retained %d messages", len(window))
+	}
+	a := core.NewAgent(nil, "model", "", nil)
+	a.SetMessages(window)
+	a.SetWIP(true)
+	if got := a.WIPState().BaselineTurn; got != 150 {
+		t.Fatalf("baseline = %d, want 150", got)
+	}
+}
 
 func TestWIPProviderWireFormats(t *testing.T) {
 	for _, tc := range []struct {
@@ -140,6 +225,15 @@ func TestWIPGitBaseline(t *testing.T) {
 	}
 	run("init")
 	run("-c", "user.name=Synthetic", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "baseline")
+	if err := os.WriteFile(filepath.Join(dir, "preexisting"), []byte("user work"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "preexisting")
+	a := core.NewAgent(nil, "model", "system", nil)
+	configureWIP(a, Resolved{CWD: dir, WIPOn: true})
+	if prompt := a.WIPDonePrompt(); !strings.Contains(prompt, "Leave pre-existing") || !strings.Contains(prompt, run("rev-parse", "HEAD")) {
+		t.Fatalf("unsafe cleanup guidance: %s", prompt)
+	}
 	if got, want := gitWIPBaseline(dir), run("rev-parse", "HEAD"); got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}

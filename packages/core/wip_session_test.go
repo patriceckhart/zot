@@ -29,6 +29,67 @@ func TestWIPStateSurvivesWithoutPrompt(t *testing.T) {
 	}
 }
 
+func TestHistoricalWIPForks(t *testing.T) {
+	for _, compact := range []bool{false, true} {
+		t.Run(map[bool]string{false: "nested", true: "compacted"}[compact], func(t *testing.T) {
+			root, cwd := t.TempDir(), t.TempDir()
+			s, err := NewSession(root, cwd, "test", "model", "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			a := NewAgent(nil, "", "", nil)
+			appendMsg := func(text string) provider.Message {
+				m := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: text}}}
+				if err := s.AppendMessage(m); err != nil {
+					t.Fatal(err)
+				}
+				return m
+			}
+			for range 20 {
+				appendMsg("before")
+			}
+			a.SetWIP(true)
+			state := a.WIPState()
+			state.BaselineTurn = 20
+			if err := s.AppendWIP(state); err != nil {
+				t.Fatal(err)
+			}
+			draft := appendMsg("draft")
+			off := state
+			off.Active = false
+			if err := s.AppendWIP(off); err != nil {
+				t.Fatal(err)
+			}
+			next := appendMsg("after")
+			cut, end := 21, 22
+			if compact {
+				summary := provider.Message{Role: provider.RoleUser, Content: []provider.Content{provider.TextBlock{Text: "summary"}}, Meta: map[string]string{"compaction": "true"}}
+				if err := s.AppendCompaction([]provider.Message{summary, draft, next}); err != nil {
+					t.Fatal(err)
+				}
+				cut, end = 2, 3
+			}
+			fork := func(path string, n int) string {
+				p, err := BranchSession(path, root, cwd, "test", n)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return p
+			}
+			for _, path := range []string{s.Path, fork(s.Path, end)} {
+				meta, _, err := ReadSession(fork(path, cut))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if meta.WIP == nil || *meta.WIP != state {
+					t.Fatalf("historical state = %+v, want %+v", meta.WIP, state)
+				}
+			}
+		})
+	}
+}
+
 func TestWIPPortableSessions(t *testing.T) {
 	for _, compact := range []bool{false, true} {
 		t.Run(map[bool]string{false: "messages", true: "compacted"}[compact], func(t *testing.T) {

@@ -24,8 +24,7 @@ func (s WIPSettings) Validate() error {
 	return nil
 }
 
-const DefaultWIPInstruction = `The user is iterating on an unfinished solution. Nothing written since WIP mode
-started has been committed or deployed. Treat it as a draft:
+const DefaultWIPInstruction = `Treat only this session's unfinished work from the current WIP phase as draft:
 - When an approach is replaced, remove the old one entirely, as if it never existed.
 - No comments about what changed or why something was replaced.
 - No fallbacks, compatibility shims, aliases, or deprecation paths for draft code.
@@ -33,6 +32,8 @@ started has been committed or deployed. Treat it as a draft:
 Code that existed before WIP mode started keeps normal care.`
 
 const DefaultWIPDonePrompt = "WIP phase finished. Review every change made during this session's WIP phase. Remove leftovers of abandoned approaches, change-history comments, unused code, and unnecessary fallbacks. Do not change behaviour. Summarise what you removed."
+
+const wipScope = "Leave pre-existing, unrelated, committed, or uncertain work untouched. A Git diff alone does not identify this phase's changes."
 
 // WIPState is per-session state. BaselineTurn counts accepted user turns.
 type WIPState struct {
@@ -84,6 +85,9 @@ func (a *Agent) SetWIP(active bool) {
 func acceptedUserTurns(messages []provider.Message) int {
 	turns := 0
 	for _, m := range messages {
+		if omitted, err := strconv.Atoi(m.Meta["omitted_user_turns"]); err == nil && omitted > 0 {
+			turns += omitted
+		}
 		if m.Role != provider.RoleUser {
 			continue
 		}
@@ -99,6 +103,25 @@ func acceptedUserTurns(messages []provider.Message) int {
 	return turns
 }
 
+// PreserveResumeTurns carries the omitted history count on the first retained
+// message so agent rebuilds and later compaction retain the session boundary.
+func PreserveResumeTurns(full, window []provider.Message) {
+	if len(window) == 0 {
+		return
+	}
+	omitted := acceptedUserTurns(full) - acceptedUserTurns(window)
+	if omitted <= 0 {
+		return
+	}
+	meta := maps.Clone(window[0].Meta)
+	if meta == nil {
+		meta = make(map[string]string)
+	}
+	previous, _ := strconv.Atoi(meta["omitted_user_turns"])
+	meta["omitted_user_turns"] = strconv.Itoa(previous + omitted)
+	window[0].Meta = meta
+}
+
 func (a *Agent) publishWIP(state WIPState) {
 	if a.OnWIPChanged != nil {
 		a.OnWIPChanged(state)
@@ -108,15 +131,25 @@ func (a *Agent) publishWIP(state WIPState) {
 	}
 }
 
-func (a *Agent) ResetWIP() {
+// NewWIPState builds a fresh phase for the current transcript without
+// publishing a transition to the previously bound session.
+func (a *Agent) NewWIPState(active bool) WIPState {
 	state := WIPState{}
-	if a.WIPSettings.DefaultOn {
+	if active {
 		state.Active = true
 		state.Since = time.Now().UTC()
+		a.mu.Lock()
+		state.BaselineTurn = acceptedUserTurns(a.messages)
+		a.mu.Unlock()
 		if a.WIPBaseline != nil {
 			state.BaselineCommit = a.WIPBaseline()
 		}
 	}
+	return state
+}
+
+func (a *Agent) ResetWIP() {
+	state := a.NewWIPState(a.WIPSettings.DefaultOn)
 	a.mu.Lock()
 	a.wip = state
 	a.rev++
@@ -124,19 +157,43 @@ func (a *Agent) ResetWIP() {
 	a.publishWIP(state)
 }
 
+// FinishWIP closes an active, identifiable phase exactly once. An empty
+// result means there is no scoped cleanup request to submit.
+func (a *Agent) FinishWIP() string {
+	a.mu.Lock()
+	prompt := a.wipDonePromptLocked()
+	if prompt == "" {
+		a.mu.Unlock()
+		return ""
+	}
+	a.wip.Active = false
+	state := a.wip
+	a.rev++
+	a.mu.Unlock()
+	a.publishWIP(state)
+	return prompt
+}
+
 func (a *Agent) WIPDonePrompt() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.wipDonePromptLocked()
+}
+
+func (a *Agent) wipDonePromptLocked() string {
+	state := a.wip
+	if !state.Active || state.Since.IsZero() {
+		return ""
+	}
 	prompt := a.WIPSettings.DonePrompt
 	if strings.TrimSpace(prompt) == "" {
 		prompt = DefaultWIPDonePrompt
 	}
-	state := a.WIPState()
-	if !state.Since.IsZero() {
-		prompt += fmt.Sprintf("\n\nReview only the WIP phase that began at %s, after %d user turns.", state.Since.Format(time.RFC3339Nano), state.BaselineTurn)
-		if state.BaselineCommit != "" {
-			prompt += " Baseline HEAD: " + state.BaselineCommit + "."
-		}
+	prompt += fmt.Sprintf("\n\nReview only the WIP phase that began at %s, after %d user turns.", state.Since.Format(time.RFC3339Nano), state.BaselineTurn)
+	if state.BaselineCommit != "" {
+		prompt += " Baseline HEAD: " + state.BaselineCommit + "."
 	}
-	return prompt
+	return prompt + " " + wipScope
 }
 
 // markWIPLocked snapshots the instructions so exports do not depend on settings.
@@ -176,8 +233,9 @@ func withWIP(messages []provider.Message) []provider.Message {
 			if len(hash) > 12 {
 				hash = hash[:12]
 			}
-			body += "\nWIP baseline: HEAD " + hash + ". Anything not in that commit is draft."
+			body += "\nWIP baseline: HEAD " + hash + " (reference only)."
 		}
+		body += "\n" + wipScope
 		out := append([]provider.Message(nil), messages...)
 		out[n].Content = append(append([]provider.Content(nil), m.Content...), provider.TextBlock{Text: "\n<wip-mode>\n" + body + "\n</wip-mode>"})
 		return out

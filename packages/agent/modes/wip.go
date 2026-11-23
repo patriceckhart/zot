@@ -28,8 +28,14 @@ func (i *Interactive) runWIP(ctx context.Context, args []string) {
 	case "off":
 		i.agent.SetWIP(false)
 	case "done":
-		prompt := i.agent.WIPDonePrompt()
-		i.agent.SetWIP(false)
+		prompt := i.agent.FinishWIP()
+		if prompt == "" {
+			i.mu.Lock()
+			i.statusErr = "No active WIP phase to finish."
+			i.statusOK = ""
+			i.mu.Unlock()
+			return
+		}
 		i.submitOrQueuePrompt(ctx, prompt)
 		return
 	case "status":

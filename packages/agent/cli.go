@@ -166,7 +166,19 @@ func trimMessagesForResume(msgs []provider.Message, keepTail int) []provider.Mes
 		start++
 	}
 	out = append(out, msgs[start:]...)
-	return provider.RepairOrphanedToolResults(out)
+	out = provider.RepairOrphanedToolResults(out)
+	if len(out) == 0 {
+		// Keep the last user prompt rather than replaying orphaned results
+		// or expanding the window to include the entire tool batch.
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role == provider.RoleUser {
+				out = append(out, msgs[i])
+				break
+			}
+		}
+	}
+	core.PreserveResumeTurns(msgs, out)
+	return out
 }
 
 // fanoutAgentEvent translates a core.AgentEvent into the wire-format
@@ -1243,8 +1255,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			_ = sess.Close()
 		}
 		sess = newSess
-		currentAg.SetMessages(msgs)
-		bindAgentSession(currentAg, sess)
+		bindPickedSession(currentAg, sess, msgs)
 		setZotSessionEnvironment(r, sess)
 		startExtensionSession(extMgr, currentAg, r.CWD, "session_switch")
 		if cum, last, uerr := core.SessionUsageDetail(path); uerr == nil {
@@ -1880,6 +1891,9 @@ func openOrCreateSessionState(args Args, r Resolved, ag *core.Agent, version str
 		}
 	} else {
 		ag.SetMessages(msgs)
+		if !fresh && s.Meta.WIP == nil {
+			ag.RestoreWIP(ag.NewWIPState(ag.WIPState().Active))
+		}
 		if cum, last, uerr := core.SessionUsageDetail(s.Path); uerr == nil {
 			ag.SeedCost(cum)
 			ag.SeedLastTurnUsage(last)
@@ -1965,6 +1979,14 @@ func rotateInteractiveSession(root, cwd, providerName, model, version string, ag
 // turn under their own goroutine).
 func WriteNewTranscript(ag *core.Agent, sess *core.Session, from int) {
 	writeNewTranscriptLocked(ag, sess, from)
+}
+
+func bindPickedSession(ag *core.Agent, sess *core.Session, msgs []provider.Message) {
+	ag.SetMessages(msgs)
+	if sess.Meta.WIP == nil {
+		ag.RestoreWIP(ag.NewWIPState(ag.WIPSettings.DefaultOn))
+	}
+	bindAgentSession(ag, sess)
 }
 
 // bindAgentSession gives the conversation a stable routing ID, independent
