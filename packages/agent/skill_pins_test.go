@@ -118,15 +118,15 @@ func TestPreloadSkillPinsFreshOnlyAndNoSkill(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var diagnostics bytes.Buffer
 			args := Args{CWD: cwd, WithSkills: true, NoExt: true, NoSkill: tt.disabled}
-			got := preloadSkillPins(args, tt.fresh, "question", &diagnostics)
+			got, instructions := preloadSkillPins(args, tt.fresh, "question", &diagnostics)
 			if tt.fresh && !tt.disabled {
-				if strings.Count(got, "# Skill: review") != 1 || !strings.Contains(got, "Inspect carefully.") {
+				if strings.Count(got, "# Skill: review") != 1 || !strings.Contains(instructions, "Inspect carefully.") || !strings.HasPrefix(got, instructions) {
 					t.Fatal(got)
 				}
 				if !strings.Contains(diagnostics.String(), "missing") {
 					t.Fatal("missing warning")
 				}
-			} else if got != "question" || diagnostics.Len() != 0 {
+			} else if got != "question" || instructions != "" || diagnostics.Len() != 0 {
 				t.Fatalf("prompt = %q, warnings = %q", got, diagnostics.String())
 			}
 		})

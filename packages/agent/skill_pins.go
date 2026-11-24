@@ -35,20 +35,20 @@ func userSkillSnapshot(args Args) []*skills.Skill {
 	return skills.VisibleSkills(list)
 }
 
-func preloadSkillPins(args Args, fresh bool, prompt string, diagnostics io.Writer) string {
+func preloadSkillPins(args Args, fresh bool, prompt string, diagnostics io.Writer) (string, string) {
 	if !fresh || args.NoSkill {
-		return prompt
+		return prompt, ""
 	}
 	pins, err := loadSkillPins(args.CWD)
 	if err != nil {
 		fmt.Fprintln(diagnostics, "warning:", err)
-		return prompt
+		return prompt, ""
 	}
 	selected, warnings := pins.Resolve(userSkillSnapshot(args))
 	for _, warning := range warnings {
 		fmt.Fprintln(diagnostics, "warning:", warning)
 	}
-	return skills.PreloadPrompt(selected, prompt)
+	return skills.PreloadPromptWithSnapshot(selected, prompt)
 }
 
 // Keep preferences local, even for project pins. Never write into a checkout.

@@ -31,29 +31,30 @@ func TestPinnedSkillsLifecycle(t *testing.T) {
 	if got := i.ed.Value(); got != "typed request" {
 		t.Fatal("notice changed editor")
 	}
-	first := i.preloadPinnedPromptLocked("first")
+	first, _ := i.preloadPinnedPromptLocked("first")
 	if !strings.Contains(first, "Inspect carefully.") {
 		t.Fatal(first)
 	}
-	if got := i.preloadPinnedPromptLocked("second"); got != "second" {
+	if got, _ := i.preloadPinnedPromptLocked("second"); got != "second" {
 		t.Fatal(got)
 	}
 	if len(i.pinnedSkillsNotice(80)) != 0 {
 		t.Fatal("notice survived consumption")
 	}
 	i.runSlash(context.Background(), "/clear")
-	if !strings.Contains(i.preloadPinnedPromptLocked("after clear"), "Inspect carefully.") {
+	afterClear, _ := i.preloadPinnedPromptLocked("after clear")
+	if !strings.Contains(afterClear, "Inspect carefully.") {
 		t.Fatal("clear did not rearm pins")
 	}
 	i.SetPinnedSkillsPending(true)
 	i.SetPinnedSkillsPending(false)
-	if got := i.preloadPinnedPromptLocked("resumed"); got != "resumed" {
+	if got, _ := i.preloadPinnedPromptLocked("resumed"); got != "resumed" {
 		t.Fatal("resume reinjected pins")
 	}
 	cfg := pinnedTestConfig()
 	cfg.PreloadPinnedSkills = false
 	resumed := NewInteractive(cfg)
-	if got := resumed.preloadPinnedPromptLocked("existing"); got != "existing" {
+	if got, _ := resumed.preloadPinnedPromptLocked("existing"); got != "existing" {
 		t.Fatal("resumed startup injected pins")
 	}
 }
@@ -157,10 +158,27 @@ func TestPinnedSkillsWarningsAndNoticeWidth(t *testing.T) {
 	}
 }
 
+type pinnedCompactionClient struct{ requests chan provider.Request }
+
+func (*pinnedCompactionClient) Name() string { return "test" }
+
+func (c *pinnedCompactionClient) Stream(ctx context.Context, req provider.Request) (<-chan provider.Event, error) {
+	select {
+	case c.requests <- req:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	events := make(chan provider.Event, 2)
+	events <- provider.EventTextDelta{Delta: "checkpoint"}
+	events <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "checkpoint"}}}}
+	close(events)
+	return events, nil
+}
+
 func TestPinnedSkillsEnterProviderAndPersistedTranscript(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	client := &preparationCaptureClient{requests: make(chan provider.Request, 1)}
+	client := &pinnedCompactionClient{requests: make(chan provider.Request, 1)}
 	ag := core.NewAgent(client, "test", "base", nil)
 	sess, err := core.NewSession(t.TempDir(), t.TempDir(), "test", "test", "test")
 	if err != nil {
@@ -219,5 +237,34 @@ func TestPinnedSkillsEnterProviderAndPersistedTranscript(t *testing.T) {
 	}
 	if len(messages) != 2 || !strings.Contains(messages[0].Content[0].(provider.TextBlock).Text, "Inspect carefully.") {
 		t.Fatalf("messages = %#v", messages)
+	}
+	for round := range 2 {
+		// Resume from the session before each compaction. The new agent has
+		// no skill catalog or pin preferences to fall back on.
+		resumed := core.NewAgent(client, "test", "base", nil)
+		resumed.SetMessages(messages)
+		if _, err := resumed.Compact(ctx, 0, nil); err != nil {
+			t.Fatal(err)
+		}
+		<-client.requests // summarizer request
+		if err := sess.AppendCompaction(resumed.Messages()); err != nil {
+			t.Fatal(err)
+		}
+		_, messages, err = core.ReadSession(sess.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resumed.SetMessages(messages)
+		if err := resumed.Prompt(ctx, "follow-up", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		req := <-client.requests
+		var text strings.Builder
+		for _, block := range req.Messages[0].Content {
+			text.WriteString(block.(provider.TextBlock).Text)
+		}
+		if req.Messages[0].Role != provider.RoleUser || strings.Count(text.String(), "Inspect carefully.") != 1 || !strings.Contains(text.String(), "checkpoint") || strings.Contains(text.String(), "User request:\nquestion") {
+			t.Fatalf("round %d: unexpected compacted context: %q", round, text.String())
+		}
 	}
 }

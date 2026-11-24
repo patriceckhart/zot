@@ -112,6 +112,16 @@ func (a *Agent) compact(ctx context.Context, keepTail int, sink func(string), st
 	// a tool_use ID that doesn't exist.
 	tail = repairOrphanedToolResults(tail)
 
+	// Only move pins out of the summarized prefix. When their original
+	// message is still in the tail, it already carries the instructions.
+	for _, message := range summarizable {
+		if instructions := message.Meta[pinnedInstructionsMeta]; instructions != "" {
+			synthetic.Meta[pinnedInstructionsMeta] = instructions
+			synthetic.Content = append(synthetic.Content, provider.TextBlock{Text: instructions})
+			break
+		}
+	}
+
 	next := make([]provider.Message, 0, 1+len(tail))
 	next = append(next, synthetic)
 	next = append(next, tail...)

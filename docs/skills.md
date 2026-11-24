@@ -149,7 +149,10 @@ in your first submitted message and persisted with it, without changing the
 editor text. `/clear` prepares pins again. Switching working directories with
 `/cd` prepares the new directory's pins. Resuming, importing, or branching an
 existing session does not inject pins again, even when its transcript is empty.
-Changing models and compacting context do not reload pins.
+Compaction preserves the original pinned instructions verbatim, including
+when you resume a saved session with that snapshot. Changing models and
+compacting context do not reload pins. Older sessions without a saved pin
+snapshot keep their existing transcript but cannot carry pins forward verbatim.
 
 Changing pins before the first message updates the pending selection.
 After that message, pin changes apply on the next fresh conversation or
@@ -185,7 +188,7 @@ modes, the SDK, and swarm background agents do not automatically load pin prefer
 The interactive Telegram bridge uses the interactive conversation's pins.
 
 Pinning saves repeated invocation, not tokens: complete skill bodies add to
-the context window and may later be summarized by compaction. Keep pins small,
+the context window even after compaction. Keep pins small,
 especially with local models. Preferences are saved via temporary-file replacement.
 Concurrent edits from separate zot processes are not merged. An already open interactive
 session refreshes preferences on `/skills` or `/clear`, not continuously.

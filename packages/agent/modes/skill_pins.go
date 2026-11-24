@@ -76,14 +76,14 @@ func (i *Interactive) handleSkillPinKey(k tui.Key) bool {
 
 // Caller holds i.mu. Pending skills are folded into the real user message so
 // normal event delivery and persistence include their bodies exactly once.
-func (i *Interactive) preloadPinnedPromptLocked(prompt string) string {
+func (i *Interactive) preloadPinnedPromptLocked(prompt string) (string, string) {
 	if !i.pinnedSkillsPending {
-		return prompt
+		return prompt, ""
 	}
 	i.pinnedSkillsPending = false
-	result := skills.PreloadPrompt(i.pinnedSkills, prompt)
+	selected := i.pinnedSkills
 	i.pinnedSkills = nil
-	return result
+	return skills.PreloadPromptWithSnapshot(selected, prompt)
 }
 
 // Caller holds i.mu. Render a read-only notice, never editor placeholders.

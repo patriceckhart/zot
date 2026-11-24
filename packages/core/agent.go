@@ -442,6 +442,19 @@ func (a *Agent) PromptWithTool(ctx context.Context, text string, call provider.T
 	return a.promptWithPrelude(ctx, text, nil, &call, origin, sink)
 }
 
+type pinnedInstructionsKey struct{}
+
+const pinnedInstructionsMeta = "pinned_instructions"
+
+// WithPinnedInstructions marks the instruction prefix of a submitted prompt
+// so compaction can carry it forward independently of the generated summary.
+func WithPinnedInstructions(ctx context.Context, instructions string) context.Context {
+	if instructions == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, pinnedInstructionsKey{}, instructions)
+}
+
 func (a *Agent) promptWithPrelude(ctx context.Context, text string, images []provider.ImageBlock, call *provider.ToolCallBlock, origin string, sink func(AgentEvent)) error {
 	if sink == nil {
 		sink = func(AgentEvent) {}
@@ -458,6 +471,9 @@ func (a *Agent) promptWithPrelude(ctx context.Context, text string, images []pro
 		content = append(content, img)
 	}
 	user := provider.Message{Role: provider.RoleUser, Content: content, Time: time.Now()}
+	if instructions, ok := ctx.Value(pinnedInstructionsKey{}).(string); ok && strings.HasPrefix(text, instructions) {
+		user.Meta = map[string]string{pinnedInstructionsMeta: instructions}
+	}
 
 	a.mu.Lock()
 	a.messages = append(a.messages, user)

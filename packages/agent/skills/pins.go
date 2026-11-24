@@ -38,8 +38,15 @@ func (p Pins) Resolve(available []*Skill) ([]*Skill, []string) {
 // PreloadPrompt includes pinned instructions with the first real request.
 // It creates no synthetic tool calls and does not start a model turn.
 func PreloadPrompt(selected []*Skill, request string) string {
+	prompt, _ := PreloadPromptWithSnapshot(selected, request)
+	return prompt
+}
+
+// PreloadPromptWithSnapshot returns the preloaded request and its exact pinned
+// instruction prefix for transcript compaction.
+func PreloadPromptWithSnapshot(selected []*Skill, request string) (prompt, instructions string) {
 	if len(selected) == 0 {
-		return request
+		return request, ""
 	}
 	var b strings.Builder
 	b.WriteString("Pinned skills for this conversation. Apply these instructions where relevant to the user's requests.\n\n")
@@ -47,7 +54,6 @@ func PreloadPrompt(selected []*Skill, request string) string {
 		b.WriteString(InvocationPrompt(s, ""))
 		b.WriteString("\n\n")
 	}
-	b.WriteString("---\n\nUser request:\n")
-	b.WriteString(request)
-	return b.String()
+	instructions = strings.TrimSuffix(b.String(), "\n\n")
+	return instructions + "\n\n---\n\nUser request:\n" + request, instructions
 }

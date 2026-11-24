@@ -535,7 +535,8 @@ func runPrintMode(ctx context.Context, args Args, version string) error {
 		return err
 	}
 	reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag)
-	prompt = preloadSkillPins(args, fresh, prompt, os.Stderr)
+	prompt, instructions := preloadSkillPins(args, fresh, prompt, os.Stderr)
+	ctx = core.WithPinnedInstructions(ctx, instructions)
 	started := time.Now()
 	usage, err := modes.RunPrint(ctx, ag, prompt, nil, os.Stdout)
 	elapsed := time.Since(started)
@@ -579,7 +580,8 @@ func runStreamMode(ctx context.Context, args Args, version string) error {
 	}
 	finishPre()
 	reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag)
-	prompt = preloadSkillPins(args, fresh, prompt, os.Stderr)
+	prompt, instructions := preloadSkillPins(args, fresh, prompt, os.Stderr)
+	ctx = core.WithPinnedInstructions(ctx, instructions)
 	err = modes.RunStream(ctx, ag, prompt, nil, os.Stdout)
 	WriteNewTranscript(ag, sess, start)
 	return err
@@ -661,7 +663,8 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 		return err
 	}
 	reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag)
-	prompt = preloadSkillPins(args, fresh, prompt, os.Stderr)
+	prompt, instructions := preloadSkillPins(args, fresh, prompt, os.Stderr)
+	ctx = core.WithPinnedInstructions(ctx, instructions)
 	err = modes.RunJSONWithOptions(ctx, ag, prompt, nil, os.Stdout, modes.JSONOptions{ShowReasoning: args.ShowReasoning})
 	WriteNewTranscript(ag, sess, start)
 	return err

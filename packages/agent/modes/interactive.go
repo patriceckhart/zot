@@ -6477,7 +6477,9 @@ func (i *Interactive) startTurnRun(parent context.Context, prompt string, images
 	ctx, cancel := context.WithCancel(parent)
 	i.mu.Lock()
 	if !continueExisting && !i.awaitingStartupPre {
-		prompt = i.preloadPinnedPromptLocked(prompt)
+		var instructions string
+		prompt, instructions = i.preloadPinnedPromptLocked(prompt)
+		ctx = core.WithPinnedInstructions(ctx, instructions)
 	}
 	i.busy = true
 	i.programOutcome = "working"
