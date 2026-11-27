@@ -4007,6 +4007,7 @@ func (i *Interactive) openSettingsDialog() {
 		})
 	}
 	items = i.appendPowerShellSetting(items, runtime.GOOS)
+	i.settingsDialog.version = i.cfg.Version
 	i.settingsDialog.Open(items)
 }
 

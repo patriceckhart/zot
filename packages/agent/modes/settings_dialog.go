@@ -19,6 +19,7 @@ type settingsDialog struct {
 	optionCursor int
 	parentItems  []settingsItem
 	parentCursor int
+	version      string
 
 	// MaxRows caps how many rows the dialog renders. The host sets it
 	// from the terminal height before each render; zero renders the
@@ -275,9 +276,26 @@ func (d *settingsDialog) Render(th tui.Theme, width int) []string {
 		blocks[i] = d.itemBlock(th, width, i)
 		heights[i] = len(blocks[i])
 	}
-	budget := d.rowBudget(len(lines) + 1) // one row for the closing rule
+	fixed := len(lines) + 1 // one row for the closing rule
+	// Leave at least one row for the selected setting.
+	showVersion := d.version != "" && len(d.parentItems) == 0 && width > 0 &&
+		(d.MaxRows <= 0 || d.MaxRows > fixed+1)
+	if showVersion {
+		fixed++
+	}
+	padVersion := showVersion && (d.MaxRows <= 0 || d.MaxRows > fixed+1)
+	if padVersion {
+		fixed++
+	}
+	budget := d.rowBudget(fixed)
 	start, end := d.windowBlocks(heights, d.cursor, budget)
 	lines = append(lines, windowLines(th, blocks, start, end, budget)...)
+	if padVersion {
+		lines = append(lines, "")
+	}
+	if showVersion {
+		lines = append(lines, th.FG256(th.Muted, runewidth.Truncate("zot "+d.version, width, "…")))
+	}
 	lines = append(lines, frameRule(th, width))
 	return lines
 }

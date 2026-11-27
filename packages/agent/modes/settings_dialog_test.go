@@ -109,6 +109,34 @@ func TestSettingsDialogOptionsWindowFollowsCursor(t *testing.T) {
 	}
 }
 
+func TestSettingsDialogShowsRunningVersionInFooter(t *testing.T) {
+	const version = "1.2.3 (abcdef0, 2026-11-27)"
+	i := NewInteractive(InteractiveConfig{Version: version})
+	i.openSettingsDialog()
+	d := i.settingsDialog
+	d.MaxRows = 6
+
+	lines := d.Render(tui.Dark, 80)
+	if len(lines) != d.MaxRows {
+		t.Fatalf("rendered %d rows, want %d", len(lines), d.MaxRows)
+	}
+	if got := stripANSIBytes(lines[len(lines)-3]); strings.TrimSpace(got) != "" {
+		t.Fatalf("expected a blank line before the footer, got %q", got)
+	}
+	if got := stripANSIBytes(lines[len(lines)-2]); got != "zot "+version {
+		t.Fatalf("footer = %q, want %q", got, "zot "+version)
+	}
+	if text := renderedPlain(lines); !strings.Contains(text, "render images when supported") {
+		t.Fatalf("first settings entry missing:\n%s", text)
+	}
+
+	d.MaxRows = 4
+	lines = d.Render(tui.Dark, 80)
+	if text := renderedPlain(lines); len(lines) > d.MaxRows || strings.Contains(text, version) || !strings.Contains(text, "render images when supported") {
+		t.Fatalf("expected the selected setting to take priority over the footer:\n%s", text)
+	}
+}
+
 func TestSettingsDialogKeepsCursorRowOnTinyTerminal(t *testing.T) {
 	d := newSettingsDialog()
 	d.Open(settingsTestItems(20))

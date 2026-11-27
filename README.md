@@ -591,7 +591,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/mcp [add\|reload\|help]` | Open the MCP server manager (list, add, sign in, enable or disable, exposure, tools, reconnect, remove, each with a one-key shortcut). `add` opens the add wizard directly, `reload` reconnects all servers without restarting extensions, `help` prints text status. `reconnect`, `login`, and `logout` with a server name work in every mode. |
 | `/reload-ext` | Hot-reload all extensions (re-read manifests, respawn subprocesses, rebuild tool registry). |
 | `/telegram` | Connect, disconnect, or show status of the Telegram bridge (takes `connect` / `disconnect` / `status` as an optional argument; opens a picker without one). When connected, DMs from the paired user become prompts in the running session and the assistant's replies are mirrored back to Telegram. Alias: `/tg`. |
-| `/settings` | Change persistent settings, including inline images, auto-swarm, and the auto-compact threshold. Saved to `$ZOT_HOME/config.json`; takes effect immediately. |
+| `/settings` | Change persistent settings, including inline images, auto-swarm, and the auto-compact threshold. Changes take effect immediately and are saved to `$ZOT_HOME/config.json`. The main settings footer shows the running zot version when there is room. |
 | `/clear` | Clear the chat transcript. |
 | `/exit` | Exit zot. |
 
