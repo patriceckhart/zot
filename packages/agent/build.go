@@ -192,7 +192,7 @@ func defaultModelForProvider(prov string) string {
 	case "deepseek":
 		return "deepseek-v4-pro"
 	case "google":
-		return "gemini-2.5-pro"
+		return "gemini-3.1-flash-lite"
 	case "ollama", provider.LlamaCPPProviderID, provider.LMStudioProviderID:
 		return ""
 	case "moonshotai", "moonshotai-cn":

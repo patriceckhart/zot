@@ -12,6 +12,35 @@ import (
 	"testing"
 )
 
+func TestGeminiPromptBlock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"promptFeedback\":{\"blockReason\":\"PROHIBITED_CONTENT\"},\"usageMetadata\":{\"promptTokenCount\":12}}\n\n")
+	}))
+	defer srv.Close()
+
+	events, err := NewGemini("k", srv.URL).Stream(context.Background(), Request{Model: "gemini-3-flash-preview"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var done EventDone
+	var usage Usage
+	for event := range events {
+		switch e := event.(type) {
+		case EventDone:
+			done = e
+		case EventUsage:
+			usage = e.Usage
+		}
+	}
+	if done.Stop != StopError || done.Err == nil || !strings.Contains(done.Err.Error(), "PROHIBITED_CONTENT") {
+		t.Fatalf("stop = %v, error = %v", done.Stop, done.Err)
+	}
+	if usage.InputTokens != 12 {
+		t.Fatalf("input tokens = %d, want 12", usage.InputTokens)
+	}
+}
+
 // TestGeminiStreamHappyPath drives the gemini client end-to-end against
 // a fake SSE server speaking the Gemini Generative Language wire format.
 // We assert text deltas accumulate, usage rolls in from usageMetadata,
@@ -20,6 +49,9 @@ func TestGeminiStreamHappyPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("x-goog-api-key"); got != "k" {
 			t.Errorf("missing api key header: %q", got)
+		}
+		if r.URL.Path != "/proxy/v1beta/models/gemini-2.5-pro:streamGenerateContent" {
+			t.Errorf("unexpected stream path: %s", r.URL.Path)
 		}
 		if !strings.Contains(r.URL.RawQuery, "alt=sse") {
 			t.Errorf("missing alt=sse: %q", r.URL.RawQuery)
@@ -39,7 +71,7 @@ func TestGeminiStreamHappyPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewGemini("k", srv.URL)
+	c := NewGemini("k", srv.URL+"/proxy/v1beta/")
 	evs, err := c.Stream(context.Background(), Request{Model: "gemini-2.5-pro"})
 	if err != nil {
 		t.Fatal(err)
@@ -407,6 +439,9 @@ func TestDiscoverGoogle(t *testing.T) {
 		if r.Header.Get("x-goog-api-key") != "k" {
 			t.Errorf("missing api key")
 		}
+		if r.URL.Path != "/v1beta/models" {
+			t.Errorf("unexpected discovery path: %s", r.URL.Path)
+		}
 		calls++
 		if calls == 1 {
 			_, _ = io.WriteString(w, `{
@@ -427,7 +462,7 @@ func TestDiscoverGoogle(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got, err := DiscoverGoogle(context.Background(), "k", srv.URL)
+	got, err := DiscoverGoogle(context.Background(), "k", srv.URL+"/v1beta")
 	if err != nil {
 		t.Fatal(err)
 	}

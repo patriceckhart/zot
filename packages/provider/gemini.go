@@ -56,6 +56,15 @@ func NewGeminiNamed(providerName, apiKey, baseURL string) Client {
 	}
 }
 
+// geminiModelsURL accepts an API root or an explicitly versioned base URL.
+func geminiModelsURL(baseURL string) string {
+	baseURL = strings.TrimRight(baseURL, "/")
+	if !strings.HasSuffix(baseURL, "/v1beta") && !strings.HasSuffix(baseURL, "/v1") {
+		baseURL += "/v1beta"
+	}
+	return baseURL + "/models"
+}
+
 func (c *geminiClient) Name() string {
 	if c.providerName == "" {
 		return "google"
@@ -509,8 +518,7 @@ func (c *geminiClient) Stream(ctx context.Context, req Request) (<-chan Event, e
 	// an EventSource-compatible response. Without alt=sse the
 	// server returns a JSON array (one element per chunk), which
 	// we'd need a different parser for.
-	apiPath := fmt.Sprintf("/v1beta/models/%s:streamGenerateContent", modelID)
-	url := c.baseURL + apiPath + "?alt=sse"
+	url := fmt.Sprintf("%s/%s:streamGenerateContent?alt=sse", geminiModelsURL(c.baseURL), modelID)
 
 	newReq := func() (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
@@ -535,7 +543,11 @@ func (c *geminiClient) Stream(ctx context.Context, req Request) (<-chan Event, e
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("%s: http %d: %s", c.Name(), resp.StatusCode, strings.TrimSpace(string(b)))
+		detail := strings.TrimSpace(string(b))
+		if detail == "" {
+			detail = http.StatusText(resp.StatusCode)
+		}
+		return nil, fmt.Errorf("%s: http %d: %s", c.Name(), resp.StatusCode, detail)
 	}
 
 	out := make(chan Event, 16)
@@ -707,6 +719,9 @@ func (c *geminiClient) runStream(ctx context.Context, resp *http.Response, req R
 					} `json:"content"`
 					FinishReason string `json:"finishReason"`
 				} `json:"candidates"`
+				PromptFeedback *struct {
+					BlockReason string `json:"blockReason"`
+				} `json:"promptFeedback"`
 				UsageMetadata *struct {
 					PromptTokenCount        int  `json:"promptTokenCount"`
 					CandidatesTokenCount    int  `json:"candidatesTokenCount"`
@@ -794,6 +809,15 @@ func (c *geminiClient) runStream(ctx context.Context, resp *http.Response, req R
 					usage.OutputTokens += *um.ThoughtsTokenCount
 				}
 				usage.CacheReadTokens = um.CachedContentTokenCount
+			}
+			if feedback := chunk.PromptFeedback; feedback != nil {
+				reason := feedback.BlockReason
+				if reason != "" && reason != "BLOCK_REASON_UNSPECIFIED" {
+					stop = StopError
+					finalErr = fmt.Errorf("%s: prompt blocked (%s)", c.Name(), reason)
+					sendDone()
+					return
+				}
 			}
 			// Promote ToolUse stop when tool calls are present and
 			// the candidate finished cleanly.

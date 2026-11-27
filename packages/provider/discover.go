@@ -141,7 +141,7 @@ func DiscoverGoogleNamed(ctx context.Context, providerID, apiKey, baseURL string
 	var out []Model
 	pageToken := ""
 	for {
-		endpoint := strings.TrimRight(baseURL, "/") + "/v1beta/models?pageSize=200"
+		endpoint := geminiModelsURL(baseURL) + "?pageSize=200"
 		if pageToken != "" {
 			endpoint += "&pageToken=" + url.QueryEscape(pageToken)
 		}

@@ -322,7 +322,7 @@ show instructions and should be configured with environment variables.
 | OpenAI | `OPENAI_API_KEY` | `openai` |
 | OpenAI Responses | `OPENAI_API_KEY` | `openai-responses` |
 | Kimi | `KIMI_API_KEY` or `MOONSHOT_API_KEY` | `kimi` |
-| Google Gemini | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `google` |
+| Google Gemini (default model: `gemini-3.1-flash-lite`) | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `google` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek` |
 | Moonshot AI | `MOONSHOT_API_KEY` | `moonshotai` |
 | Moonshot AI China | `MOONSHOT_API_KEY` | `moonshotai-cn` |

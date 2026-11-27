@@ -841,6 +841,12 @@ func TestResolveInsecureFromConfigRequiresExplicitBaseURL(t *testing.T) {
 	assertDefaultTransportStillSecure(t)
 }
 
+func TestDefaultGoogleModelIsFlashLite(t *testing.T) {
+	if got := defaultModelForProvider("google"); got != "gemini-3.1-flash-lite" {
+		t.Fatalf("default Google model = %q, want gemini-3.1-flash-lite", got)
+	}
+}
+
 func TestDefaultXAIModelIsGrok45(t *testing.T) {
 	if got := defaultModelForProvider("xai"); got != "grok-4.5" {
 		t.Fatalf("default xAI model = %q, want grok-4.5", got)
