@@ -30,6 +30,8 @@ type timelineEntry struct {
 	Schema   string    `json:"schema,omitempty"`
 	IsError  bool      `json:"is_error,omitempty"`
 	ToolCall string    `json:"tool_call_id,omitempty"`
+
+	compactionMarkdown string
 }
 
 type timelineData struct {
@@ -295,6 +297,9 @@ func buildTimelineEntries(data timelineData) []timelineEntry {
 				Summary: firstTimelineLine(strings.Join(textParts, "\n")), Time: message.Time,
 				Payload: prettyTimelineValue(timelineMessagePayload(message)),
 			}
+			if message.Meta["compaction"] == "true" {
+				entry.compactionMarkdown = strings.Join(textParts, "\n")
+			}
 			if !previousTime.IsZero() && !message.Time.IsZero() && message.Time.After(previousTime) {
 				entry.Duration = message.Time.Sub(previousTime).Round(time.Millisecond).String()
 			}
@@ -499,10 +504,17 @@ func timelineDetailRows(th tui.Theme, width int, entry timelineEntry, tab int) [
 	if entry.Kind == "reasoning" && (tab == 0 || tab == 1) {
 		return renderDialogMarkdownRows(entry.Payload, th, width)
 	}
+	if tab == 1 && entry.compactionMarkdown != "" {
+		return renderDialogMarkdownRows(entry.compactionMarkdown, th, width)
+	}
+	ink := th.ToolOut
+	if tab == 0 || tab == 1 {
+		ink = th.FG
+	}
 	var rows []string
 	for _, line := range strings.Split(detail, "\n") {
 		for _, wrapped := range tui.WrapANSILine(line, width-2) {
-			rows = append(rows, "  "+th.FG256(th.ToolOut, wrapped))
+			rows = append(rows, "  "+th.FG256(ink, wrapped))
 		}
 	}
 	return rows

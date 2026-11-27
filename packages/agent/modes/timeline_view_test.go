@@ -74,6 +74,48 @@ func TestBuildTimelineEntriesPairsToolDetails(t *testing.T) {
 	}
 }
 
+func TestTimelineCompactionPayloadRendersMarkdown(t *testing.T) {
+	const summary = "## Context Summary\n\n**Goal:** " +
+		"A long description that wraps across several lines."
+	message := provider.Message{
+		Role:    provider.RoleUser,
+		Content: []provider.Content{provider.TextBlock{Text: summary}},
+		Meta:    map[string]string{"compaction": "true"},
+	}
+	entries := buildTimelineEntries(timelineData{Messages: []provider.Message{message, {
+		Role: provider.RoleUser, Content: message.Content,
+	}}})
+	th := tui.Dark
+	rows := timelineDetailRows(th, 32, entries[0], 1)
+	plain := stripANSIBytes(strings.Join(rows, "\n"))
+	if !strings.Contains(rows[0], th.FG256(th.Accent, "## Context Summary")) ||
+		!strings.Contains(plain, "Goal:") || strings.Contains(plain, "**") || strings.Contains(plain, `"content"`) {
+		t.Fatalf("expected rendered Markdown, got %q", plain)
+	}
+	for _, row := range rows {
+		if runewidth.StringWidth(stripANSIBytes(row)) > 32 {
+			t.Fatalf("row exceeds width: %q", row)
+		}
+	}
+	for tab, want := range map[int]string{0: "type: user", 1: "{"} {
+		if got := timelineDetailRows(th, 80, entries[1], tab)[0]; got != "  "+th.FG256(th.FG, want) {
+			t.Errorf("tab %d first row = %q", tab, got)
+		}
+	}
+	encoded, err := json.Marshal(entries[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exported map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &exported); err != nil {
+		t.Fatal(err)
+	}
+	var payload string
+	if err := json.Unmarshal(exported["payload"], &payload); err != nil || !json.Valid([]byte(payload)) || !strings.Contains(payload, "**Goal:**") {
+		t.Fatalf("export payload is not the original JSON: %q, %v", payload, err)
+	}
+}
+
 func TestTimelineReasoningIsReadableAndScrollable(t *testing.T) {
 	data := timelineTestData()
 	data.Messages[1].Content = append([]provider.Content{provider.ReasoningBlock{
