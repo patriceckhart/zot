@@ -8,7 +8,54 @@ import (
 	"testing"
 
 	"github.com/patriceckhart/zot/packages/agent/extensions"
+	"github.com/patriceckhart/zot/packages/tui"
 )
+
+func TestExtListDescriptions(t *testing.T) {
+	root := t.TempDir()
+	for name, manifest := range map[string]string{
+		"described": `{"name":"described","description":" First\nsecond\t\u001bline "}`,
+		"missing":   `{"name":"missing"}`,
+		"invalid":   `{"name":"invalid","description":42}`,
+	} {
+		dir := filepath.Join(root, name)
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(manifest), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out, stderr bytes.Buffer
+	writeExtList(&out, &stderr, map[string]string{"global": root}, 18, false)
+	text := out.String()
+	if stderr.Len() != 0 || strings.ContainsRune(text, '\x1b') {
+		t.Fatalf("unexpected output: stdout=%q stderr=%q", text, stderr.String())
+	}
+	for _, want := range []string{
+		"extensions\n" + strings.Repeat("─", 18) + "\n",
+		"  described  (global, enabled)\n    First second\n    line\n    dir: " + filepath.Join(root, "described") + "\n\n",
+		"  missing  (global, enabled)\n    dir: " + filepath.Join(root, "missing") + "\n",
+		"  invalid  (global, enabled)\n    dir: " + filepath.Join(root, "invalid") + "\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in %q", want, text)
+		}
+	}
+	out.Reset()
+	writeExtList(&out, &stderr, map[string]string{"global": root}, 120, true)
+	th := tui.Dark
+	for _, want := range []string{
+		th.FG256(th.Muted, strings.Repeat("─", 120)) + "\n",
+		"  " + th.FG256(th.FG, "described  (global, enabled)") + "\n" +
+			"    " + th.FG256(th.FG, "First second line") + "\n" +
+			"    " + th.FG256(th.Muted, "dir: "+filepath.Join(root, "described")) + "\n",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q in wide TTY output: %q", want, out.String())
+		}
+	}
+}
 
 // TestExtInstallDotSource verifies that `zot ext install .` derives the
 // extension name from the resolved directory name rather than collapsing

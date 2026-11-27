@@ -11,10 +11,14 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+
+	"golang.org/x/term"
 
 	"github.com/patriceckhart/zot/internal/ignore"
 	"github.com/patriceckhart/zot/packages/agent/extensions"
 	"github.com/patriceckhart/zot/packages/agent/extproto"
+	"github.com/patriceckhart/zot/packages/tui"
 )
 
 // runExtCommand dispatches `zot ext ...` subcommands. Returns
@@ -89,18 +93,29 @@ func extUpdate(args []string) error {
 }
 
 // extList walks both the global and project-local extension dirs and
-// prints a one-row-per-extension table.
+// prints one block per extension.
 func extList() error {
+	fd := int(os.Stdout.Fd())
+	width, _, _ := term.GetSize(fd)
+	if width <= 0 {
+		width = 80
+	}
+	writeExtList(os.Stdout, os.Stderr, extensionDirs(), width, term.IsTerminal(fd))
+	return nil
+}
+
+func writeExtList(out, stderr io.Writer, dirs map[string]string, width int, useColor bool) {
 	type row struct {
-		Scope    string
-		Name     string
-		Version  string
-		Enabled  string
-		Language string
-		Dir      string
+		Scope       string
+		Name        string
+		Version     string
+		State       string
+		Language    string
+		Dir         string
+		Description string
 	}
 	var rows []row
-	for scope, dir := range extensionDirs() {
+	for scope, dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
@@ -116,36 +131,64 @@ func extList() error {
 				continue
 			}
 			var m struct {
-				Name     string `json:"name"`
-				Version  string `json:"version"`
-				Language string `json:"language"`
-				Enabled  *bool  `json:"enabled"`
+				Name        string          `json:"name"`
+				Version     string          `json:"version"`
+				Language    string          `json:"language"`
+				Enabled     *bool           `json:"enabled"`
+				Description json.RawMessage `json:"description"`
 			}
 			if err := json.Unmarshal(raw, &m); err != nil {
 				continue
 			}
-			enabled := "yes"
+			state := "enabled"
 			if m.Enabled != nil && !*m.Enabled {
-				enabled = "no"
+				state = "disabled"
 			}
+			var description string
+			_ = json.Unmarshal(m.Description, &description) // optional, even if invalid
+			description = strings.Join(strings.FieldsFunc(description, func(r rune) bool {
+				return unicode.IsSpace(r) || unicode.IsControl(r)
+			}), " ")
 			rows = append(rows, row{
 				Scope: scope, Name: m.Name, Version: m.Version,
-				Enabled: enabled, Language: m.Language, Dir: extDir,
+				State: state, Language: m.Language, Dir: extDir, Description: description,
 			})
 		}
 	}
 	if len(rows) == 0 {
-		fmt.Fprintln(os.Stderr, "no extensions installed")
-		fmt.Fprintln(os.Stderr, "see docs/extensions.md to write your own, or `zot ext install <path|url>`")
-		return nil
+		fmt.Fprintln(stderr, "no extensions installed")
+		fmt.Fprintln(stderr, "see docs/extensions.md to write your own, or `zot ext install <path|url>`")
+		return
 	}
-	fmt.Printf("%-12s  %-20s  %-10s  %-8s  %-10s  %s\n", "scope", "name", "version", "enabled", "language", "dir")
-	for _, r := range rows {
-		fmt.Printf("%-12s  %-20s  %-10s  %-8s  %-10s  %s\n",
-			r.Scope, r.Name, dashIfEmpty(r.Version),
-			r.Enabled, dashIfEmpty(r.Language), r.Dir)
+	th := tui.Dark
+	style := func(color int, text string) string {
+		if useColor {
+			return th.FG256(color, text)
+		}
+		return text
 	}
-	return nil
+	fmt.Fprintln(out, style(th.Assistant, "extensions"))
+	fmt.Fprintln(out, style(th.Muted, strings.Repeat("─", width)))
+	for i, r := range rows {
+		if i > 0 {
+			fmt.Fprintln(out)
+		}
+		meta := []string{r.Scope, r.State}
+		if r.Version != "" {
+			meta = append(meta, r.Version)
+		}
+		if r.Language != "" {
+			meta = append(meta, r.Language)
+		}
+		label := fmt.Sprintf("%s  (%s)", r.Name, strings.Join(meta, ", "))
+		fmt.Fprintln(out, "  "+style(th.FG, label))
+		if r.Description != "" {
+			for _, line := range tui.WrapANSILine(r.Description, max(1, width-4)) {
+				fmt.Fprintln(out, "    "+style(th.FG, strings.TrimSpace(line)))
+			}
+		}
+		fmt.Fprintln(out, "    "+style(th.Muted, "dir: "+r.Dir))
+	}
 }
 
 type extDoctorHooks struct{}
@@ -611,13 +654,6 @@ func findExtensionDir(name string) (string, error) {
 	default:
 		return "", fmt.Errorf("extension %q is ambiguous, matches: %s", name, strings.Join(paths, ", "))
 	}
-}
-
-func dashIfEmpty(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
 }
 
 // copyDir does a recursive copy of src to dst preserving file mode

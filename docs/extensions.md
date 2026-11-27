@@ -134,7 +134,7 @@ manifest tells zot how to launch it:
 | `exec` | required. path to the executable (relative to the manifest). |
 | `args` | optional. extra argv passed to `exec`. |
 | `language` | optional. informational only (`go`, `python`, `typescript`, ...). |
-| `description` | optional. shown in `zot ext list`. |
+| `description` | optional. shown below the extension name in `zot ext list`. |
 | `skills` | optional. directories (recursively scanned) or direct `SKILL.md` paths, relative to the manifest. |
 | `enabled` | optional, defaults to `true`. set to `false` to disable without removing. |
 
