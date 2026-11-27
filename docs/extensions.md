@@ -1199,6 +1199,25 @@ name (`up`, `down`, `left`, `right`, `enter`, `esc`, `tab`, `pageup`,
 {"type":"panel_key","panel_id":"todos-main","key":"rune","text":"x"}
 ```
 
+#### `panel_resize`
+
+Interactive zot sends this to the panel owner when a panel opens and whenever
+its available column count changes. Extensions opt in by including
+`panel_resize` in `hello.capabilities`. The Go SDK opts in automatically and
+provides `OnPanelResize(panelID, handler)`. Register the handler before opening
+the panel.
+
+```json
+{"type":"panel_resize","panel_id":"todos-main","width":96,"height":30}
+```
+
+`width` is the display column count zot uses to wrap body lines and the footer.
+`height` is the terminal row count at the time of the event, not a panel row
+budget. Height-only changes do not trigger this event. The first event follows
+panel open, so use `panel_render` to adjust the initial content if needed.
+Older hosts and headless modes do not send this event. Zot still wraps panel
+content, so keep a fallback layout until the first size arrives.
+
 #### `panel_close`
 
 Sent when the user closes the focused panel from zot (for example with

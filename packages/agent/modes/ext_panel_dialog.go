@@ -5,6 +5,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
+	"github.com/patriceckhart/zot/packages/agent/extproto"
 	"github.com/patriceckhart/zot/packages/tui"
 )
 
@@ -15,6 +16,7 @@ type extPanelDialog struct {
 	title  string
 	lines  []string
 	footer string
+	width  int // last width reported to the extension
 }
 
 func newExtPanelDialog() *extPanelDialog { return &extPanelDialog{} }
@@ -28,6 +30,19 @@ func (d *extPanelDialog) Open(ext, id, title string, lines []string, footer stri
 	d.title = title
 	d.lines = append([]string(nil), lines...)
 	d.footer = footer
+	d.width = 0
+}
+
+// reportExtPanelSizeLocked reports the same column count used for wrapping.
+func (i *Interactive) reportExtPanelSizeLocked(cols, rows int) {
+	d := i.extPanel
+	if i.cfg.Extensions == nil || !d.Active() || cols <= 0 || cols == d.width {
+		return
+	}
+	d.width = cols
+	_ = i.cfg.Extensions.SendPanelResize(d.ext, extproto.PanelResizeFromHost{
+		PanelID: d.id, Width: cols, Height: rows,
+	})
 }
 
 func (d *extPanelDialog) Update(title string, lines []string, footer string) {
@@ -74,8 +89,7 @@ func (d *extPanelDialog) Render(th tui.Theme, width int) []string {
 // across as many rows as needed so long content wraps instead of being
 // clipped by the renderer's hard truncation (see tui.truncateToWidth).
 //
-// Extensions never receive the panel width, so the host owns wrapping;
-// otherwise any line wider than the terminal is silently cut off.
+// The host wraps lines even if the extension does not size them itself.
 func renderExtPanelLine(th tui.Theme, raw string, width int) []string {
 	plain := stripANSIBytes(raw)
 	trimmed := strings.TrimLeft(plain, " ")

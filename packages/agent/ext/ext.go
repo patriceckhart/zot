@@ -357,6 +357,7 @@ type Extension struct {
 	interceptAssistant    AssistantMessageHandler
 	panelKeys             map[string]func(key, text string)
 	panelCloses           map[string]func()
+	panelResizes          map[string]func(width, height int)
 	onHello               func(HostInfo)
 
 	// Caps reported in the hello frame.
@@ -413,7 +414,8 @@ func New(name, version string) *Extension {
 		eventHandlers: map[string]EventHandler{},
 		panelKeys:     map[string]func(key, text string){},
 		panelCloses:   map[string]func(){},
-		caps:          []string{"commands", "tools", "events", "panels", "tool_cancel", "call_tool"},
+		panelResizes:  map[string]func(width, height int){},
+		caps:          []string{"commands", "tools", "events", "panels", "tool_cancel", "call_tool", "panel_resize"},
 	}
 }
 
@@ -449,6 +451,19 @@ func (e *Extension) OnPanelKey(panelID string, onKey func(key, text string), onC
 	if onClose != nil {
 		e.panelCloses[panelID] = onClose
 	}
+}
+
+// OnPanelResize registers a callback for the initial panel width and subsequent
+// width changes. Register before opening the panel. Like panel key handlers,
+// callbacks run asynchronously and may overlap. Pass nil to unregister.
+func (e *Extension) OnPanelResize(panelID string, handler func(width, height int)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if handler == nil {
+		delete(e.panelResizes, panelID)
+		return
+	}
+	e.panelResizes[panelID] = handler
 }
 
 // OpenPanel opens an interactive panel spontaneously from extension code
@@ -977,6 +992,17 @@ func (e *Extension) Run() error {
 			e.mu.Unlock()
 			if h != nil {
 				go h(pk.Key, pk.Text)
+			}
+		case "panel_resize":
+			var size extproto.PanelResizeFromHost
+			if json.Unmarshal(line, &size) != nil || size.Width <= 0 {
+				continue
+			}
+			e.mu.Lock()
+			h := e.panelResizes[size.PanelID]
+			e.mu.Unlock()
+			if h != nil {
+				go h(size.Width, size.Height)
 			}
 		case "panel_close":
 			var pc extproto.PanelCloseFromHost

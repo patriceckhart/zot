@@ -73,6 +73,7 @@ type Extension struct {
 	helloAck bool
 	// Set during the handshake, before the extension is published.
 	toolCancel       bool
+	panelResize      bool
 	callTool         bool
 	requestTransform bool
 	requestHandshake bool
@@ -818,6 +819,7 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	// Trust the manifest's name; ignore mismatch from the hello.
 	ext.helloAck = true
 	ext.toolCancel = slices.Contains(hello.Capabilities, "tool_cancel")
+	ext.panelResize = slices.Contains(hello.Capabilities, "panel_resize")
 	ext.callTool = slices.Contains(hello.Capabilities, "call_tool")
 	ext.mu.Lock()
 	ext.requestTransform = slices.Contains(hello.Capabilities, "request_transform")
@@ -1583,6 +1585,22 @@ func (m *Manager) SendPanelKey(extName, panelID, key, text string) error {
 	frame, _ := extproto.Encode(extproto.PanelKeyFromHost{Type: "panel_key", PanelID: panelID, Key: key, Text: text})
 	_, err := ext.stdin.Write(frame)
 	return err
+}
+
+// SendPanelResize queues a viewport notification without waiting for the extension.
+func (m *Manager) SendPanelResize(extName string, size extproto.PanelResizeFromHost) error {
+	m.mu.RLock()
+	ext := m.ext[extName]
+	m.mu.RUnlock()
+	if ext == nil || !ext.panelResize {
+		return nil
+	}
+	size.Type = "panel_resize"
+	frame, err := extproto.Encode(size)
+	if err != nil {
+		return err
+	}
+	return ext.stdin.(*orderedPipe).enqueue(frame, nil)
 }
 
 func (m *Manager) SendPanelClose(extName, panelID string) error {

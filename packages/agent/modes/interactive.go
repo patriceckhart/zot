@@ -1440,7 +1440,8 @@ func (i *Interactive) redraw() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.syncProgramStatusLocked()
-	cols, _ := i.cfg.Terminal.Size()
+	cols, rows := i.cfg.Terminal.Size()
+	i.reportExtPanelSizeLocked(cols, rows)
 	chat := i.cachedChatLocked(cols)
 
 	// Dialogs (login or model picker) render between chat and the editor.
@@ -1769,7 +1770,6 @@ func (i *Interactive) redraw() {
 		}
 	}
 
-	_, rows := i.cfg.Terminal.Size()
 	if mcpVisible {
 		// Leave a row for the renderer's bottom margin. Measure the actual
 		// editor, status, and queue rather than assuming a fixed height.
@@ -3620,8 +3620,7 @@ func (i *Interactive) OpenPanel(extName string, spec extproto.PanelSpec) {
 	i.confirmDialog.Blur()
 	if i.cfg.Extensions != nil {
 		cols, rows := i.cfg.Terminal.Size()
-		_ = cols
-		_ = rows
+		i.reportExtPanelSizeLocked(cols, rows)
 	}
 	i.invalidate()
 }
